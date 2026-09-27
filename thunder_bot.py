@@ -839,6 +839,20 @@ class CokeClient:
         except Exception:
             return None
 
+    def get_leaderboard(self) -> Optional[dict]:
+        try:
+            resp = self.session.get(f"{BASE_URL}/api/thunder-trail/leaderboard", timeout=12)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            if data.get('success'):
+                return data
+            return None
+        except Exception as e:
+            logger.warning(f"get_leaderboard error: {e}")
+            return None
+
     def _heartbeat(self, session_id: str, session_token: str, sim: GameSimulator, committed_count: int, start_time: float) -> int:
         sim_ms = int(sim.elapsed_ms)
         real_ms = int((time.time() - start_time) * 1000.0)
@@ -1144,15 +1158,18 @@ def get_banner() -> str:
 
 def get_main_keyboard(plays: int = 1, user_id: int = 0) -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ Start Game (2000)", callback_data="act_play_2000")
-    b2 = types.InlineKeyboardButton("🎯 Choose Target", callback_data="act_target_menu")
-    b3 = types.InlineKeyboardButton("📊 Refresh Status", callback_data="act_refresh")
-    b4 = types.InlineKeyboardButton("📱 Manage Accounts", callback_data="act_accounts")
-    b5 = types.InlineKeyboardButton("➕ Add Account", callback_data="act_login")
-    b6 = types.InlineKeyboardButton("🚪 Logout", callback_data="act_logout")
+    b1 = types.InlineKeyboardButton("⚡ Farm 2000", callback_data="act_play_2000")
+    b2 = types.InlineKeyboardButton("🏆 Farm 3200 (Prize)", callback_data="act_play_3200")
+    b3 = types.InlineKeyboardButton("🎯 Choose Target", callback_data="act_target_menu")
+    b4 = types.InlineKeyboardButton("👑 Live Leaderboard", callback_data="act_leaderboard")
+    b5 = types.InlineKeyboardButton("📊 Refresh Status", callback_data="act_refresh")
+    b6 = types.InlineKeyboardButton("📱 Manage Accounts", callback_data="act_accounts")
+    b7 = types.InlineKeyboardButton("➕ Add Account", callback_data="act_login")
+    b8 = types.InlineKeyboardButton("🚪 Logout", callback_data="act_logout")
     markup.add(b1, b2)
     markup.add(b3, b4)
     markup.add(b5, b6)
+    markup.add(b7, b8)
     if user_id and is_admin(user_id):
         adm_title = "👑 MASTER OWNER PANEL" if is_owner(user_id) else "🔴 ADMIN PANEL"
         markup.add(types.InlineKeyboardButton(adm_title, callback_data="owner_panel"))
@@ -1223,17 +1240,97 @@ def show_accounts_menu(message_or_call, edit_msg_id: Optional[int] = None):
     else:
         bot.send_message(chat_id, text, reply_markup=markup)
 
+def show_leaderboard(message_or_call, edit_msg_id: Optional[int] = None):
+    chat_id = message_or_call.chat.id if hasattr(message_or_call, 'chat') else message_or_call.message.chat.id
+    user_id = message_or_call.from_user.id
+
+    u = get_user(user_id)
+    cookies = u.get('cookies') if u else None
+    client = CokeClient(cookies)
+
+    lb_resp = client.get_leaderboard()
+    if not lb_resp or not lb_resp.get('success'):
+        text = "❌ <b>Leaderboard load nahi ho saka.</b> Kripya thodi der baad try karein."
+        if edit_msg_id:
+            safe_edit(chat_id, edit_msg_id, text, reply_markup=get_main_keyboard(1, user_id))
+        else:
+            bot.send_message(chat_id, text, reply_markup=get_main_keyboard(1, user_id))
+        return
+
+    items = lb_resp.get('data', [])
+    me = lb_resp.get('me', {})
+    meta = lb_resp.get('meta', {})
+    total_players = meta.get('total_count', len(items))
+
+    banner = get_banner()
+    lines = [
+        f"{banner}",
+        f"👑 <b>COKE2HOME OFFICIAL LIVE LEADERBOARD</b>",
+        f"<code>────────────────────────────</code>",
+    ]
+
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    top_entries = items[:10]
+    for p in top_entries:
+        rk = p.get('rank', 0)
+        uname = safe_html(p.get('username', 'Anonymous'))
+        sc = p.get('score', 0)
+        badge = medals.get(rk, f"#{rk:<2}")
+        lines.append(f"{badge} <code>{uname}</code> : <b>{sc} pts</b>")
+
+    p22 = next((p for p in items if p.get('rank') == 22), None)
+    p30 = items[-1] if len(items) >= 30 else None
+
+    lines.append(f"<code>────────────────────────────</code>")
+    if p22:
+        lines.append(f"🎁 <b>Rank #22 (Prize Cutoff):</b> <code>{p22.get('username')}</code> — <b>{p22.get('score')} pts</b>")
+    if p30:
+        lines.append(f"📌 <b>Rank #30 (Top 30 Board):</b> <code>{p30.get('username')}</code> — <b>{p30.get('score')} pts</b>")
+    lines.append(f"<code>────────────────────────────</code>")
+
+    my_rank = me.get('rank')
+    my_score = me.get('score', 0)
+    if my_rank:
+        in_prize = (my_rank <= 22)
+        prize_status = "🎉 <b>IN PRIZE ZONE (Rank 1-22)!</b>" if in_prize else f"⚠️ <b>Rank #{my_rank} of {total_players}</b> (Prize ke liye 3100+ score chahiye)"
+        lines.append(f"👤 <b>Aapka Stand:</b> Score: <code>{my_score} pts</code>")
+        lines.append(f"🏆 <b>Aapka Rank :</b> #{my_rank} ({prize_status})")
+    else:
+        lines.append(f"👤 <b>Aapka Stand:</b> Abhi koi recorded score nahi hai.")
+
+    lines.append(f"<code>────────────────────────────</code>")
+    lines.append("🎁 <i>Daily Prizes: Top 1-2 Firefox Bicycle | Top 3-22 Gully Shoes</i>\n💡 <i>Prize list me aane ke liye <b>3200 pts</b> target select karein!</i>")
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("🏆 Farm 3200 (Win Prize)", callback_data="act_play_3200"),
+        types.InlineKeyboardButton("⚡ Farm 2000", callback_data="act_play_2000")
+    )
+    markup.add(
+        types.InlineKeyboardButton("🔄 Refresh Leaderboard", callback_data="act_leaderboard"),
+        types.InlineKeyboardButton("« Back to Menu", callback_data="act_menu")
+    )
+
+    full_text = "\n".join(lines)
+    if edit_msg_id:
+        safe_edit(chat_id, edit_msg_id, full_text, reply_markup=markup)
+    else:
+        bot.send_message(chat_id, full_text, reply_markup=markup)
+
 def get_target_keyboard() -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup(row_width=3)
-    b1 = types.InlineKeyboardButton("500", callback_data="set_tgt_500")
-    b2 = types.InlineKeyboardButton("1000", callback_data="set_tgt_1000")
-    b3 = types.InlineKeyboardButton("1500", callback_data="set_tgt_1500")
-    b4 = types.InlineKeyboardButton("2000", callback_data="set_tgt_2000")
-    b5 = types.InlineKeyboardButton("2500", callback_data="set_tgt_2500")
-    b6 = types.InlineKeyboardButton("3000", callback_data="set_tgt_3000")
+    b1 = types.InlineKeyboardButton("1500", callback_data="set_tgt_1500")
+    b2 = types.InlineKeyboardButton("2000", callback_data="set_tgt_2000")
+    b3 = types.InlineKeyboardButton("2500", callback_data="set_tgt_2500")
+    b4 = types.InlineKeyboardButton("2800", callback_data="set_tgt_2800")
+    b5 = types.InlineKeyboardButton("🔥 3100 (Prize)", callback_data="set_tgt_3100")
+    b6 = types.InlineKeyboardButton("🏆 3200 (Top 10)", callback_data="set_tgt_3200")
+    b7 = types.InlineKeyboardButton("⚡ 3250 (Top 5)", callback_data="set_tgt_3250")
+    b8 = types.InlineKeyboardButton("👑 3300 (Top 1)", callback_data="set_tgt_3300")
     back = types.InlineKeyboardButton("« Back to Menu", callback_data="act_menu")
     markup.add(b1, b2, b3)
     markup.add(b4, b5, b6)
+    markup.add(b7, b8)
     markup.add(back)
     return markup
 
@@ -1759,6 +1856,15 @@ def handle_callback(call: types.CallbackQuery):
         else:
             execute_login(call.message)
 
+    elif data == "act_play_3200":
+        if u and u.get('cookies'):
+            launch_game(chat_id, user_id, u, target_score=3200)
+        else:
+            execute_login(call.message)
+
+    elif data == "act_leaderboard":
+        show_leaderboard(call, edit_msg_id=call.message.message_id)
+
 
 
     elif data == "act_target_menu":
@@ -1869,6 +1975,10 @@ def handle_logout_cmd(message: types.Message):
 @bot.message_handler(commands=['stats'])
 def handle_stats_cmd(message: types.Message):
     show_profile(message)
+
+@bot.message_handler(commands=['leaderboard', 'lb'])
+def handle_leaderboard_cmd(message: types.Message):
+    show_leaderboard(message)
 
 @bot.message_handler(commands=['stop'])
 def handle_stop_cmd(message: types.Message):
@@ -2063,6 +2173,10 @@ def handle_text(message: types.Message):
             show_profile(message)
             return
 
+        if any(k in lower for k in ["leaderboard", "lb", "top", "ranks", "ranking"]):
+            show_leaderboard(message)
+            return
+
         clean_digits = re.sub(r"\D", "", raw_text)
         auth_st, pending_ph = get_auth_state(user_id)
 
@@ -2195,12 +2309,14 @@ def main():
         bot.delete_my_commands()
         bot.set_my_commands([
             telebot.types.BotCommand("start", "Open Dashboard / Profile"),
-            telebot.types.BotCommand("admin", "Super Admin Panel (Admin Only)"),
-            telebot.types.BotCommand("broadcast", "Broadcast announcement"),
-            telebot.types.BotCommand("stop", "Stop active game session"),
+            telebot.types.BotCommand("leaderboard", "Official Live Leaderboard"),
+            telebot.types.BotCommand("accounts", "Manage / Switch Accounts"),
             telebot.types.BotCommand("stats", "View account rank & lives"),
-            telebot.types.BotCommand("login", "Switch mobile number"),
+            telebot.types.BotCommand("stop", "Stop active game session"),
+            telebot.types.BotCommand("login", "Login / Add Account"),
             telebot.types.BotCommand("logout", "Logout from current account"),
+            telebot.types.BotCommand("admin", "Admin Panel (Admin Only)"),
+            telebot.types.BotCommand("broadcast", "Broadcast announcement"),
         ])
         print("[✔] Telegram menu commands configured.")
     except Exception as e:
