@@ -915,9 +915,26 @@ class CokeClient:
 # ==============================================================================
 # TELEGRAM BOT (DIRECT CONVERSATIONAL CLI FORMAT)
 # ==============================================================================
-# ==============================================================================
-# TELEGRAM BOT (USER-FRIENDLY INLINE & AUTO-RESUME ENGINE)
-# ==============================================================================
+# ── Cloud Health Check Server (Port 8080) for 24/7 Hosting ──
+def start_health_server(port=8080):
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"OK - MARCO THUNDER BOT ALIVE\n")
+        def log_message(self, format, *args):
+            pass
+    try:
+        server = HTTPServer(('0.0.0.0', port), HealthHandler)
+        logger.info(f"Cloud health server active on port {port}")
+        server.serve_forever()
+    except Exception as e:
+        logger.warning(f"Health server on port {port} warning: {e}")
+
+threading.Thread(target=start_health_server, daemon=True).start()
+
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
 active_games = {}
