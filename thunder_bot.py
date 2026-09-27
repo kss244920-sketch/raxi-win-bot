@@ -166,6 +166,7 @@ def init_db():
                 name TEXT,
                 cookies_json TEXT,
                 pending_phone TEXT,
+                auth_state TEXT DEFAULT 'IDLE',
                 last_target INTEGER DEFAULT 2000,
                 banned INTEGER DEFAULT 0,
                 role TEXT DEFAULT 'user',
@@ -176,6 +177,7 @@ def init_db():
         ''')
         for col_def in [
             "pending_phone TEXT",
+            "auth_state TEXT DEFAULT 'IDLE'",
             "last_target INTEGER DEFAULT 2000",
             "banned INTEGER DEFAULT 0",
             "role TEXT DEFAULT 'user'",
@@ -186,6 +188,31 @@ def init_db():
                 c.execute(f"ALTER TABLE users ADD COLUMN {col_def}")
             except Exception:
                 pass
+
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                phone TEXT,
+                name TEXT,
+                cookies_json TEXT,
+                is_active INTEGER DEFAULT 0,
+                created_at REAL,
+                updated_at REAL,
+                UNIQUE(user_id, phone)
+            )
+        ''')
+
+        # Auto-migrate any existing single session into user_sessions
+        try:
+            c.execute("SELECT user_id, phone, name, cookies_json FROM users WHERE cookies_json IS NOT NULL AND phone IS NOT NULL")
+            for r in c.fetchall():
+                c.execute('''
+                    INSERT OR IGNORE INTO user_sessions (user_id, phone, name, cookies_json, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 1, ?, ?)
+                ''', (r[0], r[1], r[2], r[3], time.time(), time.time()))
+        except Exception:
+            pass
 
         c.execute('''
             CREATE TABLE IF NOT EXISTS admins (
@@ -209,7 +236,7 @@ def get_user(user_id: int) -> Optional[dict]:
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        c.execute("SELECT user_id, phone, name, cookies_json, pending_phone, last_target FROM users WHERE user_id = ?", (user_id,))
+        c.execute("SELECT user_id, phone, name, cookies_json, pending_phone, last_target, auth_state FROM users WHERE user_id = ?", (user_id,))
         row = c.fetchone()
         conn.close()
         if not row:
@@ -221,39 +248,151 @@ def get_user(user_id: int) -> Optional[dict]:
             "cookies": json.loads(row[3]) if row[3] else None,
             "pending_phone": row[4],
             "last_target": row[5] or 2000,
+            "auth_state": row[6] or "IDLE"
         }
 
-def set_pending_phone(user_id: int, phone: str):
+def get_user_sessions(user_id: int) -> list:
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
         c.execute('''
-            INSERT INTO users (user_id, pending_phone, updated_at)
-            VALUES (?, ?, ?)
+            SELECT id, phone, name, is_active, updated_at FROM user_sessions
+            WHERE user_id = ? ORDER BY is_active DESC, updated_at DESC
+        ''', (user_id,))
+        rows = c.fetchall()
+        conn.close()
+    return [{"id": r[0], "phone": r[1], "name": r[2] or "Operator", "is_active": bool(r[3]), "updated_at": r[4]} for r in rows]
+
+def get_session_by_phone(user_id: int, phone: str) -> Optional[dict]:
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''
+            SELECT phone, name, cookies_json, is_active FROM user_sessions
+            WHERE user_id = ? AND phone = ?
+        ''', (user_id, phone))
+        row = c.fetchone()
+        conn.close()
+    if not row:
+        return None
+    return {
+        "phone": row[0],
+        "name": row[1] or "Operator",
+        "cookies": json.loads(row[2]) if row[2] else None,
+        "is_active": bool(row[3])
+    }
+
+def switch_active_session(user_id: int, phone: str) -> bool:
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("UPDATE user_sessions SET is_active = 0 WHERE user_id = ?", (user_id,))
+        c.execute('''
+            UPDATE user_sessions SET is_active = 1, updated_at = ?
+            WHERE user_id = ? AND phone = ?
+        ''', (time.time(), user_id, phone))
+        c.execute('''
+            SELECT phone, name, cookies_json FROM user_sessions
+            WHERE user_id = ? AND phone = ?
+        ''', (user_id, phone))
+        row = c.fetchone()
+        if row:
+            c.execute('''
+                UPDATE users SET phone = ?, name = ?, cookies_json = ?, auth_state = 'IDLE', pending_phone = NULL, updated_at = ?
+                WHERE user_id = ?
+            ''', (row[0], row[1], row[2], time.time(), user_id))
+            conn.commit()
+            conn.close()
+            return True
+        conn.commit()
+        conn.close()
+    return False
+
+def delete_session(user_id: int, phone: str) -> bool:
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("DELETE FROM user_sessions WHERE user_id = ? AND phone = ?", (user_id, phone))
+        c.execute('''
+            SELECT phone, name, cookies_json FROM user_sessions
+            WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1
+        ''', (user_id,))
+        next_sess = c.fetchone()
+        if next_sess:
+            c.execute("UPDATE user_sessions SET is_active = 1 WHERE user_id = ? AND phone = ?", (user_id, next_sess[0]))
+            c.execute('''
+                UPDATE users SET phone = ?, name = ?, cookies_json = ?, auth_state = 'IDLE', pending_phone = NULL, updated_at = ?
+                WHERE user_id = ?
+            ''', (next_sess[0], next_sess[1], next_sess[2], time.time(), user_id))
+        else:
+            c.execute('''
+                UPDATE users SET cookies_json = NULL, auth_state = 'IDLE', pending_phone = NULL, updated_at = ?
+                WHERE user_id = ?
+            ''', (time.time(), user_id))
+        conn.commit()
+        conn.close()
+    return True
+
+def set_auth_state(user_id: int, state: str, pending_phone: Optional[str] = None):
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO users (user_id, auth_state, pending_phone, updated_at)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
+                auth_state = excluded.auth_state,
                 pending_phone = excluded.pending_phone,
                 updated_at = excluded.updated_at
-        ''', (user_id, phone, time.time()))
+        ''', (user_id, state, pending_phone, time.time()))
         conn.commit()
         conn.close()
 
-def save_session(user_id: int, phone: str, name: str, cookies: dict):
+def get_auth_state(user_id: int) -> tuple:
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
+        c.execute("SELECT auth_state, pending_phone FROM users WHERE user_id = ?", (user_id,))
+        row = c.fetchone()
+        conn.close()
+    if not row:
+        return ("IDLE", None)
+    return (row[0] or "IDLE", row[1])
+
+def set_pending_phone(user_id: int, phone: str):
+    set_auth_state(user_id, "AWAITING_OTP", phone)
+
+def save_session(user_id: int, phone: str, name: str, cookies: dict, set_active: bool = True):
+    with db_lock:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        now = time.time()
+        if set_active:
+            c.execute("UPDATE user_sessions SET is_active = 0 WHERE user_id = ?", (user_id,))
         c.execute('''
-            INSERT INTO users (user_id, phone, name, cookies_json, pending_phone, updated_at)
-            VALUES (?, ?, ?, ?, NULL, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                phone = excluded.phone,
+            INSERT INTO user_sessions (user_id, phone, name, cookies_json, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, phone) DO UPDATE SET
                 name = excluded.name,
                 cookies_json = excluded.cookies_json,
-                pending_phone = NULL,
+                is_active = excluded.is_active,
                 updated_at = excluded.updated_at
-        ''', (user_id, phone, name, json.dumps(cookies), time.time()))
+        ''', (user_id, phone, name, json.dumps(cookies), 1 if set_active else 0, now, now))
+        if set_active:
+            c.execute('''
+                INSERT INTO users (user_id, phone, name, cookies_json, auth_state, pending_phone, updated_at)
+                VALUES (?, ?, ?, ?, 'IDLE', NULL, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    phone = excluded.phone,
+                    name = excluded.name,
+                    cookies_json = excluded.cookies_json,
+                    auth_state = 'IDLE',
+                    pending_phone = NULL,
+                    updated_at = excluded.updated_at
+            ''', (user_id, phone, name, json.dumps(cookies), now))
         conn.commit()
         conn.close()
-    if user_id == OWNER_ID:
+    if user_id == OWNER_ID and set_active:
         try:
             sess_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session.json")
             with open(sess_file, "w") as f:
@@ -273,7 +412,8 @@ def clear_session(user_id: int):
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        c.execute("UPDATE users SET cookies_json = NULL, pending_phone = NULL WHERE user_id = ?", (user_id,))
+        c.execute("UPDATE user_sessions SET is_active = 0 WHERE user_id = ?", (user_id,))
+        c.execute("UPDATE users SET cookies_json = NULL, auth_state = 'IDLE', pending_phone = NULL WHERE user_id = ?", (user_id,))
         conn.commit()
         conn.close()
 
@@ -966,6 +1106,10 @@ def safe_edit(chat_id: int, message_id: int, text: str, reply_markup=None) -> Op
 def try_recover_session(user_id: int) -> bool:
     if user_id != OWNER_ID:
         return False
+    # If user already has ANY sessions saved, do NOT auto-recover!
+    existing = get_user_sessions(user_id)
+    if existing:
+        return False
     candidates = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "session.json"),
         "/home/piyush/Downloads/Telegram Desktop/session.json",
@@ -981,7 +1125,7 @@ def try_recover_session(user_id: int) -> bool:
                 if stats and (stats.get("username") or stats.get("plays_remaining") is not None):
                     phone = cookies.get("phone") or "9911776852"
                     uname = stats.get("username") or "Operator"
-                    save_session(user_id, phone, uname, cookies)
+                    save_session(user_id, phone, uname, cookies, set_active=True)
                     logger.info(f"Auto-recovered session from {p} for user {user_id}")
                     return True
             except Exception as e:
@@ -1001,17 +1145,83 @@ def get_banner() -> str:
 def get_main_keyboard(plays: int = 1, user_id: int = 0) -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup(row_width=2)
     b1 = types.InlineKeyboardButton("⚡ Start Game (2000)", callback_data="act_play_2000")
-    b3 = types.InlineKeyboardButton("🎯 Choose Target", callback_data="act_target_menu")
-    b4 = types.InlineKeyboardButton("📊 Refresh Status", callback_data="act_refresh")
-    b5 = types.InlineKeyboardButton("📱 Switch Number", callback_data="act_login")
+    b2 = types.InlineKeyboardButton("🎯 Choose Target", callback_data="act_target_menu")
+    b3 = types.InlineKeyboardButton("📊 Refresh Status", callback_data="act_refresh")
+    b4 = types.InlineKeyboardButton("📱 Manage Accounts", callback_data="act_accounts")
+    b5 = types.InlineKeyboardButton("➕ Add Account", callback_data="act_login")
     b6 = types.InlineKeyboardButton("🚪 Logout", callback_data="act_logout")
-    markup.add(b1, b3)
-    markup.add(b4, b5)
-    markup.add(b6)
+    markup.add(b1, b2)
+    markup.add(b3, b4)
+    markup.add(b5, b6)
     if user_id and is_admin(user_id):
         adm_title = "👑 MASTER OWNER PANEL" if is_owner(user_id) else "🔴 ADMIN PANEL"
         markup.add(types.InlineKeyboardButton(adm_title, callback_data="owner_panel"))
     return markup
+
+def get_accounts_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup()
+    sessions = get_user_sessions(user_id)
+
+    for s in sessions:
+        phone_str = s['phone']
+        name_str = s['name'] or 'Account'
+        if s['is_active']:
+            markup.add(types.InlineKeyboardButton(f"✅ +91 {phone_str} ({name_str}) [ACTIVE]", callback_data="act_refresh"))
+        else:
+            markup.add(types.InlineKeyboardButton(f"🔄 Switch to: +91 {phone_str} ({name_str})", callback_data=f"switch_acc_{phone_str}"))
+
+    b_add = types.InlineKeyboardButton("➕ Login New Account", callback_data="act_login")
+    b_out = types.InlineKeyboardButton("🚪 Logout Active", callback_data="act_logout")
+    markup.add(b_add, b_out)
+
+    if sessions:
+        b_del = types.InlineKeyboardButton("🗑 Delete an Account", callback_data="act_delete_menu")
+        markup.add(b_del)
+
+    markup.add(types.InlineKeyboardButton("« Back to Game Menu", callback_data="act_menu"))
+    return markup
+
+def get_delete_accounts_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup()
+    sessions = get_user_sessions(user_id)
+    for s in sessions:
+        markup.add(types.InlineKeyboardButton(f"🗑 Delete +91 {s['phone']} ({s['name']})", callback_data=f"del_acc_{s['phone']}"))
+    markup.add(types.InlineKeyboardButton("« Cancel / Back", callback_data="act_accounts"))
+    return markup
+
+def show_accounts_menu(message_or_call, edit_msg_id: Optional[int] = None):
+    chat_id = message_or_call.chat.id if hasattr(message_or_call, 'chat') else message_or_call.message.chat.id
+    user_id = message_or_call.from_user.id
+
+    sessions = get_user_sessions(user_id)
+    banner = get_banner()
+
+    active_sess = next((s for s in sessions if s['is_active']), None)
+    active_str = f"🟢 <b>+91 {active_sess['phone']}</b> ({safe_html(active_sess['name'])})" if active_sess else "⚪ <i>None (Logged Out)</i>"
+
+    sess_lines = []
+    for i, s in enumerate(sessions, 1):
+        tag = "<b>[ACTIVE]</b>" if s['is_active'] else "[Saved]"
+        sess_lines.append(f"{i}. <code>+91 {s['phone']}</code> - {safe_html(s['name'])} {tag}")
+
+    list_block = "\n".join(sess_lines) if sess_lines else "<i>Koi saved account nahi hai. Naya number add karein.</i>"
+
+    text = (
+        f"{banner}\n"
+        f"📱 <b>THUMS UP ACCOUNT & SESSION MANAGER</b>\n"
+        f"<code>────────────────────────────</code>\n"
+        f"👤 <b>Active Account:</b> {active_str}\n\n"
+        f"📂 <b>Saved Accounts ({len(sessions)}):</b>\n"
+        f"{list_block}\n"
+        f"<code>────────────────────────────</code>\n"
+        f"💡 <i>Neeche buttons se 1-tap me switch karein ya naya account add karein:</i>"
+    )
+
+    markup = get_accounts_keyboard(user_id)
+    if edit_msg_id:
+        safe_edit(chat_id, edit_msg_id, text, reply_markup=markup)
+    else:
+        bot.send_message(chat_id, text, reply_markup=markup)
 
 def get_target_keyboard() -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup(row_width=3)
@@ -1035,29 +1245,46 @@ def get_playing_keyboard() -> types.InlineKeyboardMarkup:
 def execute_logout(message_or_call):
     chat_id = message_or_call.chat.id if hasattr(message_or_call, 'chat') else message_or_call.message.chat.id
     user_id = message_or_call.from_user.id
+    u = get_user(user_id)
+    old_phone = u.get('phone', '') if u else ''
+
     clear_session(user_id)
     with active_lock:
         if user_id in active_games:
             active_games[user_id].set()
+
+    banner = get_banner()
+    sessions = get_user_sessions(user_id)
+
+    markup = types.InlineKeyboardMarkup()
+    for s in sessions:
+        markup.add(types.InlineKeyboardButton(f"🔄 Switch to: +91 {s['phone']} ({s['name']})", callback_data=f"switch_acc_{s['phone']}"))
+    markup.add(types.InlineKeyboardButton("➕ Login / Add New Number", callback_data="act_login"))
+
     bot.send_message(
         chat_id,
-        "<b>[✔] LOGGED OUT :: Session Cleared.</b>\n\n"
-        "▸ <b>Phone number (10 digits) to login:</b>",
-        reply_markup=types.ReplyKeyboardRemove()
+        f"{banner}\n"
+        f"🚪 <b>[✔] LOGGED OUT :: +91 {old_phone or 'Session Cleared'}</b>\n\n"
+        f"Aapka active session disconnect ho gaya hai.\n\n"
+        f"Neeche saved account par switch karein ya naya number login karein:",
+        reply_markup=markup
     )
 
 def execute_login(message_or_call):
     chat_id = message_or_call.chat.id if hasattr(message_or_call, 'chat') else message_or_call.message.chat.id
     user_id = message_or_call.from_user.id
-    clear_session(user_id)
+    set_auth_state(user_id, "AWAITING_PHONE", None)
+
     banner = get_banner()
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Cancel", callback_data="act_accounts"))
     bot.send_message(
         chat_id,
         f"{banner}\n"
-        "🔐 <b>Thums Up Login</b>\n\n"
+        "🔐 <b>Thums Up Login / Add Account</b>\n\n"
         "Apna <b>10-digit mobile number</b> enter karein:\n"
-        "<i>(Example: 9876543210)</i>",
-        reply_markup=types.ReplyKeyboardRemove()
+        "<i>(Example: 9876543210)</i>\n\n"
+        "<i>Type 'cancel' anytime to abort.</i>",
+        reply_markup=markup
     )
 
 def show_profile(message_or_call, edit_msg_id: Optional[int] = None):
@@ -1070,9 +1297,14 @@ def show_profile(message_or_call, edit_msg_id: Optional[int] = None):
     if not is_admin(user_id) and get_setting("free_mode", "1") == "0":
         bot.send_message(chat_id, "🔒 <b>MAINTENANCE MODE:</b> Bot currently Admin-Only mode me hai. Naye users ke liye jald open hoga.")
         return
+
     u = get_user(user_id)
     if not (u and u.get('cookies')):
-        if try_recover_session(user_id):
+        sessions = get_user_sessions(user_id)
+        if sessions:
+            switch_active_session(user_id, sessions[0]['phone'])
+            u = get_user(user_id)
+        elif try_recover_session(user_id):
             u = get_user(user_id)
         else:
             execute_login(message_or_call)
@@ -1080,18 +1312,12 @@ def show_profile(message_or_call, edit_msg_id: Optional[int] = None):
 
     client = CokeClient(u['cookies'])
     stats = client.get_stats()
-    if not stats:
-        if try_recover_session(user_id):
-            u = get_user(user_id)
-            client = CokeClient(u['cookies'])
-            stats = client.get_stats()
 
     if not stats:
-        clear_session(user_id)
         bot.send_message(
             chat_id,
-            "⚠️ <b>Session Expire Ho Gaya Hai!</b>\nKripya login karein.\n\n▸ <b>Phone number (10 digits):</b>",
-            reply_markup=types.ReplyKeyboardRemove()
+            f"⚠️ <b>Session Expired for +91 {u.get('phone', 'N/A')}!</b>\nKripya dobara login karein ya doosra account switch karein.",
+            reply_markup=get_accounts_keyboard(user_id)
         )
         return
 
@@ -1549,6 +1775,65 @@ def handle_callback(call: types.CallbackQuery):
     elif data in ["act_menu", "act_refresh"]:
         show_profile(call, edit_msg_id=call.message.message_id)
 
+    elif data == "act_accounts":
+        show_accounts_menu(call, edit_msg_id=call.message.message_id)
+
+    elif data.startswith("switch_acc_"):
+        phone = data.replace("switch_acc_", "")
+        if switch_active_session(user_id, phone):
+            try:
+                bot.answer_callback_query(call.id, f"Switched to +91 {phone}!")
+            except Exception:
+                pass
+            show_profile(call, edit_msg_id=call.message.message_id)
+        else:
+            try:
+                bot.answer_callback_query(call.id, "Session switch failed!", show_alert=True)
+            except Exception:
+                pass
+
+    elif data == "act_delete_menu":
+        safe_edit(
+            chat_id,
+            call.message.message_id,
+            "🗑 <b>Kaunsa account delete karna chahte hain?</b>\n<i>Select below to remove:</i>",
+            reply_markup=get_delete_accounts_keyboard(user_id)
+        )
+
+    elif data.startswith("del_acc_"):
+        phone = data.replace("del_acc_", "")
+        delete_session(user_id, phone)
+        try:
+            bot.answer_callback_query(call.id, f"Account +91 {phone} removed!", show_alert=True)
+        except Exception:
+            pass
+        show_accounts_menu(call, edit_msg_id=call.message.message_id)
+
+    elif data.startswith("send_otp_"):
+        phone = data.replace("send_otp_", "")
+        set_auth_state(user_id, "AWAITING_OTP", phone)
+        msg_wait = bot.send_message(
+            chat_id,
+            f"⏳ Transmitting OTP to <b>+91 {phone}</b> ..."
+        )
+        client = CokeClient()
+        ok, res_msg = client.send_otp(phone)
+        if ok:
+            safe_edit(
+                chat_id,
+                msg_wait.message_id,
+                f"[✔] <b>OTP Dispatched!</b>\n+91 {phone} par 6-digit OTP check karein.\n\n"
+                f"▸ <b>Enter 6-digit OTP</b> (ya 'cancel' likhein):"
+            )
+        else:
+            set_auth_state(user_id, "IDLE", None)
+            safe_edit(
+                chat_id,
+                msg_wait.message_id,
+                f"[✖] OTP send failed: {safe_html(res_msg)}",
+                reply_markup=get_main_keyboard(1, user_id)
+            )
+
     elif data == "act_login":
         execute_login(call)
 
@@ -1569,7 +1854,9 @@ def handle_callback(call: types.CallbackQuery):
 def handle_start_cmd(message: types.Message):
     show_profile(message)
 
-
+@bot.message_handler(commands=['accounts', 'sessions'])
+def handle_accounts_cmd(message: types.Message):
+    show_accounts_menu(message)
 
 @bot.message_handler(commands=['login'])
 def handle_login_cmd(message: types.Message):
@@ -1759,7 +2046,16 @@ def handle_text(message: types.Message):
             execute_login(message)
             return
 
-        if lower in ["stop", "🛑 stop game", "stop game", "cancel"]:
+        if lower in ["accounts", "manage accounts", "sessions"]:
+            show_accounts_menu(message)
+            return
+
+        if lower in ["cancel", "abort"]:
+            set_auth_state(user_id, "IDLE", None)
+            bot.send_message(message.chat.id, "Action cancelled.", reply_markup=get_main_keyboard(1, user_id))
+            return
+
+        if lower in ["stop", "🛑 stop game", "stop game"]:
             handle_stop_cmd(message)
             return
 
@@ -1767,91 +2063,109 @@ def handle_text(message: types.Message):
             show_profile(message)
             return
 
-        u = get_user(user_id)
-        if not (u and u.get('cookies')):
-            if try_recover_session(user_id):
-                u = get_user(user_id)
-
         clean_digits = re.sub(r"\D", "", raw_text)
+        auth_st, pending_ph = get_auth_state(user_id)
 
-        # 1. 10-digit phone number entered -> send OTP
+        # 1. State: AWAITING_PHONE
+        if auth_st == "AWAITING_PHONE":
+            if (len(clean_digits) == 10) or (len(clean_digits) == 12 and clean_digits.startswith("91")):
+                phone = clean_digits[-10:]
+                set_auth_state(user_id, "AWAITING_OTP", phone)
+                msg_wait = bot.send_message(
+                    message.chat.id,
+                    f"⏳ Transmitting OTP to <b>+91 {phone}</b> ..."
+                )
+
+                client = CokeClient()
+                ok, res_msg = client.send_otp(phone)
+                if ok:
+                    safe_edit(
+                        message.chat.id,
+                        msg_wait.message_id,
+                        f"[✔] <b>OTP Dispatched!</b>\n+91 {phone} par 6-digit OTP check karein.\n\n"
+                        f"▸ <b>Enter 6-digit OTP</b> (ya 'cancel' likhein):"
+                    )
+                else:
+                    set_auth_state(user_id, "AWAITING_PHONE", None)
+                    safe_edit(
+                        message.chat.id,
+                        msg_wait.message_id,
+                        f"[✖] OTP send failed: {safe_html(res_msg)}\n\n"
+                        f"▸ <b>Try another 10-digit number:</b>"
+                    )
+                return
+            else:
+                bot.send_message(message.chat.id, "⚠️ Kripya 10-digit mobile number enter karein (e.g. 9876543210):")
+                return
+
+        # 2. State: AWAITING_OTP
+        if auth_st == "AWAITING_OTP":
+            if (4 <= len(clean_digits) <= 8) and pending_ph:
+                otp = clean_digits
+                msg_wait = bot.send_message(
+                    message.chat.id,
+                    f"⏳ Verifying OTP for +91 {pending_ph} ..."
+                )
+
+                client = CokeClient()
+                ok, res_msg, login_data = client.verify_otp(pending_ph, otp)
+
+                if ok and login_data:
+                    save_session(user_id, login_data['phone'], login_data['name'], login_data['cookies'], set_active=True)
+                    stats = client.get_stats() or {}
+                    plays = stats.get('plays_remaining', 0)
+                    best = stats.get('best_score', 0)
+                    rank = stats.get('rank')
+                    rank_str = f"#{rank}" if rank else "UNRANKED"
+
+                    confirmed_text = (
+                        f"✅ <b>LOGIN SUCCESSFUL & SAVED!</b>\n"
+                        f"<code>────────────────────────────</code>\n"
+                        f"👤 <b>Account :</b> <code>{safe_html(login_data['name'])}</code>\n"
+                        f"📱 <b>Phone   :</b> <code>+91 {safe_html(login_data['phone'])}</code>\n"
+                        f"❤️ <b>Lives   :</b> <code>{plays} / 5</code>\n"
+                        f"🏆 <b>Best    :</b> <code>{best} pts</code>\n"
+                        f"🌐 <b>Rank    :</b> <code>{rank_str}</code>\n"
+                        f"<code>────────────────────────────</code>\n\n"
+                        f"🎯 <b>Neeche buttons se game shuru karein ya Accounts manage karein:</b>"
+                    )
+                    safe_edit(message.chat.id, msg_wait.message_id, confirmed_text, reply_markup=get_main_keyboard(plays, user_id))
+                else:
+                    safe_edit(
+                        message.chat.id,
+                        msg_wait.message_id,
+                        f"[✖] OTP verification failed: {safe_html(res_msg)}\n\n"
+                        f"▸ <b>Re-enter correct OTP</b> (ya 'cancel' likhein):"
+                    )
+                return
+            else:
+                bot.send_message(message.chat.id, "⚠️ Kripya 6-digit OTP enter karein:")
+                return
+
+        # 3. State: IDLE
+        u = get_user(user_id)
         if (len(clean_digits) == 10) or (len(clean_digits) == 12 and clean_digits.startswith("91")):
             phone = clean_digits[-10:]
-            set_pending_phone(user_id, phone)
-            msg_wait = bot.send_message(
-                message.chat.id,
-                f"⏳ Transmitting OTP to <b>+91 {phone}</b> ..."
+            markup = types.InlineKeyboardMarkup()
+            markup.add(
+                types.InlineKeyboardButton(f"📲 Yes, Send OTP to +91 {phone}", callback_data=f"send_otp_{phone}"),
+                types.InlineKeyboardButton("« Cancel", callback_data="act_menu")
             )
-
-            client = CokeClient()
-            ok, res_msg = client.send_otp(phone)
-            if ok:
-                safe_edit(
-                    message.chat.id,
-                    msg_wait.message_id,
-                    f"[✔] <b>OTP Dispatched!</b>\n+91 {phone} par 6-digit OTP check karein.\n\n"
-                    f"▸ <b>Enter OTP:</b>"
-                )
-            else:
-                safe_edit(
-                    message.chat.id,
-                    msg_wait.message_id,
-                    f"[✖] OTP send failed: {safe_html(res_msg)}\n\n"
-                    f"▸ <b>Phone number (10 digits):</b>"
-                )
+            bot.send_message(
+                message.chat.id,
+                f"Kya aap <b>+91 {phone}</b> par OTP bhejkar login / account add karna chahte hain?",
+                reply_markup=markup
+            )
             return
 
-        # 2. User has a pending phone and entered an OTP (4-8 digits)
-        pending_phone = u.get('pending_phone') if u else None
-        if pending_phone and (4 <= len(clean_digits) <= 8):
-            otp = clean_digits
-            msg_wait = bot.send_message(
-                message.chat.id,
-                f"⏳ Verifying OTP for +91 {pending_phone} ..."
-            )
-
-            client = CokeClient()
-            ok, res_msg, login_data = client.verify_otp(pending_phone, otp)
-
-            if ok and login_data:
-                save_session(user_id, login_data['phone'], login_data['name'], login_data['cookies'])
-                stats = client.get_stats() or {}
-                plays = stats.get('plays_remaining', 0)
-                best = stats.get('best_score', 0)
-                rank = stats.get('rank')
-                rank_str = f"#{rank}" if rank else "UNRANKED"
-
-                confirmed_text = (
-                    f"✅ <b>LOGIN SUCCESSFUL!</b>\n"
-                    f"<code>────────────────────────────</code>\n"
-                    f"👤 <b>Account :</b> <code>{safe_html(login_data['name'])}</code>\n"
-                    f"📱 <b>Phone   :</b> <code>+91 {safe_html(login_data['phone'])}</code>\n"
-                    f"❤️ <b>Lives   :</b> <code>{plays} / 5</code>\n"
-                    f"🏆 <b>Best    :</b> <code>{best} pts</code>\n"
-                    f"🌐 <b>Rank    :</b> <code>{rank_str}</code>\n"
-                    f"<code>────────────────────────────</code>\n\n"
-                    f"🎯 <b>Neeche buttons se game shuru karein:</b>"
-                )
-                safe_edit(message.chat.id, msg_wait.message_id, confirmed_text, reply_markup=get_main_keyboard(plays))
-            else:
-                safe_edit(
-                    message.chat.id,
-                    msg_wait.message_id,
-                    f"[✖] OTP verification failed: {safe_html(res_msg)}\n\n"
-                    f"▸ <b>Re-enter correct OTP:</b>"
-                )
-            return
-
-        # 3. User is logged in and entered target score number
+        # 4. User is logged in and entered target score number
         if u and u.get('cookies') and clean_digits.isdigit():
             try:
                 target_score = int(clean_digits)
-                if target_score < 50:
-                    bot.reply_to(message, "Score 50 se bada hona chahiye.", reply_markup=get_main_keyboard())
+                if target_score >= 50:
+                    update_target(user_id, target_score)
+                    launch_game(message.chat.id, user_id, u, target_score)
                     return
-                update_target(user_id, target_score)
-                launch_game(message.chat.id, user_id, u, target_score)
-                return
             except ValueError:
                 pass
 
