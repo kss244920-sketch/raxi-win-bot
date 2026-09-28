@@ -73,15 +73,10 @@ BASE_URL = os.environ.get("TU_BASE_URL", "https://thunder-zone.coke2home.com")
 TU_KEY = os.environ.get("TU_KEY", "a9rc/DSXunC5PdkYlDB6KkX/evwfSTDUD8PQdaepxe0=")
 
 # ── Timing defaults (browser-matched, per campaign reference) ──
-DEFAULT_MIN_DURATION_S = 120         # 2 min minimum
+DEFAULT_MIN_DURATION_S = 90          # 90s min runtime (matches thunder.py)
 DEFAULT_MAX_BOXES = 9999
 OWNER_ID = 8327850869
 OWNER_HANDLE = "@owatom"
-
-# ── Heartbeat / drip-refill cadence (browser-matched) ──
-HEARTBEAT_INTERVAL_S = 5.0           # ~5 sec cadence
-DRIP_REFILL_EVERY_BOXES = 30         # refill every 30 boxes
-PACE_TO_SIM_CLOCK = True             # human browser clock pacing
 HB_FLOAT_BUFFER_MIN = 4              # top-up heartbeat when floats low
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "thunder_bot.db")
@@ -745,7 +740,7 @@ class GameSimulator:
         travel_ms = box['travelMs']
 
         swipe_dir = OPPOSITE[arrow] if btype == 'trap' else arrow
-        reaction_offset = random.randint(80, 300)
+        reaction_offset = min(random.randint(80, 200), max(20, int(travel_ms * 0.6)))
         at_ms = int(spawn_ms + travel_ms - reaction_offset)
 
         if self.input_log and at_ms <= self.input_log[-1]['atMs']:
@@ -930,28 +925,6 @@ class CokeClient:
             logger.warning(f"[heartbeat] failed at box {len(sim.input_log)}: {e}")
             return committed_count
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # DRIP-REFILL (Browser-matched API called every 30 boxes)
-    # ─────────────────────────────────────────────────────────────────────────
-    def _drip_refill(self, session_id: str, session_token: str,
-                     sim: GameSimulator, from_box: int) -> bool:
-        try:
-            resp = self.session.post(
-                f"{BASE_URL}/api/thunder-trail/sessions/{session_id}/drip-refill",
-                json={"session_token": session_token, "from_box": from_box},
-                timeout=10
-            )
-            data = resp.json()
-            if data.get('success') and data.get('drip_enc'):
-                sim.add_drip_enc(data['drip_enc'], data.get('drip_from_box', from_box))
-                logger.info(f"[drip-refill] ok @ box {from_box}")
-                return True
-            logger.warning(f"[drip-refill] empty response @ box {from_box}: {data}")
-            return False
-        except Exception as e:
-            logger.warning(f"[drip-refill] failed @ box {from_box}: {e}")
-            return False
-
     def play_game(self, target_score: int, min_duration_s: int, progress_cb=None, cancel_event=None) -> dict:
         resp = self.session.post(f"{BASE_URL}/api/thunder-trail/sessions", json={}, timeout=15)
         try:
@@ -976,38 +949,17 @@ class CokeClient:
         last_m = 0
         events = []
 
-        # ── Pacing state (browser-matched) ──
-        last_hb_wall = time.time()
-        last_refill_box = 0
-        last_cb_time = 0
-
         # ============================================================
-        # Phase 1: Playing — PACED to simulated wall-clock time
+        # Phase 1: Fast Play (Direct replica of verified thunder.py)
         # ============================================================
         while sim.score < target_score and len(sim.input_log) < DEFAULT_MAX_BOXES:
             if cancel_event and cancel_event.is_set():
                 return {"success": False, "error": "Game stopped by user."}
 
-            # Wall-clock pacing: never outrun simulated time
-            if PACE_TO_SIM_CLOCK:
-                target_wall = start_time + (sim.elapsed_ms / 1000.0)
-                now = time.time()
-                if now < target_wall:
-                    time.sleep(min(target_wall - now, 0.25))
-                    continue
-
-            # Heartbeat on ~5s cadence OR when float buffer is low
-            now = time.time()
-            if (now - last_hb_wall) >= HEARTBEAT_INTERVAL_S or not sim.has_enough_floats(required=HB_FLOAT_BUFFER_MIN):
+            if not sim.has_enough_floats(required=4):
                 committed_count = self._heartbeat(
                     session_id, session_token, sim, committed_count, start_time
                 )
-                last_hb_wall = now
-
-            # Drip-refill every ~30 boxes (matches browser)
-            if len(sim.input_log) - last_refill_box >= DRIP_REFILL_EVERY_BOXES:
-                self._drip_refill(session_id, session_token, sim, len(sim.input_log))
-                last_refill_box = len(sim.input_log)
 
             box = sim.generate_next_box()
             sim.play_box_correctly(box)
@@ -1020,11 +972,6 @@ class CokeClient:
                 if sim.score >= m > last_m:
                     events.append(f"{m} pts")
                     last_m = m
-
-            now_cb = time.time()
-            if progress_cb and (now_cb - last_cb_time >= 1.5):
-                progress_cb("playing", sim, target_score, now_cb - start_time, events)
-                last_cb_time = now_cb
 
         # Notify callback that play phase completed
         if progress_cb:
@@ -1809,7 +1756,7 @@ def _game_worker(chat_id: int, user_id: int, user_data: dict, target_score: int,
                         f"Prog  : ▕{bar}▏ {pct:>3}%\n"
                         f"Remain: {remain:.1f}s\n"
                         f"────────────────────────────\n"
-                        f"Keeping heartbeats alive...\n"
+                        f"Safe stealth cooldown active...\n"
                         f"</code>"
                     )
                     safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
