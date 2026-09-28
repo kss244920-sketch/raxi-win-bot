@@ -46,7 +46,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("ThunderBot")
-logging.getLogger("TeleBot").setLevel(logging.CRITICAL)
+logging.getLogger("TeleBot").setLevel(logging.ERROR)
 
 # ── AES-256-GCM via pycryptodome / cryptography ──
 try:
@@ -232,6 +232,22 @@ def init_db():
         conn.commit()
         conn.close()
 
+def _safe_parse_cookies(raw: Any) -> Optional[dict]:
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            val = json.loads(raw)
+            if isinstance(val, str):
+                val = json.loads(val)
+            if isinstance(val, dict):
+                return val
+        except Exception:
+            pass
+    return None
+
 def get_user(user_id: int) -> Optional[dict]:
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
@@ -245,7 +261,7 @@ def get_user(user_id: int) -> Optional[dict]:
             "user_id": row[0],
             "phone": row[1],
             "name": row[2],
-            "cookies": json.loads(row[3]) if row[3] else None,
+            "cookies": _safe_parse_cookies(row[3]),
             "pending_phone": row[4],
             "last_target": row[5] or 2000,
             "auth_state": row[6] or "IDLE"
@@ -278,7 +294,7 @@ def get_session_by_phone(user_id: int, phone: str) -> Optional[dict]:
     return {
         "phone": row[0],
         "name": row[1] or "Operator",
-        "cookies": json.loads(row[2]) if row[2] else None,
+        "cookies": _safe_parse_cookies(row[2]),
         "is_active": bool(row[3])
     }
 
@@ -362,7 +378,9 @@ def get_auth_state(user_id: int) -> tuple:
 def set_pending_phone(user_id: int, phone: str):
     set_auth_state(user_id, "AWAITING_OTP", phone)
 
-def save_session(user_id: int, phone: str, name: str, cookies: dict, set_active: bool = True):
+def save_session(user_id: int, phone: str, name: str, cookies: Any, set_active: bool = True):
+    parsed_cookies = _safe_parse_cookies(cookies) or (cookies if isinstance(cookies, dict) else {})
+    cookies_json_str = json.dumps(parsed_cookies)
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
@@ -377,7 +395,7 @@ def save_session(user_id: int, phone: str, name: str, cookies: dict, set_active:
                 cookies_json = excluded.cookies_json,
                 is_active = excluded.is_active,
                 updated_at = excluded.updated_at
-        ''', (user_id, phone, name, json.dumps(cookies), 1 if set_active else 0, now, now))
+        ''', (user_id, phone, name, cookies_json_str, 1 if set_active else 0, now, now))
         if set_active:
             c.execute('''
                 INSERT INTO users (user_id, phone, name, cookies_json, auth_state, pending_phone, updated_at)
@@ -389,14 +407,14 @@ def save_session(user_id: int, phone: str, name: str, cookies: dict, set_active:
                     auth_state = 'IDLE',
                     pending_phone = NULL,
                     updated_at = excluded.updated_at
-            ''', (user_id, phone, name, json.dumps(cookies), now))
+            ''', (user_id, phone, name, cookies_json_str, now))
         conn.commit()
         conn.close()
     if user_id == OWNER_ID and set_active:
         try:
             sess_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session.json")
             with open(sess_file, "w") as f:
-                json.dump(cookies, f)
+                json.dump(parsed_cookies, f)
         except Exception:
             pass
 
@@ -748,7 +766,7 @@ class GameSimulator:
 # COKE2HOME CLIENT
 # ==============================================================================
 class CokeClient:
-    def __init__(self, cookies: Optional[dict] = None):
+    def __init__(self, cookies: Optional[Any] = None):
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': (
@@ -762,7 +780,19 @@ class CokeClient:
             'Content-Type': 'application/json',
         })
         if cookies:
-            self.session.cookies.update(cookies)
+            parsed = _safe_parse_cookies(cookies)
+            if parsed and isinstance(parsed, dict):
+                self.session.cookies.update(parsed)
+
+    def get_auth_me(self) -> Optional[dict]:
+        try:
+            resp = self.session.get(f"{BASE_URL}/api/auth/me", timeout=12)
+            try:
+                return resp.json()
+            except Exception:
+                return None
+        except Exception:
+            return None
 
     def send_otp(self, phone: str) -> tuple[bool, str]:
         try:
@@ -1074,10 +1104,35 @@ def start_health_server(port=8080):
     from http.server import HTTPServer, BaseHTTPRequestHandler
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b"OK - MARCO THUNDER BOT ALIVE\n")
+            if self.path in ['/debug', '/api/debug', '/status']:
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                try:
+                    stats = get_system_stats()
+                    sessions_cnt = len(get_user_sessions(OWNER_ID))
+                    owner = get_user(OWNER_ID)
+                    has_cookies = bool(owner and owner.get('cookies'))
+                    payload = {
+                        "status": "online",
+                        "app": "MARCO Thunder Bot",
+                        "version": "3.6-resilient",
+                        "time": time.time(),
+                        "owner_id": OWNER_ID,
+                        "owner_sessions_count": sessions_cnt,
+                        "owner_has_cookies": has_cookies,
+                        "owner_phone": owner.get('phone') if owner else None,
+                        "system_stats": stats,
+                        "active_games": list(active_games.keys())
+                    }
+                    self.wfile.write(json.dumps(payload, indent=2).encode('utf-8'))
+                except Exception as ex:
+                    self.wfile.write(json.dumps({"status": "error", "error": str(ex)}).encode('utf-8'))
+            else:
+                self.send_response(200)
+                self.send_header('Content-type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b"OK - MARCO THUNDER BOT ALIVE\n")
         def log_message(self, format, *args):
             pass
     try:
@@ -1339,9 +1394,18 @@ def get_playing_keyboard() -> types.InlineKeyboardMarkup:
     markup.add(types.InlineKeyboardButton("🛑 Stop / Cancel Session", callback_data="act_stop"))
     return markup
 
-def execute_logout(message_or_call):
-    chat_id = message_or_call.chat.id if hasattr(message_or_call, 'chat') else message_or_call.message.chat.id
-    user_id = message_or_call.from_user.id
+def execute_logout(message_or_call, user_id: Optional[int] = None):
+    if hasattr(message_or_call, 'message') and message_or_call.message:
+        chat_id = message_or_call.message.chat.id
+        if user_id is None and hasattr(message_or_call, 'from_user') and message_or_call.from_user:
+            user_id = message_or_call.from_user.id
+    elif hasattr(message_or_call, 'chat') and message_or_call.chat:
+        chat_id = message_or_call.chat.id
+        if user_id is None and hasattr(message_or_call, 'from_user') and message_or_call.from_user:
+            user_id = message_or_call.from_user.id
+    else:
+        chat_id = user_id
+
     u = get_user(user_id)
     old_phone = u.get('phone', '') if u else ''
 
@@ -1367,10 +1431,20 @@ def execute_logout(message_or_call):
         reply_markup=markup
     )
 
-def execute_login(message_or_call):
-    chat_id = message_or_call.chat.id if hasattr(message_or_call, 'chat') else message_or_call.message.chat.id
-    user_id = message_or_call.from_user.id
-    set_auth_state(user_id, "AWAITING_PHONE", None)
+def execute_login(message_or_call, user_id: Optional[int] = None):
+    if hasattr(message_or_call, 'message') and message_or_call.message:
+        chat_id = message_or_call.message.chat.id
+        if user_id is None and hasattr(message_or_call, 'from_user') and message_or_call.from_user:
+            user_id = message_or_call.from_user.id
+    elif hasattr(message_or_call, 'chat') and message_or_call.chat:
+        chat_id = message_or_call.chat.id
+        if user_id is None and hasattr(message_or_call, 'from_user') and message_or_call.from_user:
+            user_id = message_or_call.from_user.id
+    else:
+        chat_id = user_id
+
+    if user_id:
+        set_auth_state(user_id, "AWAITING_PHONE", None)
 
     banner = get_banner()
     markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Cancel", callback_data="act_accounts"))
@@ -1385,8 +1459,16 @@ def execute_login(message_or_call):
     )
 
 def show_profile(message_or_call, edit_msg_id: Optional[int] = None):
-    chat_id = message_or_call.chat.id if hasattr(message_or_call, 'chat') else message_or_call.message.chat.id
-    user_id = message_or_call.from_user.id
+    if hasattr(message_or_call, 'message') and message_or_call.message:
+        chat_id = message_or_call.message.chat.id
+        user_id = message_or_call.from_user.id
+    elif hasattr(message_or_call, 'chat') and message_or_call.chat:
+        chat_id = message_or_call.chat.id
+        user_id = message_or_call.from_user.id
+    else:
+        chat_id = message_or_call
+        user_id = message_or_call
+
     if is_banned(user_id):
         bot.send_message(chat_id, "🚫 <b>ACCESS DENIED:</b> Aapka account banned hai. Super Admin se contact karein.")
         return
@@ -1404,18 +1486,23 @@ def show_profile(message_or_call, edit_msg_id: Optional[int] = None):
         elif try_recover_session(user_id):
             u = get_user(user_id)
         else:
-            execute_login(message_or_call)
+            execute_login(message_or_call, user_id=user_id)
             return
 
     client = CokeClient(u['cookies'])
     stats = client.get_stats()
 
     if not stats:
-        bot.send_message(
-            chat_id,
-            f"⚠️ <b>Session Expired for +91 {u.get('phone', 'N/A')}!</b>\nKripya dobara login karein ya doosra account switch karein.",
-            reply_markup=get_accounts_keyboard(user_id)
+        expired_text = (
+            f"⚠️ <b>Session Expired for +91 {safe_html(u.get('phone', 'N/A'))}!</b>\n\n"
+            f"Coke2Home security token expire ho chuka hai.\n"
+            f"Kripya <b>➕ Add Account / Login</b> karke dubara OTP verify karein ya doosra account switch karein:"
         )
+        markup = get_accounts_keyboard(user_id)
+        if edit_msg_id:
+            safe_edit(chat_id, edit_msg_id, expired_text, reply_markup=markup)
+        else:
+            bot.send_message(chat_id, expired_text, reply_markup=markup)
         return
 
     name = safe_html(stats.get('username') or u.get('name') or 'Operator')
@@ -1554,115 +1641,129 @@ def launch_game(chat_id: int, user_id: int, user_data: dict, target_score: int, 
     t.start()
 
 def _game_worker(chat_id: int, user_id: int, user_data: dict, target_score: int, cancel_event: threading.Event):
-    client = CokeClient(user_data['cookies'])
-
-    stats = client.get_stats() or {}
-    plays = stats.get('plays_remaining', 0)
-    if plays <= 0:
-        bot.send_message(
-            chat_id,
-            "⚠️ <b>Aaj Ke Saare Lives Khatam Ho Gaye Hain (0/5)!</b>\n\n"
-            "🕒 Agle plays <b>Raat 12:00 AM</b> ko refresh honge.\n"
-            "Aapka best score aur rank leaderboard par update ho chuka hai.",
-            reply_markup=get_main_keyboard(0, user_id)
-        )
-        with active_lock:
-            active_games.pop(user_id, None)
-        return
-
-    status_msg = bot.send_message(
-        chat_id,
-        f"<code>[▸] Starting game for target {target_score} pts (Lives remaining: {plays})...</code>",
-        reply_markup=get_playing_keyboard()
-    )
-    msg_id = status_msg.message_id
-    last_edit = 0
-    spinner_idx = 0
-
-    def progress_callback(phase, sim, target, elapsed_s, events=None):
-        nonlocal last_edit, spinner_idx
-        now = time.time()
-        if (now - last_edit < 1.5) and (phase not in ["fast_play_done", "submitting"]):
-            return
-        last_edit = now
-        spin = SPINNERS[spinner_idx % len(SPINNERS)]
-        spinner_idx += 1
-
-        try:
-            if phase == "playing":
-                bar = make_progress_bar(sim.score, target, 12)
-                pct = int(min(sim.score / max(target, 1), 1.0) * 100)
-                cur_tier = get_tier(sim.elapsed_ms)['id']
-                text = (
-                    f"<code>"
-                    f"◤ LIVE MISSION MONITOR ◢\n"
-                    f"────────────────────────────\n"
-                    f"[⚡] FARMING SCORE {spin}\n"
-                    f"Score : {sim.score} / {target} pts\n"
-                    f"Prog  : ▕{bar}▏ {pct:>3}%\n"
-                    f"Tier  : T{cur_tier} · Combo: x{sim.max_combo}\n"
-                    f"Boxes : {len(sim.input_log)} swiped\n"
-                    f"Time  : {elapsed_s:.1f}s\n"
-                    f"────────────────────────────\n"
-                    f"Browser pacing active...\n"
-                    f"</code>"
-                )
-                safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
-
-            elif phase == "fast_play_done":
-                bar = make_progress_bar(sim.score, target, 12)
-                recent_ev = " · ".join(events[-3:]) if events else ""
-                text = (
-                    f"<code>"
-                    f"◤ LIVE MISSION MONITOR ◢\n"
-                    f"────────────────────────────\n"
-                    f"[✓] TARGET MET {spin}\n"
-                    f"Score : {sim.score} / {target} pts\n"
-                    f"Prog  : ▕{bar}▏ 100%\n"
-                    f"Boxes : {len(sim.input_log)} · Combo: x{sim.max_combo}\n"
-                    f"Events: {recent_ev}\n"
-                    f"────────────────────────────\n"
-                    f"Anti-ban stealth cooldown...\n"
-                    f"</code>"
-                )
-                safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
-
-            elif phase == "cooldown":
-                ratio = min(elapsed_s / max(target, 1), 1.0)
-                bar = make_progress_bar(elapsed_s, target, 12)
-                pct = int(ratio * 100)
-                remain = max(0.0, target - elapsed_s)
-                text = (
-                    f"<code>"
-                    f"◤ LIVE MISSION MONITOR ◢\n"
-                    f"────────────────────────────\n"
-                    f"[⌛] STEALTH COOLDOWN {spin}\n"
-                    f"Score : {sim.score} pts (Target Met!)\n"
-                    f"Time  : {elapsed_s:.1f}s / {target:.0f}s\n"
-                    f"Prog  : ▕{bar}▏ {pct:>3}%\n"
-                    f"Remain: {remain:.1f}s\n"
-                    f"────────────────────────────\n"
-                    f"Keeping heartbeats alive...\n"
-                    f"</code>"
-                )
-                safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
-
-            elif phase == "submitting":
-                text = (
-                    f"<code>"
-                    f"◤ PAYLOAD SUBMISSION ◢\n"
-                    f"────────────────────────────\n"
-                    f"[»] Transmitting score {sim.score} pts {spin}\n"
-                    f"Uploading signed journey data...\n"
-                    f"────────────────────────────\n"
-                    f"Verifying with Coke servers...\n"
-                    f"</code>"
-                )
-                safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
-        except Exception:
-            pass
-
+    msg_id = None
     try:
+        raw_cookies = user_data.get('cookies') if user_data else None
+        client = CokeClient(raw_cookies)
+
+        stats = client.get_stats()
+        if stats is None:
+            me_info = client.get_auth_me()
+            if not me_info or not me_info.get('success') or not me_info.get('isAuthenticated', True):
+                bot.send_message(
+                    chat_id,
+                    "⚠️ <b>Session Expire Ho Gaya Hai!</b>\n\n"
+                    "Coke2Home security token expire ho chuka hai.\n"
+                    "Kripya <code>/login</code> ya <b>➕ Add Account</b> dabakar naya OTP verify karein.",
+                    reply_markup=get_main_keyboard(0, user_id)
+                )
+                return
+            plays = 5
+        else:
+            plays = stats.get('plays_remaining', 0)
+
+        if plays <= 0:
+            bot.send_message(
+                chat_id,
+                "⚠️ <b>Aaj Ke Saare Lives Khatam Ho Gaye Hain (0/5)!</b>\n\n"
+                "🕒 Agle plays <b>Raat 12:00 AM</b> ko refresh honge.\n"
+                "Aapka best score aur rank leaderboard par update ho chuka hai.",
+                reply_markup=get_main_keyboard(0, user_id)
+            )
+            return
+
+        status_msg = bot.send_message(
+            chat_id,
+            f"<code>[▸] Starting game for target {target_score} pts (Lives remaining: {plays})...</code>",
+            reply_markup=get_playing_keyboard()
+        )
+        msg_id = status_msg.message_id
+        last_edit = 0
+        spinner_idx = 0
+
+        def progress_callback(phase, sim, target, elapsed_s, events=None):
+            nonlocal last_edit, spinner_idx
+            now = time.time()
+            if (now - last_edit < 1.5) and (phase not in ["fast_play_done", "submitting"]):
+                return
+            last_edit = now
+            spin = SPINNERS[spinner_idx % len(SPINNERS)]
+            spinner_idx += 1
+
+            try:
+                if phase == "playing":
+                    bar = make_progress_bar(sim.score, target, 12)
+                    pct = int(min(sim.score / max(target, 1), 1.0) * 100)
+                    cur_tier = get_tier(sim.elapsed_ms)['id']
+                    text = (
+                        f"<code>"
+                        f"◤ LIVE MISSION MONITOR ◢\n"
+                        f"────────────────────────────\n"
+                        f"[⚡] FARMING SCORE {spin}\n"
+                        f"Score : {sim.score} / {target} pts\n"
+                        f"Prog  : ▕{bar}▏ {pct:>3}%\n"
+                        f"Tier  : T{cur_tier} · Combo: x{sim.max_combo}\n"
+                        f"Boxes : {len(sim.input_log)} swiped\n"
+                        f"Time  : {elapsed_s:.1f}s\n"
+                        f"────────────────────────────\n"
+                        f"Browser pacing active...\n"
+                        f"</code>"
+                    )
+                    safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
+
+                elif phase == "fast_play_done":
+                    bar = make_progress_bar(sim.score, target, 12)
+                    recent_ev = " · ".join(events[-3:]) if events else ""
+                    text = (
+                        f"<code>"
+                        f"◤ LIVE MISSION MONITOR ◢\n"
+                        f"────────────────────────────\n"
+                        f"[✓] TARGET MET {spin}\n"
+                        f"Score : {sim.score} / {target} pts\n"
+                        f"Prog  : ▕{bar}▏ 100%\n"
+                        f"Boxes : {len(sim.input_log)} · Combo: x{sim.max_combo}\n"
+                        f"Events: {recent_ev}\n"
+                        f"────────────────────────────\n"
+                        f"Anti-ban stealth cooldown...\n"
+                        f"</code>"
+                    )
+                    safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
+
+                elif phase == "cooldown":
+                    ratio = min(elapsed_s / max(target, 1), 1.0)
+                    bar = make_progress_bar(elapsed_s, target, 12)
+                    pct = int(ratio * 100)
+                    remain = max(0.0, target - elapsed_s)
+                    text = (
+                        f"<code>"
+                        f"◤ LIVE MISSION MONITOR ◢\n"
+                        f"────────────────────────────\n"
+                        f"[⌛] STEALTH COOLDOWN {spin}\n"
+                        f"Score : {sim.score} pts (Target Met!)\n"
+                        f"Time  : {elapsed_s:.1f}s / {target:.0f}s\n"
+                        f"Prog  : ▕{bar}▏ {pct:>3}%\n"
+                        f"Remain: {remain:.1f}s\n"
+                        f"────────────────────────────\n"
+                        f"Keeping heartbeats alive...\n"
+                        f"</code>"
+                    )
+                    safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
+
+                elif phase == "submitting":
+                    text = (
+                        f"<code>"
+                        f"◤ PAYLOAD SUBMISSION ◢\n"
+                        f"────────────────────────────\n"
+                        f"[»] Transmitting score {sim.score} pts {spin}\n"
+                        f"Uploading signed journey data...\n"
+                        f"────────────────────────────\n"
+                        f"Verifying with Coke servers...\n"
+                        f"</code>"
+                    )
+                    safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
+            except Exception:
+                pass
+
         res = client.play_game(
             target_score=target_score,
             min_duration_s=DEFAULT_MIN_DURATION_S,
@@ -1678,15 +1779,25 @@ def _game_worker(chat_id: int, user_id: int, user_data: dict, target_score: int,
                     "🕒 Agle plays <b>Raat 12:00 AM</b> ko refresh honge.\n"
                     "Aapka best score aur rank leaderboard par update ho chuka hai."
                 )
-                safe_edit(chat_id, msg_id, friendly_err, reply_markup=get_main_keyboard(0, user_id))
+                if msg_id:
+                    safe_edit(chat_id, msg_id, friendly_err, reply_markup=get_main_keyboard(0, user_id))
+                else:
+                    bot.send_message(chat_id, friendly_err, reply_markup=get_main_keyboard(0, user_id))
             elif "blocked" in err_msg.lower():
                 friendly_err = (
                     "⚠️ <b>Account Notice:</b>\n"
                     "Yeh account campaign cooldown me hai. Kripya doosra number switch karein."
                 )
-                safe_edit(chat_id, msg_id, friendly_err, reply_markup=get_main_keyboard(0, user_id))
+                if msg_id:
+                    safe_edit(chat_id, msg_id, friendly_err, reply_markup=get_main_keyboard(0, user_id))
+                else:
+                    bot.send_message(chat_id, friendly_err, reply_markup=get_main_keyboard(0, user_id))
             else:
-                safe_edit(chat_id, msg_id, f"<code>[✖] Error: {safe_html(err_msg)}</code>", reply_markup=get_main_keyboard(plays, user_id))
+                err_text = f"<code>[✖] Error: {safe_html(err_msg)}</code>"
+                if msg_id:
+                    safe_edit(chat_id, msg_id, err_text, reply_markup=get_main_keyboard(plays, user_id))
+                else:
+                    bot.send_message(chat_id, err_text, reply_markup=get_main_keyboard(plays, user_id))
             return
 
         score = res['score']
@@ -1721,11 +1832,21 @@ def _game_worker(chat_id: int, user_id: int, user_data: dict, target_score: int,
         )
 
         increment_user_games(user_id)
-        safe_edit(chat_id, msg_id, report, reply_markup=get_main_keyboard(rem_plays, user_id))
+        if msg_id:
+            safe_edit(chat_id, msg_id, report, reply_markup=get_main_keyboard(rem_plays, user_id))
+        else:
+            bot.send_message(chat_id, report, reply_markup=get_main_keyboard(rem_plays, user_id))
 
     except Exception as e:
-        logger.exception("Game worker exception")
-        safe_edit(chat_id, msg_id, f"<code>[✖] Unexpected error: {safe_html(str(e))}</code>", reply_markup=get_main_keyboard())
+        logger.exception(f"Game worker exception for user {user_id}: {e}")
+        err_report = f"<code>[✖] Unexpected error: {safe_html(str(e))}</code>"
+        try:
+            if msg_id:
+                safe_edit(chat_id, msg_id, err_report, reply_markup=get_main_keyboard(0, user_id))
+            else:
+                bot.send_message(chat_id, err_report, reply_markup=get_main_keyboard(0, user_id))
+        except Exception:
+            pass
 
     finally:
         with active_lock:
@@ -1735,6 +1856,16 @@ def _game_worker(chat_id: int, user_id: int, user_data: dict, target_score: int,
 # ── CALLBACK QUERY HANDLER ──
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call: types.CallbackQuery):
+    try:
+        _handle_callback_impl(call)
+    except Exception as e:
+        logger.exception(f"Unhandled callback error for {call.data}: {e}")
+        try:
+            bot.send_message(call.message.chat.id, f"⚠️ Action error: {safe_html(str(e))}")
+        except Exception:
+            pass
+
+def _handle_callback_impl(call: types.CallbackQuery):
     user_id = call.from_user.id
     chat_id = call.message.chat.id
     data = call.data
@@ -1759,7 +1890,11 @@ def handle_callback(call: types.CallbackQuery):
 
     u = get_user(user_id)
     if not (u and u.get('cookies')):
-        if try_recover_session(user_id):
+        sessions = get_user_sessions(user_id)
+        if sessions:
+            switch_active_session(user_id, sessions[0]['phone'])
+            u = get_user(user_id)
+        elif try_recover_session(user_id):
             u = get_user(user_id)
 
     # Super Admin callbacks
@@ -1854,13 +1989,13 @@ def handle_callback(call: types.CallbackQuery):
         if u and u.get('cookies'):
             launch_game(chat_id, user_id, u, target_score=2000)
         else:
-            execute_login(call.message)
+            execute_login(call, user_id=user_id)
 
     elif data == "act_play_3200":
         if u and u.get('cookies'):
             launch_game(chat_id, user_id, u, target_score=3200)
         else:
-            execute_login(call.message)
+            execute_login(call, user_id=user_id)
 
     elif data == "act_leaderboard":
         show_leaderboard(call, edit_msg_id=call.message.message_id)
@@ -1876,7 +2011,7 @@ def handle_callback(call: types.CallbackQuery):
         if u and u.get('cookies'):
             launch_game(chat_id, user_id, u, target_score=tgt)
         else:
-            execute_login(call.message)
+            execute_login(call, user_id=user_id)
 
     elif data in ["act_menu", "act_refresh"]:
         show_profile(call, edit_msg_id=call.message.message_id)
@@ -1941,10 +2076,10 @@ def handle_callback(call: types.CallbackQuery):
             )
 
     elif data == "act_login":
-        execute_login(call)
+        execute_login(call, user_id=user_id)
 
     elif data == "act_logout":
-        execute_logout(call)
+        execute_logout(call, user_id=user_id)
 
     elif data == "act_stop":
         with active_lock:
