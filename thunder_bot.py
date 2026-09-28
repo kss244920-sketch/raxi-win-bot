@@ -422,13 +422,6 @@ def save_session(user_id: int, phone: str, name: str, cookies: Any, set_active: 
             ''', (user_id, phone, name, cookies_json_str, now))
         conn.commit()
         conn.close()
-    if user_id == OWNER_ID and set_active:
-        try:
-            sess_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session.json")
-            with open(sess_file, "w") as f:
-                json.dump(parsed_cookies, f)
-        except Exception:
-            pass
 
 def update_target(user_id: int, target: int):
     with db_lock:
@@ -1202,35 +1195,6 @@ def safe_edit(chat_id: int, message_id: int, text: str, reply_markup=None) -> Op
         logger.warning(f"safe_edit failed: {e}")
         return None
 
-def try_recover_session(user_id: int) -> bool:
-    if user_id != OWNER_ID:
-        return False
-    # If user already has ANY sessions saved, do NOT auto-recover!
-    existing = get_user_sessions(user_id)
-    if existing:
-        return False
-    candidates = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "session.json"),
-        "/home/piyush/Downloads/Telegram Desktop/session.json",
-        "/home/piyush/Desktop/thunder_bot/session.json"
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            try:
-                with open(p, "r") as f:
-                    cookies = json.load(f)
-                client = CokeClient(cookies)
-                stats = client.get_stats()
-                if stats and (stats.get("username") or stats.get("plays_remaining") is not None):
-                    phone = cookies.get("phone") or "9911776852"
-                    uname = stats.get("username") or "Operator"
-                    save_session(user_id, phone, uname, cookies, set_active=True)
-                    logger.info(f"Auto-recovered session from {p} for user {user_id}")
-                    return True
-            except Exception as e:
-                logger.warning(f"Recovery attempt failed for {p}: {e}")
-    return False
-
 def get_banner() -> str:
     return (
         "<code>"
@@ -1598,6 +1562,8 @@ def show_profile(message_or_call, edit_msg_id: Optional[int] = None):
             markup.add(types.InlineKeyboardButton(f"📲 Re-Login +91 {phone} (Send OTP)", callback_data=f"send_otp_{raw_phone}"))
         markup.add(types.InlineKeyboardButton("📱 Switch Account", callback_data="act_accounts"))
         markup.add(types.InlineKeyboardButton("➕ Add New Number", callback_data="act_login"))
+        if raw_phone:
+            markup.add(types.InlineKeyboardButton(f"🗑 Forget / Remove Account (+91 {phone})", callback_data=f"del_acc_{raw_phone}"))
         if edit_msg_id:
             safe_edit(chat_id, edit_msg_id, expired_text, reply_markup=markup)
         else:
@@ -2618,9 +2584,6 @@ def main():
     print("=" * 60)
 
     init_db()
-
-    # Pre-recover session for owner if available
-    try_recover_session(8327850869)
 
     try:
         bot.delete_my_commands()
