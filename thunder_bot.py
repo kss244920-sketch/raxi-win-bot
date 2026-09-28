@@ -313,10 +313,18 @@ def switch_active_session(user_id: int, phone: str) -> bool:
         ''', (user_id, phone))
         row = c.fetchone()
         if row:
+            now = time.time()
             c.execute('''
-                UPDATE users SET phone = ?, name = ?, cookies_json = ?, auth_state = 'IDLE', pending_phone = NULL, updated_at = ?
-                WHERE user_id = ?
-            ''', (row[0], row[1], row[2], time.time(), user_id))
+                INSERT INTO users (user_id, phone, name, cookies_json, auth_state, pending_phone, updated_at)
+                VALUES (?, ?, ?, ?, 'IDLE', NULL, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    phone = excluded.phone,
+                    name = excluded.name,
+                    cookies_json = excluded.cookies_json,
+                    auth_state = 'IDLE',
+                    pending_phone = NULL,
+                    updated_at = excluded.updated_at
+            ''', (user_id, row[0], row[1], row[2], now))
             conn.commit()
             conn.close()
             return True
@@ -328,23 +336,27 @@ def delete_session(user_id: int, phone: str) -> bool:
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
+        c.execute("SELECT is_active FROM user_sessions WHERE user_id = ? AND phone = ?", (user_id, phone))
+        row = c.fetchone()
+        was_active = bool(row and row[0])
         c.execute("DELETE FROM user_sessions WHERE user_id = ? AND phone = ?", (user_id, phone))
-        c.execute('''
-            SELECT phone, name, cookies_json FROM user_sessions
-            WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1
-        ''', (user_id,))
-        next_sess = c.fetchone()
-        if next_sess:
-            c.execute("UPDATE user_sessions SET is_active = 1 WHERE user_id = ? AND phone = ?", (user_id, next_sess[0]))
+        if was_active:
             c.execute('''
-                UPDATE users SET phone = ?, name = ?, cookies_json = ?, auth_state = 'IDLE', pending_phone = NULL, updated_at = ?
-                WHERE user_id = ?
-            ''', (next_sess[0], next_sess[1], next_sess[2], time.time(), user_id))
-        else:
-            c.execute('''
-                UPDATE users SET cookies_json = NULL, auth_state = 'IDLE', pending_phone = NULL, updated_at = ?
-                WHERE user_id = ?
-            ''', (time.time(), user_id))
+                SELECT phone, name, cookies_json FROM user_sessions
+                WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1
+            ''', (user_id,))
+            next_sess = c.fetchone()
+            if next_sess:
+                c.execute("UPDATE user_sessions SET is_active = 1 WHERE user_id = ? AND phone = ?", (user_id, next_sess[0]))
+                c.execute('''
+                    UPDATE users SET phone = ?, name = ?, cookies_json = ?, auth_state = 'IDLE', pending_phone = NULL, updated_at = ?
+                    WHERE user_id = ?
+                ''', (next_sess[0], next_sess[1], next_sess[2], time.time(), user_id))
+            else:
+                c.execute('''
+                    UPDATE users SET phone = NULL, name = NULL, cookies_json = NULL, auth_state = 'IDLE', pending_phone = NULL, updated_at = ?
+                    WHERE user_id = ?
+                ''', (time.time(), user_id))
         conn.commit()
         conn.close()
     return True
@@ -422,7 +434,13 @@ def update_target(user_id: int, target: int):
     with db_lock:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        c.execute("UPDATE users SET last_target = ? WHERE user_id = ?", (target, user_id))
+        c.execute('''
+            INSERT INTO users (user_id, last_target, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                last_target = excluded.last_target,
+                updated_at = excluded.updated_at
+        ''', (user_id, target, time.time()))
         conn.commit()
         conn.close()
 
@@ -431,7 +449,10 @@ def clear_session(user_id: int):
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
         c.execute("UPDATE user_sessions SET is_active = 0 WHERE user_id = ?", (user_id,))
-        c.execute("UPDATE users SET cookies_json = NULL, auth_state = 'IDLE', pending_phone = NULL WHERE user_id = ?", (user_id,))
+        c.execute('''
+            UPDATE users SET phone = NULL, name = NULL, cookies_json = NULL, auth_state = 'IDLE', pending_phone = NULL, updated_at = ?
+            WHERE user_id = ?
+        ''', (time.time(), user_id))
         conn.commit()
         conn.close()
 
@@ -1017,26 +1038,17 @@ class CokeClient:
             progress_cb("fast_play_done", sim, target_score, time.time() - start_time, events)
 
         # ============================================================
-        # Phase 2: Cooldown Wait — keep heartbeats alive
+        # Phase 2: Cooldown Wait — sleep without sending fake idle heartbeats
         # ============================================================
         elapsed = time.time() - start_time
         if elapsed < min_duration_s:
             while elapsed < min_duration_s:
                 if cancel_event and cancel_event.is_set():
                     return {"success": False, "error": "Game stopped by user."}
-
-                # Heartbeat every ~5s during cooldown
-                now = time.time()
-                if (now - last_hb_wall) >= HEARTBEAT_INTERVAL_S:
-                    committed_count = self._heartbeat(
-                        session_id, session_token, sim, committed_count, start_time
-                    )
-                    last_hb_wall = now
-
+                time.sleep(1.0)
                 elapsed = time.time() - start_time
                 if progress_cb:
                     progress_cb("cooldown", sim, min_duration_s, elapsed, events)
-                time.sleep(1.8)
 
         # ============================================================
         # Phase 3: Submit Score & Journey
@@ -1049,37 +1061,54 @@ class CokeClient:
             mk = BOX_NAME_MAP.get(k, k)
             mapped_hits[mk] = mapped_hits.get(mk, 0) + v
 
-        # duration_ms: max of simulated and wall clock (server-safe)
-        wall_ms = (time.time() - start_time) * 1000.0
-        duration_ms = int(max(sim.next_spawn_at_ms + 1000, wall_ms))
+        # duration_ms MUST match the simulation time of boxes + 1000ms (as in thunder.py)
+        duration_ms = sim.next_spawn_at_ms + 1000
 
-        self.session.post(f"{BASE_URL}/api/thunder-trail/sessions/{session_id}/score", json={
-            "session_token": session_token,
-            "final_score": sim.score,
-            "duration_ms": duration_ms,
-            "max_combo": sim.max_combo,
-            "box_counts": mapped_hits,
-            "seed": 0,
-            "input_log": sim.input_log,
-        }, timeout=15)
+        score_res = self.session.post(
+            f"{BASE_URL}/api/thunder-trail/sessions/{session_id}/score",
+            json={
+                "session_token": session_token,
+                "final_score": sim.score,
+                "duration_ms": duration_ms,
+                "max_combo": sim.max_combo,
+                "box_counts": mapped_hits,
+                "seed": 0,
+                "input_log": sim.input_log,
+            },
+            timeout=15
+        )
+        try:
+            score_data = score_res.json()
+        except Exception:
+            score_data = {}
+        logger.info(f"Score submission response: {score_data}")
 
         max_tier = 1
         for idx, t in enumerate(GAME_CONFIG['tiers'][:-1]):
             if duration_ms >= t['untilMs']:
                 max_tier = idx + 2
 
-        journey_resp = self.session.post(f"{BASE_URL}/api/thunder-trail/sessions/{session_id}/journey", json={
-            "session_token": session_token,
-            "seed": 0,
-            "input_log": sim.input_log,
-            "final_score": sim.score,
-            "duration_ms": duration_ms,
-            "max_combo": sim.max_combo,
-            "hit_counts": mapped_hits,
-            "max_tier_reached": max_tier,
-        }, timeout=15).json()
+        journey_res = self.session.post(
+            f"{BASE_URL}/api/thunder-trail/sessions/{session_id}/journey",
+            json={
+                "session_token": session_token,
+                "seed": 0,
+                "input_log": sim.input_log,
+                "final_score": sim.score,
+                "duration_ms": duration_ms,
+                "max_combo": sim.max_combo,
+                "hit_counts": mapped_hits,
+                "max_tier_reached": max_tier,
+            },
+            timeout=15
+        )
+        try:
+            journey_data = journey_res.json()
+        except Exception:
+            journey_data = {}
+        logger.info(f"Journey submission response: {journey_data}")
 
-        verified = journey_resp.get('success') and journey_resp.get('data', {}).get('score_valid', False)
+        verified = (journey_data.get('success') is True) and (journey_data.get('data', {}).get('score_valid') is True)
 
         stats = self.get_stats() or {}
         return {
@@ -1090,9 +1119,10 @@ class CokeClient:
             "duration_s": time.time() - start_time,
             "hit_counts": sim.hit_counts,
             "verified": verified,
+            "score_accepted": score_data.get('success', False),
             "rank": stats.get('rank'),
             "plays_remaining": stats.get('plays_remaining', 0),
-            "best_score": stats.get('best_score', sim.score),
+            "best_score": stats.get('best_score', sim.score if verified else 0),
         }
 
 
@@ -1214,12 +1244,12 @@ def get_banner() -> str:
 def get_main_keyboard(plays: int = 1, user_id: int = 0) -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup(row_width=2)
     b1 = types.InlineKeyboardButton("⚡ Farm 2000", callback_data="act_play_2000")
-    b2 = types.InlineKeyboardButton("🏆 Farm 3200 (Prize)", callback_data="act_play_3200")
-    b3 = types.InlineKeyboardButton("🎯 Choose Target", callback_data="act_target_menu")
-    b4 = types.InlineKeyboardButton("👑 Live Leaderboard", callback_data="act_leaderboard")
+    b2 = types.InlineKeyboardButton("🏆 Farm 3200", callback_data="act_play_3200")
+    b3 = types.InlineKeyboardButton("✍️ Custom Points", callback_data="act_custom_tgt")
+    b4 = types.InlineKeyboardButton("🎯 Choose Target", callback_data="act_target_menu")
     b5 = types.InlineKeyboardButton("📊 Refresh Status", callback_data="act_refresh")
-    b6 = types.InlineKeyboardButton("📱 Manage Accounts", callback_data="act_accounts")
-    b7 = types.InlineKeyboardButton("➕ Add Account", callback_data="act_login")
+    b6 = types.InlineKeyboardButton("👑 Leaderboard", callback_data="act_leaderboard")
+    b7 = types.InlineKeyboardButton("📱 Manage Accounts", callback_data="act_accounts")
     b8 = types.InlineKeyboardButton("🚪 Logout", callback_data="act_logout")
     markup.add(b1, b2)
     markup.add(b3, b4)
@@ -1234,23 +1264,28 @@ def get_accounts_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup()
     sessions = get_user_sessions(user_id)
 
+    has_active = False
     for s in sessions:
         phone_str = s['phone']
         name_str = s['name'] or 'Account'
         if s['is_active']:
+            has_active = True
             markup.add(types.InlineKeyboardButton(f"✅ +91 {phone_str} ({name_str}) [ACTIVE]", callback_data="act_refresh"))
         else:
-            markup.add(types.InlineKeyboardButton(f"🔄 Switch to: +91 {phone_str} ({name_str})", callback_data=f"switch_acc_{phone_str}"))
+            markup.add(types.InlineKeyboardButton(f"📲 Connect: +91 {phone_str} ({name_str})", callback_data=f"switch_acc_{phone_str}"))
 
-    b_add = types.InlineKeyboardButton("➕ Login New Account", callback_data="act_login")
-    b_out = types.InlineKeyboardButton("🚪 Logout Active", callback_data="act_logout")
-    markup.add(b_add, b_out)
+    b_add = types.InlineKeyboardButton("➕ Login / Add New Number", callback_data="act_login")
+    if has_active:
+        b_out = types.InlineKeyboardButton("🚪 Logout Active", callback_data="act_logout")
+        markup.add(b_add, b_out)
+    else:
+        markup.add(b_add)
 
     if sessions:
-        b_del = types.InlineKeyboardButton("🗑 Delete an Account", callback_data="act_delete_menu")
+        b_del = types.InlineKeyboardButton("🗑 Delete a Saved Account", callback_data="act_delete_menu")
         markup.add(b_del)
 
-    markup.add(types.InlineKeyboardButton("« Back to Game Menu", callback_data="act_menu"))
+    markup.add(types.InlineKeyboardButton("« Back to Menu", callback_data="act_menu"))
     return markup
 
 def get_delete_accounts_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
@@ -1382,10 +1417,12 @@ def get_target_keyboard() -> types.InlineKeyboardMarkup:
     b6 = types.InlineKeyboardButton("🏆 3200 (Top 10)", callback_data="set_tgt_3200")
     b7 = types.InlineKeyboardButton("⚡ 3250 (Top 5)", callback_data="set_tgt_3250")
     b8 = types.InlineKeyboardButton("👑 3300 (Top 1)", callback_data="set_tgt_3300")
+    custom = types.InlineKeyboardButton("✍️ Custom Target (Apna Score)", callback_data="act_custom_tgt")
     back = types.InlineKeyboardButton("« Back to Menu", callback_data="act_menu")
     markup.add(b1, b2, b3)
     markup.add(b4, b5, b6)
     markup.add(b7, b8)
+    markup.add(custom)
     markup.add(back)
     return markup
 
@@ -1394,9 +1431,64 @@ def get_playing_keyboard() -> types.InlineKeyboardMarkup:
     markup.add(types.InlineKeyboardButton("🛑 Stop / Cancel Session", callback_data="act_stop"))
     return markup
 
-def execute_logout(message_or_call, user_id: Optional[int] = None):
+def show_logged_out_menu(message_or_call, edit_msg_id: Optional[int] = None, user_id: Optional[int] = None):
     if hasattr(message_or_call, 'message') and message_or_call.message:
         chat_id = message_or_call.message.chat.id
+        if edit_msg_id is None:
+            edit_msg_id = message_or_call.message.message_id
+        if user_id is None and hasattr(message_or_call, 'from_user') and message_or_call.from_user:
+            user_id = message_or_call.from_user.id
+    elif hasattr(message_or_call, 'chat') and message_or_call.chat:
+        chat_id = message_or_call.chat.id
+        if user_id is None and hasattr(message_or_call, 'from_user') and message_or_call.from_user:
+            user_id = message_or_call.from_user.id
+    else:
+        chat_id = message_or_call
+        if user_id is None:
+            user_id = message_or_call
+
+    banner = get_banner()
+    sessions = get_user_sessions(user_id) if user_id else []
+
+    markup = types.InlineKeyboardMarkup()
+    if sessions:
+        for s in sessions:
+            markup.add(types.InlineKeyboardButton(f"📲 Connect: +91 {s['phone']} ({s['name']})", callback_data=f"switch_acc_{s['phone']}"))
+        markup.add(types.InlineKeyboardButton("➕ Login / Add New Number", callback_data="act_login"))
+        markup.add(types.InlineKeyboardButton("🗑 Delete a Saved Account", callback_data="act_delete_menu"))
+        saved_list = "\n".join([f"• <code>+91 {s['phone']}</code> - {safe_html(s['name'] or 'Operator')}" for s in sessions])
+        body = (
+            f"{banner}\n"
+            f"⚪ <b>NO ACTIVE SESSION CONNECTED</b>\n"
+            f"<code>────────────────────────────</code>\n"
+            f"Aapka koi account filhal active nahi hai.\n\n"
+            f"📂 <b>Aapke Saved Accounts ({len(sessions)}):</b>\n"
+            f"{saved_list}\n"
+            f"<code>────────────────────────────</code>\n"
+            f"👉 <i>Kisi bhi account se connect hone ke liye tap karein, ya naya number login karein:</i>"
+        )
+    else:
+        markup.add(types.InlineKeyboardButton("➕ Login With Mobile Number", callback_data="act_login"))
+        body = (
+            f"{banner}\n"
+            f"⚪ <b>WELCOME TO MARCO AUTO-FARM</b>\n"
+            f"<code>────────────────────────────</code>\n"
+            f"Bot use karne ke liye apna Thums Up mobile number login karein.\n\n"
+            f"👉 <i>Neeche button dabakar apna 10-digit number enter karein:</i>"
+        )
+
+    if edit_msg_id:
+        safe_edit(chat_id, edit_msg_id, body, reply_markup=markup)
+    else:
+        bot.send_message(chat_id, body, reply_markup=markup)
+
+def execute_logout(message_or_call, user_id: Optional[int] = None):
+    is_callback = False
+    edit_msg_id = None
+    if hasattr(message_or_call, 'message') and message_or_call.message:
+        chat_id = message_or_call.message.chat.id
+        edit_msg_id = message_or_call.message.message_id
+        is_callback = True
         if user_id is None and hasattr(message_or_call, 'from_user') and message_or_call.from_user:
             user_id = message_or_call.from_user.id
     elif hasattr(message_or_call, 'chat') and message_or_call.chat:
@@ -1418,18 +1510,26 @@ def execute_logout(message_or_call, user_id: Optional[int] = None):
     sessions = get_user_sessions(user_id)
 
     markup = types.InlineKeyboardMarkup()
-    for s in sessions:
-        markup.add(types.InlineKeyboardButton(f"🔄 Switch to: +91 {s['phone']} ({s['name']})", callback_data=f"switch_acc_{s['phone']}"))
-    markup.add(types.InlineKeyboardButton("➕ Login / Add New Number", callback_data="act_login"))
+    if sessions:
+        for s in sessions:
+            markup.add(types.InlineKeyboardButton(f"📲 Connect: +91 {s['phone']} ({s['name']})", callback_data=f"switch_acc_{s['phone']}"))
+        markup.add(types.InlineKeyboardButton("➕ Login / Add New Number", callback_data="act_login"))
+        markup.add(types.InlineKeyboardButton("🗑 Delete a Saved Account", callback_data="act_delete_menu"))
+    else:
+        markup.add(types.InlineKeyboardButton("➕ Login With Mobile Number", callback_data="act_login"))
 
-    bot.send_message(
-        chat_id,
+    text = (
         f"{banner}\n"
-        f"🚪 <b>[✔] LOGGED OUT :: +91 {old_phone or 'Session Cleared'}</b>\n\n"
-        f"Aapka active session disconnect ho gaya hai.\n\n"
-        f"Neeche saved account par switch karein ya naya number login karein:",
-        reply_markup=markup
+        f"🚪 <b>[✔] LOGGED OUT SUCCESSFULLY</b>\n"
+        f"<code>────────────────────────────</code>\n"
+        f"Active session <code>+91 {old_phone or 'Account'}</code> disconnect ho gaya hai.\n\n"
+        f"Dubara connect karne ya naya account jodne ke liye neeche select karein:"
     )
+
+    if is_callback and edit_msg_id:
+        safe_edit(chat_id, edit_msg_id, text, reply_markup=markup)
+    else:
+        bot.send_message(chat_id, text, reply_markup=markup)
 
 def execute_login(message_or_call, user_id: Optional[int] = None):
     if hasattr(message_or_call, 'message') and message_or_call.message:
@@ -1447,7 +1547,7 @@ def execute_login(message_or_call, user_id: Optional[int] = None):
         set_auth_state(user_id, "AWAITING_PHONE", None)
 
     banner = get_banner()
-    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Cancel", callback_data="act_accounts"))
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Cancel", callback_data="act_menu"))
     bot.send_message(
         chat_id,
         f"{banner}\n"
@@ -1479,26 +1579,25 @@ def show_profile(message_or_call, edit_msg_id: Optional[int] = None):
 
     u = get_user(user_id)
     if not (u and u.get('cookies')):
-        sessions = get_user_sessions(user_id)
-        if sessions:
-            switch_active_session(user_id, sessions[0]['phone'])
-            u = get_user(user_id)
-        elif try_recover_session(user_id):
-            u = get_user(user_id)
-        else:
-            execute_login(message_or_call, user_id=user_id)
-            return
+        show_logged_out_menu(message_or_call, edit_msg_id=edit_msg_id, user_id=user_id)
+        return
 
     client = CokeClient(u['cookies'])
     stats = client.get_stats()
 
     if not stats:
+        raw_phone = u.get('phone', '')
+        phone = safe_html(raw_phone or 'N/A')
         expired_text = (
-            f"⚠️ <b>Session Expired for +91 {safe_html(u.get('phone', 'N/A'))}!</b>\n\n"
+            f"⚠️ <b>Session Expired for +91 {phone}!</b>\n\n"
             f"Coke2Home security token expire ho chuka hai.\n"
-            f"Kripya <b>➕ Add Account / Login</b> karke dubara OTP verify karein ya doosra account switch karein:"
+            f"Kripya 1-tap me dubara OTP bhejkar verify karein ya doosra account switch karein:"
         )
-        markup = get_accounts_keyboard(user_id)
+        markup = types.InlineKeyboardMarkup()
+        if raw_phone:
+            markup.add(types.InlineKeyboardButton(f"📲 Re-Login +91 {phone} (Send OTP)", callback_data=f"send_otp_{raw_phone}"))
+        markup.add(types.InlineKeyboardButton("📱 Switch Account", callback_data="act_accounts"))
+        markup.add(types.InlineKeyboardButton("➕ Add New Number", callback_data="act_login"))
         if edit_msg_id:
             safe_edit(chat_id, edit_msg_id, expired_text, reply_markup=markup)
         else:
@@ -1805,7 +1904,10 @@ def _game_worker(chat_id: int, user_id: int, user_data: dict, target_score: int,
         combo = res['max_combo']
         dur = res['duration_s']
         rank = f"#{res['rank']}" if res.get('rank') else "UNRANKED"
-        verified_tag = "PAYLOAD VERIFIED · UPLOADED TO SERVER" if res.get('verified') else "SUBMISSION COMPLETE"
+        if res.get('verified'):
+            verified_tag = "✅ <b>PAYLOAD VERIFIED · UPLOADED TO SERVER</b>"
+        else:
+            verified_tag = "⚠️ <b>SERVER VALIDATION FAILED · SCORE NOT ACCEPTED</b>"
 
         breakdown_lines = []
         for btype, count in sorted(res.get('hit_counts', {}).items(), key=lambda x: -x[1]):
@@ -1827,7 +1929,7 @@ def _game_worker(chat_id: int, user_id: int, user_data: dict, target_score: int,
             f"◈ <b>PAYLOAD BREAKDOWN:</b>\n"
             f"{breakdown_text}\n"
             f"<code>────────────────────────────</code>\n"
-            f"✅ <b>{verified_tag}</b>\n\n"
+            f"{verified_tag}\n\n"
             f"❤️ Lives remaining: <b>{rem_plays} / 5</b>"
         )
 
@@ -1889,13 +1991,6 @@ def _handle_callback_impl(call: types.CallbackQuery):
         return
 
     u = get_user(user_id)
-    if not (u and u.get('cookies')):
-        sessions = get_user_sessions(user_id)
-        if sessions:
-            switch_active_session(user_id, sessions[0]['phone'])
-            u = get_user(user_id)
-        elif try_recover_session(user_id):
-            u = get_user(user_id)
 
     # Super Admin callbacks
     if data in ["owner_panel", "admin_panel"]:
@@ -1989,18 +2084,28 @@ def _handle_callback_impl(call: types.CallbackQuery):
         if u and u.get('cookies'):
             launch_game(chat_id, user_id, u, target_score=2000)
         else:
-            execute_login(call, user_id=user_id)
+            show_logged_out_menu(call, edit_msg_id=call.message.message_id, user_id=user_id)
 
     elif data == "act_play_3200":
         if u and u.get('cookies'):
             launch_game(chat_id, user_id, u, target_score=3200)
         else:
-            execute_login(call, user_id=user_id)
+            show_logged_out_menu(call, edit_msg_id=call.message.message_id, user_id=user_id)
+
+    elif data == "act_custom_tgt":
+        set_auth_state(user_id, "AWAITING_TARGET", None)
+        markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Cancel", callback_data="act_menu"))
+        text = (
+            "✍️ <b>Custom Target Score Set Karein</b>\n\n"
+            "Aap kitne points farm karna chahte hain? Chat me number type karein:\n"
+            "<i>(Example: <code>3150</code>, <code>3250</code>, <code>2900</code> - Range: 50 se 4500 pts)</i>\n\n"
+            "<i>Type 'cancel' anytime to abort.</i>"
+        )
+        safe_edit(chat_id, call.message.message_id, text, reply_markup=markup)
+        return
 
     elif data == "act_leaderboard":
         show_leaderboard(call, edit_msg_id=call.message.message_id)
-
-
 
     elif data == "act_target_menu":
         safe_edit(chat_id, call.message.message_id, "🎯 <b>Apna Target Score choose karein:</b>", reply_markup=get_target_keyboard())
@@ -2011,7 +2116,7 @@ def _handle_callback_impl(call: types.CallbackQuery):
         if u and u.get('cookies'):
             launch_game(chat_id, user_id, u, target_score=tgt)
         else:
-            execute_login(call, user_id=user_id)
+            show_logged_out_menu(call, edit_msg_id=call.message.message_id, user_id=user_id)
 
     elif data in ["act_menu", "act_refresh"]:
         show_profile(call, edit_msg_id=call.message.message_id)
@@ -2023,13 +2128,13 @@ def _handle_callback_impl(call: types.CallbackQuery):
         phone = data.replace("switch_acc_", "")
         if switch_active_session(user_id, phone):
             try:
-                bot.answer_callback_query(call.id, f"Switched to +91 {phone}!")
+                bot.answer_callback_query(call.id, f"Connected to +91 {phone}!")
             except Exception:
                 pass
             show_profile(call, edit_msg_id=call.message.message_id)
         else:
             try:
-                bot.answer_callback_query(call.id, "Session switch failed!", show_alert=True)
+                bot.answer_callback_query(call.id, "Session connect failed!", show_alert=True)
             except Exception:
                 pass
 
@@ -2085,9 +2190,9 @@ def _handle_callback_impl(call: types.CallbackQuery):
         with active_lock:
             if user_id in active_games:
                 active_games[user_id].set()
-                bot.send_message(chat_id, "🛑 <b>Game session cancel kar diya gaya hai.</b>", reply_markup=get_main_keyboard())
+                bot.send_message(chat_id, "🛑 <b>Game session cancel kar diya gaya hai.</b>", reply_markup=get_main_keyboard(1, user_id))
             else:
-                bot.send_message(chat_id, "Koi active game session nahi chal raha.", reply_markup=get_main_keyboard())
+                bot.send_message(chat_id, "Koi active game session nahi chal raha.", reply_markup=get_main_keyboard(1, user_id))
 
 
 # ── COMMAND HANDLERS ──
@@ -2121,9 +2226,47 @@ def handle_stop_cmd(message: types.Message):
     with active_lock:
         if user_id in active_games:
             active_games[user_id].set()
-            bot.send_message(message.chat.id, "🛑 Stopping game session...", reply_markup=get_main_keyboard())
+            bot.send_message(message.chat.id, "🛑 Stopping game session...", reply_markup=get_main_keyboard(1, user_id))
             return
-    bot.send_message(message.chat.id, "No active game currently running.", reply_markup=get_main_keyboard())
+    bot.send_message(message.chat.id, "No active game currently running.", reply_markup=get_main_keyboard(1, user_id))
+
+@bot.message_handler(commands=['target', 'farm', 'play', 'score', 'custom'])
+def handle_target_cmd(message: types.Message):
+    user_id = message.from_user.id
+    if is_banned(user_id):
+        bot.send_message(message.chat.id, "🚫 <b>ACCESS DENIED:</b> Aapka account banned hai.")
+        return
+
+    parts = message.text.split()
+    if len(parts) > 1 and parts[1].isdigit():
+        score = int(parts[1])
+        if 50 <= score <= 4500:
+            update_target(user_id, score)
+            u = get_user(user_id)
+            if u and u.get('cookies'):
+                bot.send_message(message.chat.id, f"🎯 Custom Target set to <b>{score} pts</b>! Starting game...")
+                launch_game(message.chat.id, user_id, u, score)
+            else:
+                bot.send_message(
+                    message.chat.id,
+                    f"🎯 Target set to <b>{score} pts</b>!\nLekin aap filhal logged out hain. Pehle apna account connect karein:"
+                )
+                show_logged_out_menu(message)
+            return
+        else:
+            bot.reply_to(message, "⚠️ Target score 50 se 4500 points ke beech hona chahiye (e.g. <code>/target 3150</code>).")
+            return
+
+    set_auth_state(user_id, "AWAITING_TARGET", None)
+    markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("« Cancel", callback_data="act_menu"))
+    bot.send_message(
+        message.chat.id,
+        "✍️ <b>Custom Target Score Set Karein</b>\n\n"
+        "Aap kitne points farm karna chahte hain? Chat me number type karein:\n"
+        "<i>(Example: <code>3150</code>, <code>3250</code>, <code>2900</code> - Range: 50 se 4500 pts)</i>\n\n"
+        "<i>Type 'cancel' anytime to abort.</i>",
+        reply_markup=markup
+    )
 
 
 
@@ -2297,7 +2440,12 @@ def handle_text(message: types.Message):
 
         if lower in ["cancel", "abort"]:
             set_auth_state(user_id, "IDLE", None)
-            bot.send_message(message.chat.id, "Action cancelled.", reply_markup=get_main_keyboard(1, user_id))
+            u = get_user(user_id)
+            if u and u.get('cookies'):
+                bot.send_message(message.chat.id, "Action cancelled.", reply_markup=get_main_keyboard(1, user_id))
+            else:
+                bot.send_message(message.chat.id, "Action cancelled.")
+                show_logged_out_menu(message)
             return
 
         if lower in ["stop", "🛑 stop game", "stop game"]:
@@ -2391,7 +2539,34 @@ def handle_text(message: types.Message):
                 bot.send_message(message.chat.id, "⚠️ Kripya 6-digit OTP enter karein:")
                 return
 
-        # 3. State: IDLE
+        # 3. State: AWAITING_TARGET
+        if auth_st == "AWAITING_TARGET":
+            if clean_digits.isdigit():
+                try:
+                    score = int(clean_digits)
+                    if 50 <= score <= 4500:
+                        set_auth_state(user_id, "IDLE", None)
+                        update_target(user_id, score)
+                        u = get_user(user_id)
+                        if u and u.get('cookies'):
+                            bot.send_message(message.chat.id, f"🎯 Custom Target set to <b>{score} pts</b>! Starting game...")
+                            launch_game(message.chat.id, user_id, u, score)
+                        else:
+                            bot.send_message(
+                                message.chat.id,
+                                f"🎯 Target set to <b>{score} pts</b>!\nLekin aap filhal logged out hain. Pehle apna account connect karein:"
+                            )
+                            show_logged_out_menu(message)
+                        return
+                    else:
+                        bot.send_message(message.chat.id, "⚠️ Invalid points! Kripya 50 se 4500 points ke beech score enter karein (e.g. <code>3150</code>):")
+                        return
+                except ValueError:
+                    pass
+            bot.send_message(message.chat.id, "⚠️ Kripya valid number enter karein (e.g. <code>3150</code>) ya 'cancel' likhein:")
+            return
+
+        # 4. State: IDLE
         u = get_user(user_id)
         if (len(clean_digits) == 10) or (len(clean_digits) == 12 and clean_digits.startswith("91")):
             phone = clean_digits[-10:]
@@ -2407,13 +2582,20 @@ def handle_text(message: types.Message):
             )
             return
 
-        # 4. User is logged in and entered target score number
-        if u and u.get('cookies') and clean_digits.isdigit():
+        # 5. Direct target score number (50 to 4500)
+        if clean_digits.isdigit():
             try:
                 target_score = int(clean_digits)
-                if target_score >= 50:
+                if 50 <= target_score <= 4500:
                     update_target(user_id, target_score)
-                    launch_game(message.chat.id, user_id, u, target_score)
+                    if u and u.get('cookies'):
+                        launch_game(message.chat.id, user_id, u, target_score)
+                    else:
+                        bot.send_message(
+                            message.chat.id,
+                            f"🎯 Target set to <b>{target_score} pts</b>!\nLekin aap filhal logged out hain. Pehle apna account connect karein:"
+                        )
+                        show_logged_out_menu(message)
                     return
             except ValueError:
                 pass
