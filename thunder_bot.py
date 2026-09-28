@@ -919,7 +919,7 @@ class CokeClient:
             )
             data = resp.json()
             if data.get('drip_enc'):
-                sim.add_drip_enc(data['drip_enc'], data.get('drip_from_box', 0))
+                sim.add_drip_enc(data['drip_enc'], data.get('drip_from_box', len(sim.input_log)))
             return len(sim.input_log)
         except Exception as e:
             logger.warning(f"[heartbeat] failed at box {len(sim.input_log)}: {e}")
@@ -948,18 +948,35 @@ class CokeClient:
         milestones = [100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000]
         last_m = 0
         events = []
+        last_hb_wall = time.time()
+        last_cb_time = 0
 
         # ============================================================
-        # Phase 1: Fast Play (Direct replica of verified thunder.py)
+        # Phase 1: Real-Time Human Paced Play (Syncs with live clock)
         # ============================================================
         while sim.score < target_score and len(sim.input_log) < DEFAULT_MAX_BOXES:
             if cancel_event and cancel_event.is_set():
                 return {"success": False, "error": "Game stopped by user."}
 
-            if not sim.has_enough_floats(required=4):
+            now_wall = time.time()
+            elapsed_wall_ms = (now_wall - start_time) * 1000.0
+
+            # Real-time pacing: sync box play with simulated spawn timeline
+            target_spawn_ms = sim.next_spawn_at_ms
+            if elapsed_wall_ms < target_spawn_ms:
+                wait_s = (target_spawn_ms - elapsed_wall_ms) / 1000.0
+                time.sleep(min(wait_s, 0.05))
+                continue
+
+            # Need more floats or periodic 6s heartbeat?
+            now_wall = time.time()
+            need_floats = not sim.has_enough_floats(required=4)
+            hb_due = (now_wall - last_hb_wall >= 6.0) and (len(sim.input_log) > committed_count)
+            if need_floats or hb_due:
                 committed_count = self._heartbeat(
                     session_id, session_token, sim, committed_count, start_time
                 )
+                last_hb_wall = now_wall
 
             box = sim.generate_next_box()
             sim.play_box_correctly(box)
@@ -973,22 +990,28 @@ class CokeClient:
                     events.append(f"{m} pts")
                     last_m = m
 
+            now_cb = time.time()
+            if progress_cb and (now_cb - last_cb_time >= 1.5):
+                progress_cb("playing", sim, target_score, now_cb - start_time, events)
+                last_cb_time = now_cb
+
         # Notify callback that play phase completed
         if progress_cb:
             progress_cb("fast_play_done", sim, target_score, time.time() - start_time, events)
 
         # ============================================================
-        # Phase 2: Cooldown Wait — sleep without sending fake idle heartbeats
+        # Phase 2: Natural finish cooldown — guarantees duration <= session age
         # ============================================================
         elapsed = time.time() - start_time
-        if elapsed < min_duration_s:
-            while elapsed < min_duration_s:
+        effective_min_s = max(min_duration_s, int(math.ceil((sim.next_spawn_at_ms + 1000) / 1000.0 + random.uniform(2.5, 4.5))))
+        if elapsed < effective_min_s:
+            while elapsed < effective_min_s:
                 if cancel_event and cancel_event.is_set():
                     return {"success": False, "error": "Game stopped by user."}
                 time.sleep(1.0)
                 elapsed = time.time() - start_time
                 if progress_cb:
-                    progress_cb("cooldown", sim, min_duration_s, elapsed, events)
+                    progress_cb("cooldown", sim, effective_min_s, elapsed, events)
 
         # ============================================================
         # Phase 3: Submit Score & Journey
