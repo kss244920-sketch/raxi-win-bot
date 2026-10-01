@@ -755,6 +755,10 @@ class GameSimulator:
         if pts > 0:
             self.current_combo += 1
             self.max_combo = max(self.max_combo, self.current_combo)
+
+        if btype == 'heart':
+            self.hp = min(self.max_hp, self.hp + 1)
+
         self.hit_counts[btype] = self.hit_counts.get(btype, 0) + 1
 
         self.input_log.append({
@@ -767,6 +771,36 @@ class GameSimulator:
         })
         self.elapsed_ms = at_ms
         return pts, swipe_dir
+
+    def play_box_wrong(self, box: dict):
+        btype = box['type']
+        arrow = box['arrow']
+        spawn_ms = box['spawnMs']
+        travel_ms = box['travelMs']
+
+        correct_dir = OPPOSITE[arrow] if btype == 'trap' else arrow
+        wrong_dirs = [d for d in DIRECTIONS if d != correct_dir]
+        wrong_dir = random.choice(wrong_dirs)
+
+        reaction_offset = min(random.randint(80, 200), max(20, int(travel_ms * 0.6)))
+        at_ms = int(spawn_ms + travel_ms - reaction_offset)
+
+        if self.input_log and at_ms <= self.input_log[-1]['atMs']:
+            at_ms = self.input_log[-1]['atMs'] + random.randint(1, 10)
+
+        self.current_combo = 0
+        self.hp = max(0, self.hp - 1)
+
+        self.input_log.append({
+            "boxId": box['id'],
+            "dir": wrong_dir,
+            "atMs": at_ms,
+            "spawnAtMs": spawn_ms,
+            "type": btype,
+            "correct": False,
+        })
+        self.elapsed_ms = at_ms
+        return 0, wrong_dir
 
     @staticmethod
     def compute_chain_hash(session_id: str, input_log: list) -> str:
@@ -957,9 +991,11 @@ class CokeClient:
 
         # ============================================================
         # ============================================================
-        # Phase 1: Real-Time Human Paced Play (Syncs with live clock)
+        # Phase 1: Real-Time Human Paced Play (Natural Life Loss & Finish)
         # ============================================================
-        while sim.score < target_score and len(sim.input_log) < DEFAULT_MAX_BOXES:
+        lost_life_1 = False
+
+        while sim.hp > 0 and len(sim.input_log) < DEFAULT_MAX_BOXES:
             if cancel_event and cancel_event.is_set():
                 return {"success": False, "error": "Game stopped by user."}
 
@@ -984,6 +1020,33 @@ class CokeClient:
                 last_hb_wall = now_wall
 
             box = sim.generate_next_box()
+
+            # ── Life & Finish Management ──
+            # 1. Target Met: Intentionally make wrong moves on remaining lives until natural Game Over (HP -> 0)
+            if sim.score >= target_score:
+                sim.play_box_wrong(box)
+                events.append("💀 Game Over (Target Met)")
+                while sim.hp > 0:
+                    b_next = sim.generate_next_box()
+                    sim.play_box_wrong(b_next)
+                    events.append("💀 Out on target")
+                break
+
+            # 2. Random life loss 1 at ~35% of target (HP 3 -> 2)
+            if not lost_life_1 and sim.score >= 0.35 * target_score and sim.hp == 3:
+                if box['type'] != 'heart':
+                    sim.play_box_wrong(box)
+                    lost_life_1 = True
+                    events.append("💔 Life Lost (-1)")
+                    continue
+
+            # 3. Life loss near target: ensure player enters final stretch with exactly 1 heart
+            if sim.score >= 0.78 * target_score and sim.hp > 1:
+                if box['type'] != 'heart':
+                    sim.play_box_wrong(box)
+                    events.append("💔 Down to 1 Heart!")
+                    continue
+
             sim.play_box_correctly(box)
 
             if box.get('tier', 1) > prev_tier:
@@ -1741,6 +1804,7 @@ def _game_worker(chat_id: int, user_id: int, user_data: dict, target_score: int,
                         f"────────────────────────────\n"
                         f"[⚡] FARMING SCORE {spin}\n"
                         f"Score : {sim.score} / {target} pts\n"
+                        f"Hearts: {'❤️ ' * sim.hp + '🖤 ' * max(0, 3 - sim.hp)}\n"
                         f"Prog  : ▕{bar}▏ {pct:>3}%\n"
                         f"Tier  : T{cur_tier} · Combo: x{sim.max_combo}\n"
                         f"Boxes : {len(sim.input_log)} swiped\n"
