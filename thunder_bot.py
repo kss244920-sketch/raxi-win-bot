@@ -931,9 +931,8 @@ class CokeClient:
             return None
 
     def _heartbeat(self, session_id: str, session_token: str, sim: GameSimulator, committed_count: int, start_time: float) -> int:
-        sim_ms = int(sim.elapsed_ms)
-        real_ms = int((time.time() - start_time) * 1000.0)
-        curr_ms = max(sim_ms, real_ms)
+        sim_ms = int(sim.input_log[-1]["atMs"]) if sim.input_log else int((time.time() - start_time) * 1000.0)
+        curr_ms = sim_ms
 
         chain_hash = GameSimulator.compute_chain_hash(session_id, sim.input_log)
         delta = [
@@ -991,11 +990,9 @@ class CokeClient:
 
         # ============================================================
         # ============================================================
-        # Phase 1: Real-Time Human Paced Play (Natural Life Loss & Finish)
+        # Phase 1: Real-Time Human Paced Play (Verified Pure Engine)
         # ============================================================
-        lost_life_1 = False
-
-        while sim.hp > 0 and len(sim.input_log) < DEFAULT_MAX_BOXES:
+        while sim.score < target_score and len(sim.input_log) < DEFAULT_MAX_BOXES:
             if cancel_event and cancel_event.is_set():
                 return {"success": False, "error": "Game stopped by user."}
 
@@ -1020,33 +1017,6 @@ class CokeClient:
                 last_hb_wall = now_wall
 
             box = sim.generate_next_box()
-
-            # ── Life & Finish Management ──
-            # 1. Target Met: Intentionally make wrong moves on remaining lives until natural Game Over (HP -> 0)
-            if sim.score >= target_score:
-                sim.play_box_wrong(box)
-                events.append("💀 Game Over (Target Met)")
-                while sim.hp > 0:
-                    b_next = sim.generate_next_box()
-                    sim.play_box_wrong(b_next)
-                    events.append("💀 Out on target")
-                break
-
-            # 2. Random life loss 1 at ~35% of target (HP 3 -> 2)
-            if not lost_life_1 and sim.score >= 0.35 * target_score and sim.hp == 3:
-                if box['type'] != 'heart':
-                    sim.play_box_wrong(box)
-                    lost_life_1 = True
-                    events.append("💔 Life Lost (-1)")
-                    continue
-
-            # 3. Life loss near target: ensure player enters final stretch with exactly 1 heart
-            if sim.score >= 0.78 * target_score and sim.hp > 1:
-                if box['type'] != 'heart':
-                    sim.play_box_wrong(box)
-                    events.append("💔 Down to 1 Heart!")
-                    continue
-
             sim.play_box_correctly(box)
 
             if box.get('tier', 1) > prev_tier:
