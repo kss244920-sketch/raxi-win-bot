@@ -745,11 +745,11 @@ class GameSimulator:
 
         swipe_dir = OPPOSITE[arrow] if btype == 'trap' else arrow
 
-        # Human reaction delay: 1 to 2 seconds after box spawn (scaled to travelMs)
+        # Human reaction delay (1.0 to 1.8 seconds after box spawn, scaled to travelMs)
         if travel_ms >= 1400:
-            delay_ms = random.randint(1000, min(1800, travel_ms - 100))
+            delay_ms = random.randint(1000, min(1750, travel_ms - 80))
         else:
-            delay_ms = int(travel_ms * random.uniform(0.75, 0.90))
+            delay_ms = int(travel_ms * random.uniform(0.72, 0.88))
 
         at_ms = int(spawn_ms + delay_ms)
 
@@ -788,11 +788,16 @@ class GameSimulator:
         wrong_dirs = [d for d in DIRECTIONS if d != correct_dir]
         wrong_dir = random.choice(wrong_dirs)
 
-        reaction_offset = min(random.randint(80, 200), max(20, int(travel_ms * 0.6)))
-        at_ms = int(spawn_ms + travel_ms - reaction_offset)
+        # Human reaction delay (1.0 to 1.8 seconds after box spawn, scaled to travelMs)
+        if travel_ms >= 1400:
+            delay_ms = random.randint(1000, min(1750, travel_ms - 80))
+        else:
+            delay_ms = int(travel_ms * random.uniform(0.72, 0.88))
+
+        at_ms = int(spawn_ms + delay_ms)
 
         if self.input_log and at_ms <= self.input_log[-1]['atMs']:
-            at_ms = self.input_log[-1]['atMs'] + random.randint(1, 10)
+            at_ms = self.input_log[-1]['atMs'] + random.randint(20, 80)
 
         self.current_combo = 0
         self.hp = max(0, self.hp - 1)
@@ -1052,10 +1057,13 @@ class CokeClient:
         last_cb_time = 0
 
         # ============================================================
+        # Phase 1: Real-Time Human Paced Play with Natural Life Loss
         # ============================================================
-        # Phase 1: Real-Time Human Paced Play (Verified Pure Engine)
-        # ============================================================
-        while sim.score < effective_target and len(sim.input_log) < DEFAULT_MAX_BOXES:
+        lost_life_1 = False
+        lost_life_2 = False
+        target_met = False
+
+        while sim.hp > 0 and len(sim.input_log) < DEFAULT_MAX_BOXES and sim.next_spawn_at_ms < 120000:
             if cancel_event and cancel_event.is_set():
                 try:
                     self.send_cdp_event("Click", "Session_Quit", session_id=session_id, score=sim.score)
@@ -1088,6 +1096,33 @@ class CokeClient:
                 last_hb_wall = now_wall
 
             box = sim.generate_next_box()
+
+            # ── Life & Finish Management ──
+            # 1. Target Met: Intentionally make wrong moves until natural Game Over (HP -> 0)
+            if sim.score >= effective_target or target_met:
+                target_met = True
+                sim.play_box_wrong(box)
+                events.append("💀 Out on target")
+                time.sleep(random.uniform(0.1, 0.25))
+                continue
+
+            # 2. Random life loss 1 at ~35% of target (HP 3 -> 2)
+            if not lost_life_1 and sim.score >= 0.35 * effective_target and sim.hp == 3:
+                if box['type'] not in ['heart', 'trap']:
+                    sim.play_box_wrong(box)
+                    lost_life_1 = True
+                    events.append("💔 Life Lost (-1)")
+                    continue
+
+            # 3. Life loss near target: ensure player enters final stretch with exactly 1 heart
+            if not lost_life_2 and sim.score >= 0.78 * effective_target and sim.hp > 1:
+                if box['type'] not in ['heart', 'trap']:
+                    sim.play_box_wrong(box)
+                    lost_life_2 = True
+                    events.append("💔 Down to 1 Heart!")
+                    continue
+
+            # 4. Normal correct play
             sim.play_box_correctly(box)
 
             if box.get('tier', 1) > prev_tier:
@@ -1100,43 +1135,25 @@ class CokeClient:
                     last_m = m
 
             now_cb = time.time()
-            if progress_cb and (now_cb - last_cb_time >= 1.5):
+            if progress_cb and (now_cb - last_cb_time >= 1.2):
                 progress_cb("playing", sim, target_score, now_cb - start_time, events)
                 last_cb_time = now_cb
 
-        # Notify callback that play phase completed
+        # Notify callback that game ended
         if progress_cb:
-            progress_cb("fast_play_done", sim, target_score, time.time() - start_time, events)
+            progress_cb("game_over", sim, target_score, time.time() - start_time, events)
+
+        # Commit final batch of boxes if any uncommitted
+        if len(sim.input_log) > committed_count:
+            committed_count = self._heartbeat(
+                session_id, session_token, sim, committed_count, start_time
+            )
+
+        # Natural mobile game-over screen transition (2.0 to 3.2s)
+        time.sleep(random.uniform(2.0, 3.2))
 
         # ============================================================
-        # Phase 2: Natural finish cooldown — guarantees duration >= min_duration_s
-        # ============================================================
-        elapsed = time.time() - start_time
-        effective_min_s = max(min_duration_s, int(math.ceil((sim.next_spawn_at_ms + 1000) / 1000.0 + random.uniform(3.0, 6.0))))
-        if elapsed < effective_min_s:
-            while elapsed < effective_min_s:
-                if cancel_event and cancel_event.is_set():
-                    try:
-                        self.send_cdp_event("Click", "Session_Quit", session_id=session_id, score=sim.score)
-                    except Exception:
-                        pass
-                    return {"success": False, "error": "Game stopped by user."}
-
-                # Keep heartbeats alive every ~5 seconds during cooldown
-                now = time.time()
-                if (now - last_hb_wall) >= 5.0:
-                    committed_count = self._heartbeat(
-                        session_id, session_token, sim, committed_count, start_time
-                    )
-                    last_hb_wall = now
-
-                time.sleep(1.0)
-                elapsed = time.time() - start_time
-                if progress_cb:
-                    progress_cb("cooldown", sim, effective_min_s, elapsed, events)
-
-        # ============================================================
-        # Phase 3: Submit Score & Journey
+        # Phase 2: Submit Score & Journey
         # ============================================================
         if progress_cb:
             progress_cb("submitting", sim, target_score, time.time() - start_time, events)
@@ -1146,9 +1163,15 @@ class CokeClient:
             mk = BOX_NAME_MAP.get(k, k)
             mapped_hits[mk] = mapped_hits.get(mk, 0) + v
 
-        # duration_ms: max of simulated and wall clock (server-safe)
+        # duration_ms: actual gameplay duration up to fatal box + transition buffer
+        if sim.input_log:
+            fatal_at = int(sim.input_log[-1]["atMs"])
+            duration_ms = fatal_at + random.randint(400, 800)
+        else:
+            duration_ms = 1000
+
         wall_ms = int((time.time() - start_time) * 1000.0)
-        duration_ms = max(sim.next_spawn_at_ms + 1000, wall_ms)
+        duration_ms = min(duration_ms, wall_ms)
 
         score_res = self.session.post(
             f"{BASE_URL}/api/thunder-trail/sessions/{session_id}/score",
@@ -1215,6 +1238,7 @@ class CokeClient:
             "rank": stats.get('rank'),
             "plays_remaining": stats.get('plays_remaining', 0),
             "best_score": stats.get('best_score', sim.score if verified else 0),
+            "journey_msg": journey_data.get('message') or score_data.get('message'),
         }
 
 
@@ -1876,40 +1900,40 @@ def _game_worker(chat_id: int, user_id: int, user_data: dict, target_score: int,
                     )
                     safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
 
-                elif phase == "fast_play_done":
+                elif phase == "game_over":
                     bar = make_progress_bar(sim.score, target, 12)
                     recent_ev = " · ".join(events[-3:]) if events else ""
                     text = (
                         f"<code>"
                         f"◤ LIVE MISSION MONITOR ◢\n"
                         f"────────────────────────────\n"
-                        f"[✓] TARGET MET {spin}\n"
+                        f"[💀] OUT ON TARGET (GAME OVER) {spin}\n"
+                        f"Score : {sim.score} / {target} pts\n"
+                        f"Hearts: 🖤 🖤 🖤 (Natural Out)\n"
+                        f"Prog  : ▕{bar}▏ 100%\n"
+                        f"Boxes : {len(sim.input_log)} · Combo: x{sim.max_combo}\n"
+                        f"Time  : {elapsed_s:.1f}s\n"
+                        f"Events: {recent_ev}\n"
+                        f"────────────────────────────\n"
+                        f"Preparing final telemetry...\n"
+                        f"</code>"
+                    )
+                    safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
+
+                elif phase in ["fast_play_done", "cooldown"]:
+                    bar = make_progress_bar(sim.score, target, 12)
+                    recent_ev = " · ".join(events[-3:]) if events else ""
+                    text = (
+                        f"<code>"
+                        f"◤ LIVE MISSION MONITOR ◢\n"
+                        f"────────────────────────────\n"
+                        f"[✓] TARGET COMPLETED {spin}\n"
                         f"Score : {sim.score} / {target} pts\n"
                         f"Prog  : ▕{bar}▏ 100%\n"
                         f"Boxes : {len(sim.input_log)} · Combo: x{sim.max_combo}\n"
                         f"Events: {recent_ev}\n"
                         f"────────────────────────────\n"
-                        f"Anti-ban stealth cooldown...\n"
-                        f"</code>"
-                    )
-                    safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
-
-                elif phase == "cooldown":
-                    ratio = min(elapsed_s / max(target, 1), 1.0)
-                    bar = make_progress_bar(elapsed_s, target, 12)
-                    pct = int(ratio * 100)
-                    remain = max(0.0, target - elapsed_s)
-                    text = (
-                        f"<code>"
-                        f"◤ LIVE MISSION MONITOR ◢\n"
-                        f"────────────────────────────\n"
-                        f"[⌛] STEALTH COOLDOWN {spin}\n"
-                        f"Score : {sim.score} pts (Target Met!)\n"
-                        f"Time  : {elapsed_s:.1f}s / {target:.0f}s\n"
-                        f"Prog  : ▕{bar}▏ {pct:>3}%\n"
-                        f"Remain: {remain:.1f}s\n"
-                        f"────────────────────────────\n"
-                        f"Safe stealth cooldown active...\n"
+                        f"Finalizing session...\n"
                         f"</code>"
                     )
                     safe_edit(chat_id, msg_id, text, reply_markup=get_playing_keyboard())
@@ -1973,7 +1997,8 @@ def _game_worker(chat_id: int, user_id: int, user_data: dict, target_score: int,
         if res.get('verified'):
             verified_tag = "✅ <b>PAYLOAD VERIFIED · UPLOADED TO SERVER</b>"
         else:
-            verified_tag = "⚠️ <b>SERVER VALIDATION FAILED · SCORE NOT ACCEPTED</b>"
+            j_msg = f"\n<i>Server Msg: {safe_html(res.get('journey_msg'))}</i>" if res.get('journey_msg') else ""
+            verified_tag = f"⚠️ <b>SERVER VALIDATION FAILED · SCORE NOT ACCEPTED</b>{j_msg}"
 
         breakdown_lines = []
         for btype, count in sorted(res.get('hit_counts', {}).items(), key=lambda x: -x[1]):
