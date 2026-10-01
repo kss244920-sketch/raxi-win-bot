@@ -823,14 +823,20 @@ class CokeClient:
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/152.0.0.0 Safari/537.36'
+                'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro Build/UQ1A.240205.004; wv) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/133.0.6943.132 Mobile Safari/537.36'
             ),
             'Origin': BASE_URL,
             'Referer': f'{BASE_URL}/',
             'Accept': 'application/json, text/plain, */*',
             'Content-Type': 'application/json',
+            'sec-ch-ua': '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+            'sec-ch-ua-mobile': '?1',
+            'sec-ch-ua-platform': '"Android"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-origin',
+            'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7,hi;q=0.6',
         })
         if cookies:
             parsed = _safe_parse_cookies(cookies)
@@ -936,6 +942,46 @@ class CokeClient:
             logger.warning(f"get_leaderboard error: {e}")
             return None
 
+    def send_cdp_event(self, event_type: str, event_sub_type: str, session_id: Optional[str] = None, score: int = 0):
+        try:
+            payload = {
+                "event_type": event_type,
+                "event_sub_type": event_sub_type,
+            }
+            if session_id:
+                payload["session_id"] = session_id
+                payload["score_at_quit"] = score
+            self.session.post(f"{BASE_URL}/api/cdp", json=payload, timeout=8)
+        except Exception as e:
+            logger.debug(f"CDP event error: {e}")
+
+    def get_my_rewards(self) -> Optional[dict]:
+        try:
+            resp = self.session.get(f"{BASE_URL}/api/thunder-trail/my-rewards", timeout=12)
+            try:
+                return resp.json()
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    def _drip_refill(self, session_id: str, session_token: str, sim: GameSimulator, from_box: int) -> bool:
+        try:
+            resp = self.session.post(
+                f"{BASE_URL}/api/thunder-trail/sessions/{session_id}/drip-refill",
+                json={"session_token": session_token, "from_box": from_box},
+                timeout=10
+            )
+            data = resp.json()
+            if data.get('success') and data.get('drip_enc'):
+                sim.add_drip_enc(data['drip_enc'], data.get('drip_from_box', from_box))
+                logger.info(f"[drip-refill] ok @ box {from_box}")
+                return True
+            return False
+        except Exception as e:
+            logger.warning(f"[drip-refill] failed @ box {from_box}: {e}")
+            return False
+
     def _heartbeat(self, session_id: str, session_token: str, sim: GameSimulator, committed_count: int, start_time: float) -> int:
         sim_ms = int(sim.input_log[-1]["atMs"]) if sim.input_log else int((time.time() - start_time) * 1000.0)
         curr_ms = max(sim_ms, int((time.time() - start_time) * 1000.0))
@@ -969,6 +1015,17 @@ class CokeClient:
             return committed_count
 
     def play_game(self, target_score: int, min_duration_s: int, progress_cb=None, cancel_event=None) -> dict:
+        # Subtle realistic human score variance (+0 to +30 pts) so identical targets aren't repeatedly submitted
+        variance = random.choice([0, 15, 30]) if target_score >= 100 else 0
+        effective_target = target_score + variance
+
+        # Pre-flight: check stats & emit official browser telemetry before creating session
+        try:
+            self.get_stats()
+            self.send_cdp_event("Click", "Played_Game")
+        except Exception:
+            pass
+
         resp = self.session.post(f"{BASE_URL}/api/thunder-trail/sessions", json={}, timeout=15)
         try:
             data = resp.json()
@@ -998,8 +1055,12 @@ class CokeClient:
         # ============================================================
         # Phase 1: Real-Time Human Paced Play (Verified Pure Engine)
         # ============================================================
-        while sim.score < target_score and len(sim.input_log) < DEFAULT_MAX_BOXES:
+        while sim.score < effective_target and len(sim.input_log) < DEFAULT_MAX_BOXES:
             if cancel_event and cancel_event.is_set():
+                try:
+                    self.send_cdp_event("Click", "Session_Quit", session_id=session_id, score=sim.score)
+                except Exception:
+                    pass
                 return {"success": False, "error": "Game stopped by user."}
 
             now_wall = time.time()
@@ -1012,9 +1073,13 @@ class CokeClient:
                 time.sleep(min(wait_s, 0.05))
                 continue
 
-            # Need more floats or periodic 6s heartbeat?
-            now_wall = time.time()
+            # Need more floats? Try drip-refill first, then heartbeat if low or 6s interval due
             need_floats = not sim.has_enough_floats(required=4)
+            if need_floats:
+                self._drip_refill(session_id, session_token, sim, len(sim.input_log))
+                need_floats = not sim.has_enough_floats(required=4)
+
+            now_wall = time.time()
             hb_due = (now_wall - last_hb_wall >= 6.0) and (len(sim.input_log) > committed_count)
             if need_floats or hb_due:
                 committed_count = self._heartbeat(
@@ -1051,6 +1116,10 @@ class CokeClient:
         if elapsed < effective_min_s:
             while elapsed < effective_min_s:
                 if cancel_event and cancel_event.is_set():
+                    try:
+                        self.send_cdp_event("Click", "Session_Quit", session_id=session_id, score=sim.score)
+                    except Exception:
+                        pass
                     return {"success": False, "error": "Game stopped by user."}
 
                 # Keep heartbeats alive every ~5 seconds during cooldown
@@ -1124,6 +1193,12 @@ class CokeClient:
         except Exception:
             journey_data = {}
         logger.info(f"Journey submission response: {journey_data}")
+
+        # Post-game telemetry: check rewards if won
+        try:
+            self.get_my_rewards()
+        except Exception:
+            pass
 
         verified = (journey_data.get('success') is True) and (journey_data.get('data', {}).get('score_valid') is True)
 
