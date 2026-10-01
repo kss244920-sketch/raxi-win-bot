@@ -83,7 +83,16 @@ OWNER_ID = 8327850869
 OWNER_HANDLE = "@owatom"
 HB_FLOAT_BUFFER_MIN = 4              # top-up heartbeat when floats low
 
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "thunder_bot.db")
+DATA_DIR = "/app/data" if os.path.isdir("/app/data") else os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(DATA_DIR, "thunder_bot.db")
+if DATA_DIR == "/app/data" and not os.path.exists(DB_FILE):
+    src_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "thunder_bot.db")
+    if os.path.exists(src_db):
+        try:
+            import shutil
+            shutil.copy2(src_db, DB_FILE)
+        except Exception:
+            pass
 
 GAME_CONFIG = {
     'startHp': 3,
