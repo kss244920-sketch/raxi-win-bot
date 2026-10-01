@@ -744,11 +744,17 @@ class GameSimulator:
         travel_ms = box['travelMs']
 
         swipe_dir = OPPOSITE[arrow] if btype == 'trap' else arrow
-        reaction_offset = min(random.randint(80, 200), max(20, int(travel_ms * 0.6)))
-        at_ms = int(spawn_ms + travel_ms - reaction_offset)
+
+        # Human reaction delay: 1 to 2 seconds after box spawn (scaled to travelMs)
+        if travel_ms >= 1400:
+            delay_ms = random.randint(1000, min(1800, travel_ms - 100))
+        else:
+            delay_ms = int(travel_ms * random.uniform(0.75, 0.90))
+
+        at_ms = int(spawn_ms + delay_ms)
 
         if self.input_log and at_ms <= self.input_log[-1]['atMs']:
-            at_ms = self.input_log[-1]['atMs'] + random.randint(1, 10)
+            at_ms = self.input_log[-1]['atMs'] + random.randint(20, 80)
 
         pts = GAME_CONFIG['scoring'].get(btype, 0)
         self.score += pts
@@ -932,7 +938,7 @@ class CokeClient:
 
     def _heartbeat(self, session_id: str, session_token: str, sim: GameSimulator, committed_count: int, start_time: float) -> int:
         sim_ms = int(sim.input_log[-1]["atMs"]) if sim.input_log else int((time.time() - start_time) * 1000.0)
-        curr_ms = sim_ms
+        curr_ms = max(sim_ms, int((time.time() - start_time) * 1000.0))
 
         chain_hash = GameSimulator.compute_chain_hash(session_id, sim.input_log)
         delta = [
@@ -1038,15 +1044,24 @@ class CokeClient:
             progress_cb("fast_play_done", sim, target_score, time.time() - start_time, events)
 
         # ============================================================
-        # Phase 2: Natural finish cooldown — guarantees duration <= session age
+        # Phase 2: Natural finish cooldown — guarantees duration >= min_duration_s
         # ============================================================
         elapsed = time.time() - start_time
-        effective_min_s = int(math.ceil((sim.next_spawn_at_ms + 1000) / 1000.0 + random.uniform(2.5, 4.0)))
+        effective_min_s = max(min_duration_s, int(math.ceil((sim.next_spawn_at_ms + 1000) / 1000.0 + random.uniform(3.0, 6.0))))
         if elapsed < effective_min_s:
             while elapsed < effective_min_s:
                 if cancel_event and cancel_event.is_set():
                     return {"success": False, "error": "Game stopped by user."}
-                time.sleep(0.5)
+
+                # Keep heartbeats alive every ~5 seconds during cooldown
+                now = time.time()
+                if (now - last_hb_wall) >= 5.0:
+                    committed_count = self._heartbeat(
+                        session_id, session_token, sim, committed_count, start_time
+                    )
+                    last_hb_wall = now
+
+                time.sleep(1.0)
                 elapsed = time.time() - start_time
                 if progress_cb:
                     progress_cb("cooldown", sim, effective_min_s, elapsed, events)
@@ -1062,8 +1077,9 @@ class CokeClient:
             mk = BOX_NAME_MAP.get(k, k)
             mapped_hits[mk] = mapped_hits.get(mk, 0) + v
 
-        # duration_ms MUST match the simulation time of boxes + 1000ms
-        duration_ms = sim.next_spawn_at_ms + 1000
+        # duration_ms: max of simulated and wall clock (server-safe)
+        wall_ms = int((time.time() - start_time) * 1000.0)
+        duration_ms = max(sim.next_spawn_at_ms + 1000, wall_ms)
 
         score_res = self.session.post(
             f"{BASE_URL}/api/thunder-trail/sessions/{session_id}/score",
