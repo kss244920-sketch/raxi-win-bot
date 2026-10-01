@@ -23,15 +23,19 @@ import socket
 import logging
 from typing import Optional, Dict, Any
 
-# ── Direct IPv4 & DNS Cache for Fast Telegram Connection ──
+# ── Direct IPv4 & DNS Cache for Fast Telegram Connection with Safe Fallback ──
 _orig_getaddrinfo = socket.getaddrinfo
 def cached_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    if host == 'api.telegram.org':
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, proto or 6, '', ('149.154.166.110', port or 443)),
-            (socket.AF_INET, socket.SOCK_STREAM, proto or 6, '', ('149.154.167.220', port or 443)),
-        ]
-    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+    try:
+        return _orig_getaddrinfo(host, port, family, type, proto, flags)
+    except Exception:
+        if host == 'api.telegram.org':
+            p = 443 if isinstance(port, str) else (port or 443)
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, proto or 6, '', ('149.154.166.110', p)),
+                (socket.AF_INET, socket.SOCK_STREAM, proto or 6, '', ('149.154.167.220', p)),
+            ]
+        raise
 
 socket.getaddrinfo = cached_getaddrinfo
 
@@ -73,11 +77,11 @@ BASE_URL = os.environ.get("TU_BASE_URL", "https://thunder-zone.coke2home.com")
 TU_KEY = os.environ.get("TU_KEY", "a9rc/DSXunC5PdkYlDB6KkX/evwfSTDUD8PQdaepxe0=")
 
 # ── Timing defaults (browser-matched, per campaign reference) ──
-DEFAULT_MIN_DURATION_S = 90          # 90s min runtime (matches thunder.py)
+DEFAULT_MIN_DURATION_S = 120         # 120s (2 min) slow, safe human runtime
 DEFAULT_MAX_BOXES = 9999
 OWNER_ID = 8327850869
 OWNER_HANDLE = "@owatom"
-HB_FLOAT_BUFFER_MIN = 4              # top-up heartbeat when floats low
+HB_FLOAT_BUFFER_MIN = 6              # top-up heartbeat when floats low
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "thunder_bot.db")
 
@@ -733,18 +737,19 @@ class GameSimulator:
             'tier': tier['id'],
         }
 
-    def play_box_correctly(self, box: dict):
+    def play_box_correctly(self, box: dict, at_ms: Optional[int] = None):
         btype = box['type']
         arrow = box['arrow']
         spawn_ms = box['spawnMs']
         travel_ms = box['travelMs']
 
         swipe_dir = OPPOSITE[arrow] if btype == 'trap' else arrow
-        reaction_offset = min(random.randint(80, 200), max(20, int(travel_ms * 0.6)))
-        at_ms = int(spawn_ms + travel_ms - reaction_offset)
-
-        if self.input_log and at_ms <= self.input_log[-1]['atMs']:
-            at_ms = self.input_log[-1]['atMs'] + random.randint(1, 10)
+        if at_ms is None:
+            # Slow, relaxed reaction time: swipes near bottom of travel window
+            reaction_offset = min(random.randint(60, 140), max(25, int(travel_ms * 0.4)))
+            at_ms = int(spawn_ms + travel_ms - reaction_offset)
+            if self.input_log and at_ms <= self.input_log[-1]['atMs']:
+                at_ms = self.input_log[-1]['atMs'] + random.randint(2, 10)
 
         pts = GAME_CONFIG['scoring'].get(btype, 0)
         self.score += pts
@@ -952,34 +957,57 @@ class CokeClient:
         last_cb_time = 0
 
         # ============================================================
-        # Phase 1: Real-Time Human Paced Play (Syncs with live clock)
+        # Phase 1: Real-Time Human Paced Play (Natural Slow Human Speed)
         # ============================================================
         while sim.score < target_score and len(sim.input_log) < DEFAULT_MAX_BOXES:
             if cancel_event and cancel_event.is_set():
                 return {"success": False, "error": "Game stopped by user."}
 
-            now_wall = time.time()
-            elapsed_wall_ms = (now_wall - start_time) * 1000.0
-
-            # Real-time pacing: sync box play with simulated spawn timeline
-            target_spawn_ms = sim.next_spawn_at_ms
-            if elapsed_wall_ms < target_spawn_ms:
-                wait_s = (target_spawn_ms - elapsed_wall_ms) / 1000.0
-                time.sleep(min(wait_s, 0.05))
-                continue
-
-            # Need more floats or periodic 6s heartbeat?
-            now_wall = time.time()
-            need_floats = not sim.has_enough_floats(required=4)
-            hb_due = (now_wall - last_hb_wall >= 6.0) and (len(sim.input_log) > committed_count)
-            if need_floats or hb_due:
+            # Top up floats from server if buffer is low
+            if not sim.has_enough_floats(required=6):
                 committed_count = self._heartbeat(
                     session_id, session_token, sim, committed_count, start_time
                 )
-                last_hb_wall = now_wall
+                last_hb_wall = time.time()
 
             box = sim.generate_next_box()
-            sim.play_box_correctly(box)
+            spawn_ms = box['spawnMs']
+            travel_ms = box['travelMs']
+
+            # Slow, relaxed reaction time: swipes near bottom of travel window
+            reaction_offset = min(random.randint(60, 140), max(25, int(travel_ms * 0.4)))
+            target_hit_ms = int(spawn_ms + travel_ms - reaction_offset)
+            if sim.input_log and target_hit_ms <= sim.input_log[-1]['atMs']:
+                target_hit_ms = sim.input_log[-1]['atMs'] + random.randint(2, 10)
+
+            # Wait in real-time until the box reaches the hit point
+            target_hit_wall_s = start_time + (target_hit_ms / 1000.0)
+            while True:
+                now = time.time()
+                remaining_s = target_hit_wall_s - now
+                if remaining_s <= 0.005:
+                    break
+
+                if cancel_event and cancel_event.is_set():
+                    return {"success": False, "error": "Game stopped by user."}
+
+                # Periodic heartbeat while waiting (only for already committed swipes)
+                if (now - last_hb_wall >= 5.5) and (len(sim.input_log) > committed_count):
+                    committed_count = self._heartbeat(
+                        session_id, session_token, sim, committed_count, start_time
+                    )
+                    last_hb_wall = now
+
+                # Live progress update to Telegram
+                now_cb = time.time()
+                if progress_cb and (now_cb - last_cb_time >= 1.8):
+                    progress_cb("playing", sim, target_score, now_cb - start_time, events)
+                    last_cb_time = now_cb
+
+                time.sleep(min(remaining_s, 0.08))
+
+            # Swiped at real hit time
+            sim.play_box_correctly(box, at_ms=target_hit_ms)
 
             if box.get('tier', 1) > prev_tier:
                 events.append(f"T{box['tier']}")
@@ -991,7 +1019,7 @@ class CokeClient:
                     last_m = m
 
             now_cb = time.time()
-            if progress_cb and (now_cb - last_cb_time >= 1.5):
+            if progress_cb and (now_cb - last_cb_time >= 1.8):
                 progress_cb("playing", sim, target_score, now_cb - start_time, events)
                 last_cb_time = now_cb
 
@@ -1003,13 +1031,17 @@ class CokeClient:
         # Phase 2: Natural finish cooldown — guarantees duration <= session age
         # ============================================================
         elapsed = time.time() - start_time
-        effective_min_s = max(min_duration_s, int(math.ceil((sim.next_spawn_at_ms + 1000) / 1000.0 + random.uniform(2.5, 4.5))))
+        effective_min_s = max(min_duration_s, int(math.ceil((sim.next_spawn_at_ms + 1000) / 1000.0 + random.uniform(3.0, 6.0))))
         if elapsed < effective_min_s:
             while elapsed < effective_min_s:
                 if cancel_event and cancel_event.is_set():
                     return {"success": False, "error": "Game stopped by user."}
                 time.sleep(1.0)
-                elapsed = time.time() - start_time
+                now = time.time()
+                elapsed = now - start_time
+                if (now - last_hb_wall >= 5.5) and (len(sim.input_log) > committed_count):
+                    committed_count = self._heartbeat(session_id, session_token, sim, committed_count, start_time)
+                    last_hb_wall = now
                 if progress_cb:
                     progress_cb("cooldown", sim, effective_min_s, elapsed, events)
 
@@ -1019,12 +1051,16 @@ class CokeClient:
         if progress_cb:
             progress_cb("submitting", sim, target_score, time.time() - start_time, events)
 
+        # Final heartbeat commit before score submission if uncommitted swipes remain
+        if len(sim.input_log) > committed_count:
+            committed_count = self._heartbeat(session_id, session_token, sim, committed_count, start_time)
+
         mapped_hits = {}
         for k, v in sim.hit_counts.items():
             mk = BOX_NAME_MAP.get(k, k)
             mapped_hits[mk] = mapped_hits.get(mk, 0) + v
 
-        # duration_ms MUST match the simulation time of boxes + 1000ms (as in thunder.py)
+        # duration_ms MUST match the simulation time of boxes + 1000ms
         duration_ms = sim.next_spawn_at_ms + 1000
 
         score_res = self.session.post(
