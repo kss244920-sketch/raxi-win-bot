@@ -1,8 +1,5 @@
 __pycache__
 *.pyc
-*.pyo
-*.pyd
 .git
-.gitignore
-*.log
-*.zip
+.github
+keep_alive.log
