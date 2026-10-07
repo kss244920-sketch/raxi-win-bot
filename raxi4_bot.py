@@ -771,11 +771,34 @@ def show_multi_menu(chat_id, user, message_id=None):
     b2 = types.InlineKeyboardButton("⚡ 5 Accounts (5 🎫)", callback_data="multi_run_5")
     b3 = types.InlineKeyboardButton("⚡ 10 Accounts (10 🎫)", callback_data="multi_run_10")
     b4 = types.InlineKeyboardButton("⚡ 20 Accounts (20 🎫)", callback_data="multi_run_20")
+    b_custom = types.InlineKeyboardButton("✍️ Custom Amount", callback_data="multi_custom")
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
     markup.add(b1, b2)
     markup.add(b3, b4)
+    markup.add(b_custom)
     markup.add(b_back)
 
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
+
+
+def show_custom_amount_prompt(chat_id, user, message_id=None):
+    """Displays prompt asking user to type custom bulk count."""
+    user_id = user.id if user else chat_id
+    tokens_disp = admin_manager.get_display_tokens(user_id)
+    cfg = get_chat_config(chat_id)
+
+    text = (
+        f"🔢 <b>Custom Multi-Registration</b>\n\n"
+        f"🌐 <b>Platform:</b> <code>{cfg['site']}</code> | 🎟️ <b>Invite:</b> <code>{cfg['invite']}</code>\n"
+        f"🎫 <b>Your Balance:</b> <b>{tokens_disp}</b>\n"
+        f"💰 <b>Rate:</b> <code>1 Token</code> = <code>1 Account</code>\n\n"
+        f"✍️ <b>Kitne accounts ek sath register karne hain?</b>\n"
+        f"Niche chat me koi bhi number likh kar send karein <i>(e.g. 7, 15, 25, 50)</i>:\n\n"
+        f"💡 <i>Ya fir direct command use karein:</i> <code>/bulk &lt;number&gt;</code>"
+    )
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    b_back = types.InlineKeyboardButton("🔙 Back to Multi-Menu", callback_data="reg_multi")
+    markup.add(b_back)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
 
@@ -1427,6 +1450,27 @@ def process_and_save_link(chat_id, text, orig_msg=None):
     show_link_options(chat_id, user, del_incoming=orig_msg)
 
 
+@bot.message_handler(func=lambda msg: msg.text and msg.text.strip().isdigit() and 1 <= int(msg.text.strip()) <= 100)
+def handle_custom_bulk_number_msg(message):
+    """Directly triggers bulk registration if user sends a custom number (1-100)."""
+    user = message.from_user
+    chat_id = message.chat.id
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if not is_user_member(user.id):
+        show_force_join_screen(chat_id, user, del_incoming=message)
+        return
+
+    count = int(message.text.strip())
+
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception:
+        pass
+
+    target_msg_id = LAST_BOT_MSG.get(chat_id)
+    threading.Thread(target=run_bulk_registration, args=(chat_id, user.id, count, target_msg_id), daemon=True).start()
+
+
 @bot.message_handler(commands=["export", "accounts"])
 def handle_export_cmd(message):
     user = message.from_user
@@ -1882,6 +1926,13 @@ def handle_callback_clicks(call):
         except Exception:
             pass
         show_multi_menu(chat_id, user, message_id=msg_id)
+
+    elif data == "multi_custom":
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        show_custom_amount_prompt(chat_id, user, message_id=msg_id)
 
     elif data.startswith("multi_run_") or data.startswith("bulk_run_"):
         if chat_id in BUSY_CHATS:
