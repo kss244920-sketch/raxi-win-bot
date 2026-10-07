@@ -61,7 +61,18 @@ from raxi4_register import (
 # ─── Configuration ───
 BOT_TOKEN = "8069923292:AAEAYSJPllY-UmxJzMqubde1NapwFyi0zgs"
 
+def get_persistent_data_dir() -> str:
+    jrnm_vol = "/app/data"
+    if os.path.exists(jrnm_vol) and os.path.isdir(jrnm_vol):
+        return jrnm_vol
+    return BASE_DIR
+
+DATA_DIR = get_persistent_data_dir()
+
 def resolve_file(filename: str) -> str:
+    p_vol = os.path.join(DATA_DIR, filename)
+    if os.path.exists(p_vol):
+        return p_vol
     local_p = os.path.join(BASE_DIR, filename)
     if os.path.exists(local_p):
         return local_p
@@ -69,11 +80,12 @@ def resolve_file(filename: str) -> str:
         alt_p = os.path.join(alt_dir, filename)
         if os.path.exists(alt_p):
             return alt_p
-    return local_p
+    return p_vol
 
 ACCOUNTS_FILE = resolve_file("raxi_accounts.txt")
 PROXIES_FILE = resolve_file("working_proxies.txt")
 USED_PROXIES_FILE = resolve_file("used_proxies.txt")
+CHAT_CONFIGS_FILE = os.path.join(DATA_DIR, "chat_configs.json")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
@@ -171,6 +183,34 @@ def is_user_member(user_id: int) -> bool:
 # Per-chat dynamic referral config cache:
 # chat_id -> {"site": site, "api": api, "invite": invite, "domain": domain}
 CHAT_CONFIGS = {}
+
+def load_chat_configs():
+    global CHAT_CONFIGS
+    try:
+        for p in [CHAT_CONFIGS_FILE, os.path.join(BASE_DIR, "chat_configs.json")]:
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        CHAT_CONFIGS = {int(k) if str(k).lstrip("-").isdigit() else k: v for k, v in data.items()}
+                        log(f"[bot] Loaded {len(CHAT_CONFIGS)} saved chat configs from {p}")
+                        break
+    except Exception as e:
+        log(f"[bot] Error loading chat_configs: {e}")
+
+def save_chat_configs():
+    try:
+        data = {str(k): v for k, v in CHAT_CONFIGS.items()}
+        for dest in [CHAT_CONFIGS_FILE, os.path.join(BASE_DIR, "chat_configs.json")]:
+            try:
+                with open(dest, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+            except Exception:
+                pass
+    except Exception as e:
+        log(f"[bot] Error saving chat_configs: {e}")
+
+load_chat_configs()
 
 # Indian mobile operator prefix pool for realistic number generation
 INDIAN_PREFIXES = [
@@ -408,7 +448,18 @@ def save_account_to_file(phone, password, uid, token, invite, site="https://www.
     ip = proxy or "Direct"
     c_str = f" | User: {creator_id}" if creator_id else ""
     entry = f"[{ts}] UID: {uid} | Phone: {phone} | Password: {password} | Device: {dev} | IP: {ip} | Invite: {invite} | Site: {site}{c_str} | Token: {token}\n"
-    for dest in [ACCOUNTS_FILE, os.path.join(BASE_DIR, "raxi_accounts.txt"), "/home/piyush/Desktop/raxi_accounts.txt", "/home/piyush/Downloads/Telegram Desktop/raxi_accounts.txt"]:
+    dests = [
+        ACCOUNTS_FILE,
+        os.path.join(DATA_DIR, "raxi_accounts.txt"),
+        os.path.join(BASE_DIR, "raxi_accounts.txt"),
+        "/home/piyush/Desktop/raxi_accounts.txt",
+        "/home/piyush/Downloads/Telegram Desktop/raxi_accounts.txt"
+    ]
+    seen_dests = set()
+    for dest in dests:
+        if dest in seen_dests:
+            continue
+        seen_dests.add(dest)
         try:
             with open(dest, "a", encoding="utf-8") as f:
                 f.write(entry)
@@ -425,6 +476,7 @@ def send_exported_accounts(chat_id, user_id):
     accounts_file = None
     for candidate in [
         ACCOUNTS_FILE,
+        os.path.join(DATA_DIR, "raxi_accounts.txt"),
         os.path.join(BASE_DIR, "raxi_accounts.txt"),
         "/home/piyush/Desktop/raxi_accounts.txt",
         "/home/piyush/Downloads/Telegram Desktop/raxi_accounts.txt"
@@ -474,6 +526,7 @@ def count_saved_accounts():
     accounts_file = None
     for candidate in [
         ACCOUNTS_FILE,
+        os.path.join(DATA_DIR, "raxi_accounts.txt"),
         os.path.join(BASE_DIR, "raxi_accounts.txt"),
         "/home/piyush/Desktop/raxi_accounts.txt",
         "/home/piyush/Downloads/Telegram Desktop/raxi_accounts.txt"
@@ -1445,6 +1498,7 @@ def process_and_save_link(chat_id, text, orig_msg=None):
         "invite": info["invite"],
         "domain": info["domain"]
     }
+    save_chat_configs()
 
     user = orig_msg.from_user if orig_msg else None
     show_link_options(chat_id, user, del_incoming=orig_msg)

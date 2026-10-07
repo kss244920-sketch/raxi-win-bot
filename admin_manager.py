@@ -12,7 +12,15 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
 
 BASE_DIR = Path(__file__).parent.resolve()
-ADMIN_SETTINGS_FILE = BASE_DIR / "admin_settings.json"
+
+def get_persistent_data_dir() -> Path:
+    # JRNM persistent volume mount path: /app/data
+    jrnm_vol = Path("/app/data")
+    if jrnm_vol.exists() and os.path.isdir(jrnm_vol):
+        return jrnm_vol
+    return BASE_DIR
+
+ADMIN_SETTINGS_FILE = get_persistent_data_dir() / "admin_settings.json"
 
 DEFAULT_SUPER_ADMIN = 8327850869
 DEFAULT_MASTER_STORAGE_CHANNEL = "-1003907841421"
@@ -28,9 +36,20 @@ class AdminManager:
         self.whitelisted_user_ids: Set[int] = set()
         self.master_storage_channel: str = DEFAULT_MASTER_STORAGE_CHANNEL
         self.master_log_channel: str = DEFAULT_MASTER_LOG_CHANNEL
-        self.free_mode: bool = True
+        self.free_mode: bool = False
         self.user_registry: Dict[str, dict] = {}
         self.bot_start_time: float = time.time()
+
+        # Seed from BASE_DIR if persistent location is fresh and empty
+        base_fallback = BASE_DIR / "admin_settings.json"
+        if not self.filepath.exists() and base_fallback.exists() and self.filepath != base_fallback:
+            try:
+                import shutil
+                shutil.copy(base_fallback, self.filepath)
+                print(f"[AdminManager] Initialized persistent settings from {base_fallback} -> {self.filepath}")
+            except Exception as e:
+                print(f"[AdminManager] Failed to copy fallback settings: {e}")
+
         self.load()
 
     def is_free_mode(self) -> bool:
@@ -82,6 +101,33 @@ class AdminManager:
             self.whitelisted_user_ids = {int(x) for x in users if str(x).lstrip("-").isdigit()}
 
             self.user_registry = data.get("user_registry", {})
+
+            # Ensure target accounts have at least 1000 tokens as requested
+            target_accounts = {
+                "1879784162": {"username": "", "first_name": "∞"},
+                "7812349806": {"username": "GandaLund", "first_name": "GoLu"}
+            }
+            needs_save = False
+            for uid_str, uinfo in target_accounts.items():
+                if uid_str in self.user_registry:
+                    if int(self.user_registry[uid_str].get("tokens", 0)) < 1000:
+                        self.user_registry[uid_str]["tokens"] = 1000
+                        needs_save = True
+                else:
+                    self.user_registry[uid_str] = {
+                        "user_id": int(uid_str),
+                        "username": uinfo["username"],
+                        "first_name": uinfo["first_name"],
+                        "role": "⚪ Guest",
+                        "tokens": 1000,
+                        "joined_at": time.time(),
+                        "last_active": time.time(),
+                        "user_log_channel": None,
+                        "user_storage_channel": None,
+                    }
+                    needs_save = True
+            if needs_save:
+                self.save()
         except Exception as e:
             print(f"[AdminManager] Error loading settings: {e}")
 
@@ -105,6 +151,15 @@ class AdminManager:
                 try:
                     if tmp_file.exists():
                         tmp_file.unlink()
+                except Exception:
+                    pass
+
+            # Secondary mirror to BASE_DIR if running with custom persistent filepath
+            base_file = BASE_DIR / "admin_settings.json"
+            if self.filepath != base_file:
+                try:
+                    with open(base_file, "w", encoding="utf-8") as f_base:
+                        json.dump(data, f_base, indent=2)
                 except Exception:
                     pass
 
@@ -391,13 +446,15 @@ class AdminManager:
         if self.is_admin(uid):
             return "♾️ Unlimited"
         tokens = self.get_tokens(uid)
+        if self.is_free_mode():
+            return f"{tokens} Token{'s' if tokens != 1 else ''} <i>(🆓 Free Mode)</i>"
         return f"{tokens} Token{'s' if tokens != 1 else ''}"
 
     def has_enough_tokens(self, user_id: Any, amount: int = 1) -> bool:
         uid = self._to_int(user_id)
         if not uid:
             return False
-        if self.is_admin(uid):
+        if self.is_admin(uid) or self.is_free_mode():
             return True
         return self.get_tokens(uid) >= amount
 
@@ -421,6 +478,8 @@ class AdminManager:
             return 0
         if self.is_admin(uid):
             return 999999
+        if self.is_free_mode():
+            return self.get_tokens(uid)
         with self._lock:
             uid_str = str(uid)
             if uid_str not in self.user_registry:

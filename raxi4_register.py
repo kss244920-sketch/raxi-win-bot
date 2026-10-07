@@ -197,7 +197,11 @@ def build_session():
     return s
 
 
-def register_once(session, phone, password, invite, max_captcha_retries=3):
+def register_once(session, phone, password, invite, site="https://www.raxi4.com", api="https://api.raxiqaz.com", max_captcha_retries=3):
+    import urllib.parse
+    domain = urllib.parse.urlparse(site).netloc or "www.raxi4.com"
+    target_api = api or API
+
     result = {
         "ok": False,
         "phone": phone,
@@ -211,7 +215,7 @@ def register_once(session, phone, password, invite, max_captcha_retries=3):
 
     log("[+] Checking RegisterState...")
     body = signed_body({})
-    r = session.post(f"{API}/api/webapi/RegisterState", json=body, timeout=15)
+    r = session.post(f"{target_api}/api/webapi/RegisterState", json=body, timeout=15)
     state = r.json()
     log(f"    code={state.get('code')}  msg={state.get('msg')}")
     if state.get("code") != 0:
@@ -227,7 +231,7 @@ def register_once(session, phone, password, invite, max_captcha_retries=3):
 
         log("[+] Fetching Captcha...")
         c_body = signed_body({})
-        r = session.post(f"{API}/api/webapi/Captcha", json=c_body, timeout=15)
+        r = session.post(f"{target_api}/api/webapi/Captcha", json=c_body, timeout=15)
         c = r.json()
         if c.get("code") != 0:
             log(f"    captcha fetch failed: {c.get('msg')}")
@@ -254,7 +258,7 @@ def register_once(session, phone, password, invite, max_captcha_retries=3):
             "pwd": password,
             "invitecode": invite,
             "packId": "",
-            "domainurl": "www.raxi4.com",
+            "domainurl": domain,
             "phonetype": 1,
             "captchaId": captcha_id,
             "track": track,
@@ -269,7 +273,7 @@ def register_once(session, phone, password, invite, max_captcha_retries=3):
         payload = signed_body(reg_body)
 
         log("[+] Submitting Register POST...")
-        r = session.post(f"{API}/api/webapi/Register", json=payload, timeout=20)
+        r = session.post(f"{target_api}/api/webapi/Register", json=payload, timeout=20)
         j = r.json()
         code = j.get("code")
         msg = j.get("msg")

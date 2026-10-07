@@ -19,9 +19,17 @@ logger = logging.getLogger("ProxyEngine")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+def get_persistent_data_dir() -> str:
+    jrnm_vol = "/app/data"
+    if os.path.exists(jrnm_vol) and os.path.isdir(jrnm_vol):
+        return jrnm_vol
+    return BASE_DIR
+
+DATA_DIR = get_persistent_data_dir()
+
 # File locations
-PROXIES_FILE = os.path.join(BASE_DIR, "working_proxies.txt")
-USED_PROXIES_FILE = os.path.join(BASE_DIR, "used_proxies.txt")
+PROXIES_FILE = os.path.join(DATA_DIR, "working_proxies.txt")
+USED_PROXIES_FILE = os.path.join(DATA_DIR, "used_proxies.txt")
 
 ALT_DIRS = ["/home/piyush/Desktop", "/home/piyush/Downloads/Telegram Desktop"]
 
