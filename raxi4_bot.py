@@ -1861,7 +1861,11 @@ def handle_callback_clicks(call):
         if not admin_manager.has_enough_tokens(user_id, 1):
             cur_tok = admin_manager.get_tokens(user_id)
             try:
-                bot.answer_callback_query(call.id, f"❌ Insufficient Tokens! Balance: {cur_tok}. 1 token required.", show_alert=True)
+                bot.answer_callback_query(
+                    call.id,
+                    f"❌ Insufficient Tokens!\n\n💰 Your Balance: {cur_tok} Tokens\n🎟️ Required: 1 Token",
+                    show_alert=True
+                )
             except Exception:
                 pass
             return
