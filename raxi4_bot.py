@@ -1149,7 +1149,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
         return
 
     # Token check for non-admins
-    if not admin_manager.is_admin(uid):
+    if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
         avail = admin_manager.get_tokens(uid)
         if avail <= 0:
             markup = types.InlineKeyboardMarkup()
@@ -2002,7 +2002,7 @@ def handle_callback_clicks(call):
         except Exception:
             count = 5
 
-        if not admin_manager.is_admin(user_id):
+        if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
             avail = admin_manager.get_tokens(user_id)
             if avail <= 0:
                 try:
