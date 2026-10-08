@@ -19,6 +19,7 @@ import secrets
 import base64
 import hashlib
 import threading
+import concurrent.futures
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -516,7 +517,7 @@ def decode_pwa_domain(raw):
 def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
     """
     Checks if target platform requires SMS OTP.
-    If required, scans PWA mirror list to check if an alternative SMS-free mirror exists.
+    If required, scans ALL official and candidate platform mirrors in parallel to check if an SMS-free mirror exists.
     Returns:
       sms_required: bool
       site: str
@@ -557,58 +558,100 @@ def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
             "api_type": "webapi"
         }
 
-    # If SMS OTP is ON, scan official PWA domain list
-    mirrors_scanned = 0
+    # If SMS OTP is ON, scan ALL official and candidate platform mirrors in parallel
+    candidates = set()
+
+    # 1. Fetch dynamic mirrors from platform PWA domain endpoint
     try:
         r_pwa = requests.post(f"{api_url}/api/webapi/GetPwaDomainList", json=signed_body({}), timeout=4)
         if r_pwa.status_code == 200:
             raw_mirrors = r_pwa.json().get("data", [])
             if isinstance(raw_mirrors, list):
-                mirrors_scanned = len(raw_mirrors)
                 for raw_d in raw_mirrors:
-                    clean_url = decode_pwa_domain(raw_d)
-                    parsed_m = urllib.parse.urlparse(clean_url)
-                    mirror_domain = parsed_m.netloc
-                    if not mirror_domain:
-                        continue
-                    try:
-                        # Verify mirror site is actually reachable
-                        r_ping = requests.get(clean_url, timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
-                        if r_ping.status_code != 200:
-                            continue
-
-                        m_info = detect_and_parse_referral_link(clean_url)
-                        if m_info and m_info.get("api"):
-                            # Prevent false cross-platform switching if domain failed to discover API
-                            if m_info["api"] == API and api_url != API:
-                                continue
-                            if m_info["api"] != api_url:
-                                r_m = requests.post(f"{m_info['api']}/api/webapi/RegisterState", json=signed_body({}), timeout=2.5)
-                                if r_m.status_code == 200:
-                                    d_m = r_m.json().get("data", {})
-                                    if d_m.get("isOpenRegisterSMS") != "1":
-                                        log(f"[bot] Found SMS-free mirror: {clean_url} (API: {m_info['api']})")
-                                        return {
-                                            "sms_required": False,
-                                            "site": clean_url,
-                                            "api": m_info["api"],
-                                            "domain": mirror_domain,
-                                            "switched_mirror": True,
-                                            "mirror_count": mirrors_scanned,
-                                            "api_type": m_info.get("api_type", "webapi")
-                                        }
-                    except Exception:
-                        pass
+                    clean = decode_pwa_domain(raw_d)
+                    if clean:
+                        candidates.add(clean)
     except Exception as e:
-        log(f"[bot] Mirror scan error: {e}")
+        log(f"[bot] GetPwaDomainList error: {e}")
 
+    # 2. Add complete known mirror catalog for platform families
+    domain_lower = parsed.netloc.lower()
+    if "51" in domain_lower or "51game" in api_url:
+        for i in range(1, 16):
+            candidates.add(f"https://51game{i}.com")
+            candidates.add(f"https://www.51game{i}.com")
+        candidates.add("https://51game.com")
+        candidates.add("https://www.51game.com")
+        candidates.add("https://51gamem.com")
+        candidates.add("https://www.51gamem.com")
+        candidates.add("https://51games.org")
+        candidates.add("https://51games.app")
+        for pwa_slug in [
+            "rxvwpe51", "ewjtfy51", "nyjkhvztqwxrsbd", "wjyrtdxhnksqzvb",
+            "sjnqyz51", "uyprdm51", "kzqaph51", "fzjnbx51", "xqtrpv51",
+            "bqrxst51", "dxqwjtkhsyznvrb", "cwyjdz51", "ajskdn51", "ybjzsw51", "nxdyhrwjtbzsqvk"
+        ]:
+            candidates.add(f"https://www.{pwa_slug}.com")
+            candidates.add(f"https://{pwa_slug}.com")
+    elif "raxi" in domain_lower:
+        for slug in ["raxi4", "raxiwin", "raxi11", "raxiqaz"]:
+            candidates.add(f"https://www.{slug}.com")
+            candidates.add(f"https://{slug}.com")
+
+    # 3. High-Speed Concurrent Mirror Scanner (Parallel verification)
+    def test_single_mirror(mirror_url):
+        try:
+            # Quick 1.8s ping to verify host is alive
+            r_ping = requests.get(mirror_url, timeout=1.8, headers={"User-Agent": "Mozilla/5.0"})
+            if r_ping.status_code != 200:
+                return None
+
+            m_info = detect_and_parse_referral_link(mirror_url)
+            if not m_info or not m_info.get("api"):
+                return None
+            m_api = m_info["api"]
+            # Prevent false cross-platform fallback
+            if m_api == API and api_url != API:
+                return None
+
+            r_m = requests.post(f"{m_api}/api/webapi/RegisterState", json=signed_body({}), timeout=2.0)
+            if r_m.status_code == 200:
+                d_m = r_m.json().get("data", {})
+                is_sms = (d_m.get("isOpenRegisterSMS") == "1")
+                return (mirror_url, m_api, is_sms)
+        except Exception:
+            pass
+        return None
+
+    live_scanned = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        results = list(executor.map(test_single_mirror, candidates))
+
+    for item in results:
+        if item is not None:
+            live_scanned += 1
+            m_url, m_api, is_sms = item
+            if not is_sms:
+                log(f"[bot] Found SMS-free mirror out of {live_scanned} live mirrors: {m_url} (API: {m_api})")
+                parsed_m = urllib.parse.urlparse(m_url)
+                return {
+                    "sms_required": False,
+                    "site": m_url,
+                    "api": m_api,
+                    "domain": parsed_m.netloc,
+                    "switched_mirror": True,
+                    "mirror_count": live_scanned,
+                    "api_type": "webapi"
+                }
+
+    log(f"[bot] Scanned {live_scanned} live mirrors across platform - all require SMS OTP.")
     return {
         "sms_required": True,
         "site": current_site,
         "api": api_url,
         "domain": parsed.netloc,
         "switched_mirror": False,
-        "mirror_count": mirrors_scanned,
+        "mirror_count": live_scanned,
         "api_type": "webapi"
     }
 
@@ -1066,17 +1109,18 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
     mirrors_scanned = cfg.get("mirrors_scanned", 0)
 
     if sms_req:
-        sms_badge = "🔴 <b>MANDATORY (Live Mobile OTP Required)</b>"
+        sms_badge = f"🔴 <b>MANDATORY (Live Mobile OTP Required — {mirrors_scanned} Official Mirrors Scanned)</b>"
         sms_note = (
-            "⚠️ <b>Security Notice:</b> Is platform par registration ke liye live mobile SMS OTP zaroori hai. "
-            "Aapke tokens protect karne ke liye random bulk creation pause ki gayi hai.\n\n"
-            "👉 <b>Solution:</b> <b>⚡ Single Registration -> ✍️ Custom Details</b> use karein jahan bot "
-            "aapke number par official SMS OTP trigger karega aur code enter karte hi slider solve karke account create karega!"
+            f"⚠️ <b>Platform Security Notice:</b> Platform ke sabhi <b>{mirrors_scanned} official live mirrors</b> scan kiye gaye, "
+            f"aur sabhi mirrors par live mobile SMS OTP active hai.\n\n"
+            f"🛡️ <b>Token Protection Active:</b> Aapke tokens protect karne ke liye random bulk creation pause ki gayi hai.\n\n"
+            f"👉 <b>Solution:</b> <b>⚡ Single Registration -> ✍️ Custom Details</b> use karein jahan bot "
+            f"aapke number par official SMS OTP trigger karega aur code enter karte hi slider solve karke account create karega!"
         )
     else:
         sms_badge = "🟢 <b>DISABLED (Free Auto Bulk Enabled)</b>"
         if switched:
-            sms_note = f"🎉 <b>Backup Mirror Connected:</b> Platform mirrors scan karke SMS-free official mirror auto-connect kar diya gaya hai (Scanned {mirrors_scanned} mirrors)."
+            sms_note = f"🎉 <b>Backup Mirror Connected:</b> Platform ke {mirrors_scanned} official mirrors scan karke SMS-free official mirror auto-connect kar diya gaya hai!"
         else:
             sms_note = "⚡ <b>Ready:</b> Direct instant registration bina kisi OTP ke supported hai."
 
