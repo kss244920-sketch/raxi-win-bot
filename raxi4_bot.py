@@ -153,6 +153,7 @@ def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming
 # Concurrency lock to prevent duplicate parallel registrations in same chat
 BUSY_CHATS = set()
 BUSY_CHATS_LOCK = threading.Lock()
+CUSTOM_REG_STATE = {}  # user_id -> {"step": "phone"|"password", "phone": str, "chat_id": int, "mid": int}
 
 def acquire_chat_lock(chat_id: int) -> bool:
     with BUSY_CHATS_LOCK:
@@ -583,7 +584,7 @@ def count_saved_accounts():
 #  CORE REGISTRATION WORKER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=4, creator_id=None):
+def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=6, creator_id=None):
     """
     Registers a new account with dynamic phone, password, device profile, and proxy rotation.
     Automatically marks dead proxies and skips them seamlessly.
@@ -735,6 +736,14 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             time.sleep(0.2)
             continue
 
+        # If site strictly requires SMS OTP (e.g. 51game)
+        if msg_code == 106 or "sms" in str(msg).lower():
+            log(f"[bot] Target site requires mandatory SMS OTP: {msg}")
+            return {
+                "ok": False,
+                "msg": f"SMS Verification Required: This platform enforces SMS OTP ({msg}). Registration cannot proceed without real SMS OTP."
+            }
+
         last_error = msg or f"Error code {code}"
         time.sleep(0.2)
 
@@ -835,6 +844,33 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
+
+
+def show_single_menu(chat_id, user, message_id=None):
+    """
+    Displays Sub-options for Single Registration:
+    [🎲 Random Details] and [✍️ Custom Details]
+    """
+    user_id = user.id if user else chat_id
+    tokens_disp = admin_manager.get_display_tokens(user_id)
+    cfg = get_chat_config(chat_id)
+
+    text = (
+        f"⚡ <b>Single Account Registration</b>\n\n"
+        f"🌐 <b>Platform:</b> <code>{cfg['site']}</code>\n"
+        f"🎟️ <b>Invite Code:</b> <code>{cfg['invite']}</code>\n"
+        f"🎫 <b>Your Balance:</b> <b>{tokens_disp}</b> <i>(1 Token = 1 Account)</i>\n\n"
+        f"Registration ka method select karein:\n\n"
+        f"• 🎲 <b>Random Details:</b> Bot automatically fresh Indian phone number, unique real device &amp; password generate karega.\n\n"
+        f"• ✍️ <b>Custom Details:</b> Aap apna khud ka mobile number aur password enter karke account create kar sakte hain."
+    )
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    b1 = types.InlineKeyboardButton("🎲 Random Details", callback_data="single_random")
+    b2 = types.InlineKeyboardButton("✍️ Custom Details", callback_data="single_custom")
+    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
+    markup.add(b1, b2)
+    markup.add(b_back)
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
 
 def show_multi_menu(chat_id, user, message_id=None):
@@ -1226,45 +1262,72 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
             message_id=message_id
         )
 
-        import concurrent.futures
-
         success_accounts = []
         failed_count = 0
+        total_attempts = 0
+        max_total_attempts = count + 30
+        max_consecutive_fails = 8
+        consecutive_fails = 0
         lock = threading.Lock()
         last_edit_time = [time.time()]
 
-        def do_single_reg(acc_num):
-            nonlocal failed_count
-            res = auto_register_account(site=target_site, api=target_api, invite=target_invite, creator_id=uid)
-            with lock:
-                if res.get("ok"):
-                    admin_manager.deduct_tokens(uid, 1)
-                    success_accounts.append(res)
-                else:
-                    failed_count += 1
-                cur_done = len(success_accounts) + failed_count
-                now = time.time()
-                if cur_done == count or (now - last_edit_time[0] >= 0.6):
-                    last_edit_time[0] = now
-                    bar_now = render_progress_bar(cur_done, count, length=10)
-                    try:
-                        send_or_edit(
-                            chat_id,
-                            f"⏳ <b>Multi-Registration in Progress...</b>\n\n"
-                            f"{bar_now}\n\n"
-                            f"• ✅ Success: <code>{len(success_accounts)}</code> | ❌ Failed: <code>{failed_count}</code>\n"
-                            f"• 🌐 Site: <code>{target_site}</code>\n"
-                            f"• 🎟️ Invite: <code>{target_invite}</code>\n"
-                            f"• ⚡ Parallel High-Speed Engine Active",
-                            message_id=mid
-                        )
-                    except Exception:
-                        pass
+        def worker_loop():
+            nonlocal failed_count, total_attempts, consecutive_fails
+            while True:
+                with lock:
+                    if len(success_accounts) >= count:
+                        break
+                    if total_attempts >= max_total_attempts:
+                        break
+                    if consecutive_fails >= max_consecutive_fails:
+                        break
+                    if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
+                        if admin_manager.get_tokens(uid) <= 0:
+                            break
+                    total_attempts += 1
+
+                res = auto_register_account(site=target_site, api=target_api, invite=target_invite, creator_id=uid)
+
+                with lock:
+                    if res.get("ok"):
+                        admin_manager.deduct_tokens(uid, 1)
+                        success_accounts.append(res)
+                        consecutive_fails = 0
+                    else:
+                        failed_count += 1
+                        consecutive_fails += 1
+                        if "sms" in str(res.get("msg", "")).lower():
+                            consecutive_fails = max_consecutive_fails
+
+                    now = time.time()
+                    cur_succ = len(success_accounts)
+                    if cur_succ == count or (now - last_edit_time[0] >= 0.7):
+                        last_edit_time[0] = now
+                        bar_now = render_progress_bar(cur_succ, count, length=10)
+                        retry_note = f"\n• 🔄 <b>Retries Handled:</b> <code>{failed_count}</code> <i>(Auto-recovering dropped IPs)</i>" if failed_count > 0 else ""
+                        try:
+                            send_or_edit(
+                                chat_id,
+                                f"⏳ <b>Multi-Registration in Progress...</b>\n\n"
+                                f"{bar_now}\n\n"
+                                f"• ✅ Created: <code>{cur_succ}/{count}</code>\n"
+                                f"• 🌐 Site: <code>{target_site}</code>\n"
+                                f"• 🎟️ Invite: <code>{target_invite}</code>\n"
+                                f"• ⚡ Parallel Auto-Retry Engine Active{retry_note}",
+                                message_id=mid
+                            )
+                        except Exception:
+                            pass
 
         workers = min(count, 4)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(do_single_reg, idx) for idx in range(1, count + 1)]
-            concurrent.futures.wait(futures)
+        threads = []
+        for _ in range(workers):
+            t = threading.Thread(target=worker_loop, daemon=True)
+            t.start()
+            threads.append(t)
+
+        for t in threads:
+            t.join()
 
         rem_tokens = admin_manager.get_display_tokens(uid)
 
@@ -1286,11 +1349,12 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
             return
 
         # Header summary
+        retry_line = f"🔄 <b>Retried Attempts:</b> <code>{failed_count}</code> <i>(Auto-recovered with fresh IPs)</i>\n" if failed_count > 0 else ""
         header = (
             "🎉 <b>MULTI-REGISTRATION COMPLETED!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"✅ <b>Successfully Created:</b> <code>{len(success_accounts)}/{count}</code>\n"
-            f"❌ <b>Failed Attempts:</b> <code>{failed_count}</code>\n"
+            f"{retry_line}"
             f"🎫 <b>Tokens Deducted:</b> <code>{len(success_accounts)} Tokens</code>\n"
             f"🎫 <b>Remaining Balance:</b> <b>{rem_tokens}</b>\n"
             f"🌐 <b>Target Site:</b> <code>{target_site}</code>\n"
@@ -1426,7 +1490,7 @@ def handle_single_cmd(message):
         bot.delete_message(message.chat.id, message.message_id)
     except Exception:
         pass
-    threading.Thread(target=run_registration_and_send_ss, args=(message.chat.id, user.id, None, None, None, LAST_BOT_MSG.get(message.chat.id)), daemon=True).start()
+    show_single_menu(message.chat.id, user, message_id=LAST_BOT_MSG.get(message.chat.id))
 
 
 @bot.message_handler(commands=["multi", "bulk"])
@@ -1541,6 +1605,111 @@ def process_and_save_link(chat_id, text, orig_msg=None):
     show_link_options(chat_id, user, del_incoming=orig_msg)
 
 
+@bot.message_handler(commands=["cancel"])
+def handle_cancel_cmd(message):
+    uid = message.from_user.id
+    if uid in CUSTOM_REG_STATE:
+        CUSTOM_REG_STATE.pop(uid, None)
+        try:
+            bot.delete_message(message.chat.id, message.message_id)
+        except Exception:
+            pass
+        show_single_menu(message.chat.id, message.from_user)
+
+
+@bot.message_handler(func=lambda msg: msg.from_user and msg.from_user.id in CUSTOM_REG_STATE and msg.text and not msg.text.startswith("/"))
+def handle_custom_reg_steps(message):
+    user = message.from_user
+    uid = user.id
+    chat_id = message.chat.id
+    state_data = CUSTOM_REG_STATE.get(uid)
+    if not state_data:
+        return
+
+    step = state_data.get("step")
+    target_mid = state_data.get("mid") or LAST_BOT_MSG.get(chat_id)
+    raw_text = message.text.strip()
+
+    if step == "phone":
+        clean_phone = re.sub(r"\D", "", raw_text)
+        if clean_phone.startswith("91") and len(clean_phone) == 12:
+            clean_phone = clean_phone[2:]
+        if len(clean_phone) != 10:
+            try:
+                bot.delete_message(chat_id, message.message_id)
+            except Exception:
+                pass
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg"))
+            send_or_edit(
+                chat_id,
+                f"❌ <b>Invalid Mobile Number!</b>\n\n"
+                f"Number exactly 10 digits ka hona chahiye (e.g. <code>9876543210</code>).\n"
+                f"Aapne bheja: <code>{html.escape(raw_text)}</code>\n\n"
+                f"Kripya valid 10-digit number dobara send karein:",
+                reply_markup=markup,
+                message_id=target_mid
+            )
+            return
+
+        try:
+            bot.delete_message(chat_id, message.message_id)
+        except Exception:
+            pass
+
+        CUSTOM_REG_STATE[uid]["step"] = "password"
+        CUSTOM_REG_STATE[uid]["phone"] = clean_phone
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg"))
+        send_or_edit(
+            chat_id,
+            f"🔑 <b>Custom Registration — Step 2/2</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 <b>Mobile Number:</b> <code>{clean_phone}</code> ✅\n\n"
+            f"Ab is account ke liye desired <b>Password</b> bhejein:\n"
+            f"<i>(Kam se kam 6 characters, e.g. <code>pass1234</code>)</i>\n\n"
+            f"💡 <i>Chat me password likh kar send karein ya Cancel dabayein.</i>",
+            reply_markup=markup,
+            message_id=target_mid
+        )
+        return
+
+    elif step == "password":
+        pwd = raw_text
+        if len(pwd) < 6:
+            try:
+                bot.delete_message(chat_id, message.message_id)
+            except Exception:
+                pass
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg"))
+            send_or_edit(
+                chat_id,
+                f"❌ <b>Password too short!</b>\n\n"
+                f"Password minimum 6 characters ka hona chahiye.\n\n"
+                f"Kripya apna desired password dobara bhejein:",
+                reply_markup=markup,
+                message_id=target_mid
+            )
+            return
+
+        try:
+            bot.delete_message(chat_id, message.message_id)
+        except Exception:
+            pass
+
+        phone = state_data["phone"]
+        CUSTOM_REG_STATE.pop(uid, None)
+
+        threading.Thread(
+            target=run_registration_and_send_ss,
+            args=(chat_id, uid, phone, pwd, None, target_mid),
+            daemon=True
+        ).start()
+        return
+
+
 @bot.message_handler(func=lambda msg: msg.text and msg.text.strip().isdigit() and 1 <= int(msg.text.strip()) <= 100)
 def handle_custom_bulk_number_msg(message):
     """Directly triggers bulk registration if user sends a custom number (1-100)."""
@@ -1614,7 +1783,7 @@ def handle_users_cmd(message):
     show_users_list(message.chat.id, user)
 
 
-@bot.message_handler(commands=["addtoken", "addtokens"])
+@bot.message_handler(commands=["addtoken", "addtokens", "addtokem", "add_token"])
 def handle_addtoken_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
@@ -1661,7 +1830,7 @@ def handle_addtoken_cmd(message):
         pass
 
 
-@bot.message_handler(commands=["settoken", "settokens"])
+@bot.message_handler(commands=["settoken", "settokens", "settokem", "set_token"])
 def handle_settoken_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
@@ -1691,7 +1860,7 @@ def handle_settoken_cmd(message):
     )
 
 
-@bot.message_handler(commands=["deltoken", "removetoken", "deltokens"])
+@bot.message_handler(commands=["deltoken", "removetoken", "deltokens", "deltokem", "del_token"])
 def handle_deltoken_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
@@ -1752,7 +1921,7 @@ def handle_adduser_cmd(message):
     bot.reply_to(message, f"✅ User <code>{target_id}</code> added to Whitelist!", parse_mode="HTML")
 
 
-@bot.message_handler(commands=["deluser"])
+@bot.message_handler(commands=["deluser", "del", "removeuser"])
 def handle_deluser_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
@@ -1761,8 +1930,12 @@ def handle_deluser_cmd(message):
         return
 
     args = message.text.strip().split()
+    # Smart shortcut: /del <id> <amount> triggers deltoken
+    if len(args) >= 3 and args[1].lstrip("-").isdigit() and args[2].isdigit():
+        return handle_deltoken_cmd(message)
+
     if len(args) < 2 or not args[1].lstrip("-").isdigit():
-        bot.reply_to(message, "⚠️ Usage: <code>/deluser &lt;telegram_user_id&gt;</code>", parse_mode="HTML")
+        bot.reply_to(message, "⚠️ Usage: <code>/deluser &lt;telegram_user_id&gt;</code> or <code>/del &lt;telegram_user_id&gt;</code>", parse_mode="HTML")
         return
 
     target_id = int(args[1])
@@ -1985,7 +2158,14 @@ def handle_callback_clicks(call):
             pass
 
     # ─── Single Registration ───
-    elif data in ("reg_single", "auto_reg"):
+    elif data in ("reg_single", "single_menu"):
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        show_single_menu(chat_id, user, message_id=msg_id)
+
+    elif data in ("single_random", "auto_reg"):
         if chat_id in BUSY_CHATS:
             try:
                 bot.answer_callback_query(call.id, "⏳ Registration in progress! Please wait a moment.", show_alert=True)
@@ -2005,10 +2185,62 @@ def handle_callback_clicks(call):
                 pass
             return
         try:
-            bot.answer_callback_query(call.id, "Starting single registration (Cost: 1 🎫)...")
+            bot.answer_callback_query(call.id, "Starting random registration (1 🎫)...")
         except Exception:
             pass
         threading.Thread(target=run_registration_and_send_ss, args=(chat_id, user_id, None, None, None, msg_id), daemon=True).start()
+
+    elif data == "single_custom":
+        if chat_id in BUSY_CHATS:
+            try:
+                bot.answer_callback_query(call.id, "⏳ Registration in progress! Please wait a moment.", show_alert=True)
+            except Exception:
+                pass
+            return
+
+        if not admin_manager.has_enough_tokens(user_id, 1):
+            cur_tok = admin_manager.get_tokens(user_id)
+            try:
+                bot.answer_callback_query(
+                    call.id,
+                    f"❌ Insufficient Tokens!\n\n💰 Your Balance: {cur_tok} Tokens\n🎟️ Required: 1 Token",
+                    show_alert=True
+                )
+            except Exception:
+                pass
+            return
+
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+
+        CUSTOM_REG_STATE[user_id] = {
+            "chat_id": chat_id,
+            "step": "phone",
+            "phone": None,
+            "mid": msg_id
+        }
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg"))
+
+        text = (
+            "📱 <b>Custom Registration — Step 1/2</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Kripya account ke liye <b>10-digit Mobile Number</b> bhejein:\n"
+            "<i>(Example: 9876543210)</i>\n\n"
+            "💡 <i>Chat me number likh kar send karein ya Cancel dabayein.</i>"
+        )
+        send_or_edit(chat_id, text, reply_markup=markup, message_id=msg_id)
+
+    elif data == "cancel_custom_reg":
+        CUSTOM_REG_STATE.pop(user_id, None)
+        try:
+            bot.answer_callback_query(call.id, "Registration cancelled.")
+        except Exception:
+            pass
+        show_single_menu(chat_id, user, message_id=msg_id)
 
     # ─── Multi-Registration ───
     elif data in ("reg_multi", "bulk_menu"):

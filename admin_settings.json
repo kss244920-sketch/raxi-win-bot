@@ -3,16 +3,14 @@
   "master_log_channel": "-1003946923981",
   "master_storage_channel": "-1003907841421",
   "admin_user_ids": [
-    8327850869,
-    7812349806,
-    1879784162
+    8327850869
   ],
   "whitelisted_user_ids": [],
   "user_registry": {
     "8327850869": {
       "user_id": 8327850869,
       "username": "OwAtom",
-      "first_name": "ᅟ",
+      "first_name": "\u115f",
       "role": "👑 Super Admin",
       "joined_at": 1791360836.8728495,
       "last_active": 1791365802.2890346,
@@ -24,8 +22,8 @@
       "user_id": 7812349806,
       "username": "GandaLund",
       "first_name": "GoLu",
-      "role": "🛡️ Admin",
-      "tokens": 1000,
+      "role": "⚪ Free User",
+      "tokens": 0,
       "joined_at": 1791369390.3403897,
       "last_active": 1791369506.837519,
       "user_log_channel": null,
@@ -35,8 +33,8 @@
       "user_id": 1879784162,
       "username": "",
       "first_name": "∞",
-      "role": "🛡️ Admin",
-      "tokens": 1000,
+      "role": "⚪ Free User",
+      "tokens": 0,
       "joined_at": 1791368000.0,
       "last_active": 1791369000.0,
       "user_log_channel": null,

@@ -102,32 +102,7 @@ class AdminManager:
 
             self.user_registry = data.get("user_registry", {})
 
-            # Ensure target accounts have at least 1000 tokens as requested
-            target_accounts = {
-                "1879784162": {"username": "", "first_name": "∞"},
-                "7812349806": {"username": "GandaLund", "first_name": "GoLu"}
-            }
-            needs_save = False
-            for uid_str, uinfo in target_accounts.items():
-                if uid_str in self.user_registry:
-                    if int(self.user_registry[uid_str].get("tokens", 0)) < 1000:
-                        self.user_registry[uid_str]["tokens"] = 1000
-                        needs_save = True
-                else:
-                    self.user_registry[uid_str] = {
-                        "user_id": int(uid_str),
-                        "username": uinfo["username"],
-                        "first_name": uinfo["first_name"],
-                        "role": "⚪ Guest",
-                        "tokens": 1000,
-                        "joined_at": time.time(),
-                        "last_active": time.time(),
-                        "user_log_channel": None,
-                        "user_storage_channel": None,
-                    }
-                    needs_save = True
-            if needs_save:
-                self.save()
+
         except Exception as e:
             print(f"[AdminManager] Error loading settings: {e}")
 
