@@ -52,11 +52,11 @@ SOURCES = [
 ]
 
 TARGET_CHECK_URL = "https://api.raxiqaz.com/api/webapi/Captcha"
-CONNECT_TIMEOUT = 1.8
-READ_TIMEOUT = 2.2
+CONNECT_TIMEOUT = 2.2
+READ_TIMEOUT = 2.8
 
-POOL_TARGET = 100       # Target: 100 verified working proxies
-POOL_MIN_THRESHOLD = 30 # Trigger auto-refill when pool drops below 30
+POOL_TARGET = 250       # Target: 250 verified working proxies
+POOL_MIN_THRESHOLD = 50 # Trigger auto-refill when pool drops below 50
 
 class ProxyManager:
     def __init__(self):
@@ -65,7 +65,41 @@ class ProxyManager:
         self.is_refilling = False
         self.last_refill_time = 0
         self.proxy_index = 0
+        self.ensure_seed_proxies()
         self.load_local_pool()
+
+    def ensure_seed_proxies(self):
+        """Ensures DATA_DIR/working_proxies.txt has working seed proxies from repository."""
+        repo_files = [
+            os.path.join(BASE_DIR, "working_proxies.txt"),
+            "/app/working_proxies.txt",
+            "/home/piyush/raxi4-bot/working_proxies.txt",
+            "/home/piyush/Desktop/working_proxies.txt",
+            "/home/piyush/Downloads/Telegram Desktop/working_proxies.txt"
+        ]
+        existing = set()
+        if os.path.exists(PROXIES_FILE):
+            try:
+                with open(PROXIES_FILE, "r", encoding="utf-8") as f:
+                    existing = {l.strip() for l in f if l.strip() and not l.startswith("#") and "@" not in l}
+            except Exception:
+                pass
+
+        added = 0
+        for rf in repo_files:
+            if os.path.exists(rf) and os.path.abspath(rf) != os.path.abspath(PROXIES_FILE):
+                try:
+                    with open(rf, "r", encoding="utf-8") as f:
+                        for line in f:
+                            p = line.strip()
+                            if p and not p.startswith("#") and p not in existing and "@" not in p:
+                                existing.add(p)
+                                added += 1
+                except Exception:
+                    pass
+        if added > 0:
+            logger.info(f"Seeded {added} proxies from repository files into {PROXIES_FILE}")
+            self.save_pool(list(existing))
 
     def normalize_domain(self, domain_or_url: str) -> str:
         """Normalizes any domain or URL to a clean lowercase identifier (e.g. raxi4.com, bigmumbai.com)."""
@@ -146,12 +180,16 @@ class ProxyManager:
             self.dead_proxies.add(proxy_str)
 
     def load_local_pool(self) -> list:
-        """Reads current pool of working proxies from file."""
+        """Reads current pool of working proxies from file with auto-seeding."""
         if not os.path.exists(PROXIES_FILE):
-            return []
+            self.ensure_seed_proxies()
         try:
             with open(PROXIES_FILE, "r", encoding="utf-8") as f:
                 lines = [l.strip() for l in f if l.strip() and not l.startswith("#") and "@" not in l]
+                if len(lines) < POOL_MIN_THRESHOLD:
+                    self.ensure_seed_proxies()
+                    with open(PROXIES_FILE, "r", encoding="utf-8") as f2:
+                        lines = [l.strip() for l in f2 if l.strip() and not l.startswith("#") and "@" not in l]
                 return lines
         except Exception:
             return []
@@ -183,8 +221,13 @@ class ProxyManager:
         """
         Returns a completely FRESH, verified, never-before-used working proxy for this domain.
         If IP was used for raxiwin, it is STILL 100% ELIGIBLE for bigmumbai or other sites!
+        If unused pool for domain is exhausted, falls back to reusing alive proxies rather than failing with Direct.
         """
         pool = self.load_local_pool()
+        if len(pool) < POOL_MIN_THRESHOLD:
+            self.ensure_seed_proxies()
+            pool = self.load_local_pool()
+
         used = self.get_used_proxies(domain=domain)
         ex = set(used)
         ex.update(self.dead_proxies)
@@ -198,11 +241,26 @@ class ProxyManager:
             threading.Thread(target=self.refill_proxies, kwargs={"target_count": POOL_TARGET}, daemon=True).start()
 
         if not available:
-            available = [p for p in pool if p not in self.dead_proxies and p not in used]
-            if not available:
-                if not self.is_refilling:
-                    threading.Thread(target=self.refill_proxies, kwargs={"target_count": POOL_TARGET}, daemon=True).start()
-                return None
+            # Fallback Tier 1: Allow any proxies in pool that are not dead and not excluded in current transaction
+            fallback = [p for p in pool if p not in self.dead_proxies and (not exclude or p not in exclude)]
+            if fallback:
+                with self.lock:
+                    self.proxy_index = (self.proxy_index + 1) % len(fallback)
+                    return fallback[self.proxy_index]
+
+            # Fallback Tier 2: Clear temporary dead proxy memory (in case of network blips) and retry
+            if pool:
+                with self.lock:
+                    self.dead_proxies.clear()
+                retry_candidates = [p for p in pool if not exclude or p not in exclude]
+                if retry_candidates:
+                    with self.lock:
+                        self.proxy_index = (self.proxy_index + 1) % len(retry_candidates)
+                        return retry_candidates[self.proxy_index]
+
+            if not self.is_refilling:
+                threading.Thread(target=self.refill_proxies, kwargs={"target_count": POOL_TARGET}, daemon=True).start()
+            return None
 
         with self.lock:
             self.proxy_index = (self.proxy_index + 1) % len(available)
@@ -211,23 +269,27 @@ class ProxyManager:
     def test_single_proxy(self, proxy_str: str) -> bool:
         """
         Verifies whether proxy can successfully connect via HTTPS.
-        Strict 1.8s connect, 2.2s read ensures only high-speed proxies are kept.
+        Tests against both DMFirst and RaxiCaptcha APIs.
         """
         proxies = {
             "http": f"http://{proxy_str}",
             "https": f"http://{proxy_str}"
         }
-        try:
-            r = requests.post(
-                TARGET_CHECK_URL,
-                json={"signature": "test_ping"},
-                proxies=proxies,
-                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT)
-            )
-            if r.status_code == 200:
-                return True
-        except Exception:
-            pass
+        for test_url in [
+            "https://api.dmfirst9api.com/api/webapi/Captcha",
+            TARGET_CHECK_URL
+        ]:
+            try:
+                r = requests.post(
+                    test_url,
+                    json={},
+                    proxies=proxies,
+                    timeout=(CONNECT_TIMEOUT, READ_TIMEOUT)
+                )
+                if r.status_code == 200 and ("code" in r.text or "data" in r.text):
+                    return True
+            except Exception:
+                pass
         return False
 
     def scrape_candidates(self) -> set:
@@ -249,9 +311,9 @@ class ProxyManager:
         logger.info(f"Scraped {len(candidates)} raw proxies, {len(fresh_candidates)} fresh candidates.")
         return fresh_candidates
 
-    def refill_proxies(self, target_count=POOL_TARGET, max_test=500):
+    def refill_proxies(self, target_count=POOL_TARGET, max_test=2000):
         """
-        Scrapes candidates and validates them concurrently with 15 lightweight workers.
+        Scrapes candidates and validates them concurrently with 80 high-speed workers.
         """
         with self.lock:
             if self.is_refilling:
@@ -281,7 +343,7 @@ class ProxyManager:
                     return p
                 return None
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=80) as executor:
                 for res in executor.map(worker, test_subset):
                     if res:
                         new_verified.append(res)

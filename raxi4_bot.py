@@ -835,7 +835,7 @@ def count_saved_accounts():
 #  CORE REGISTRATION WORKER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=6, creator_id=None, smsvcode="", api_type=None):
+def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=8, creator_id=None, smsvcode="", api_type=None):
     """
     Registers a new account with dynamic phone, password, device profile, and proxy rotation.
     Automatically supports both AR-SAAS (MaanWin, GoaGames, etc.) and VITE/WEBAPI (51game, Raxi).
@@ -863,12 +863,16 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         dev_ua = dev_profile["ua"]
         device_id = secrets.token_hex(16)
 
-        if attempt == max_search_attempts and attempt > 1:
-            active_proxy = None
-        else:
-            active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain)
+        active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain)
+        if not active_proxy and "Direct" not in tried_proxies:
+            active_proxy = None  # fallback to Direct only once if pool has no candidate
+        elif not active_proxy:
+            active_proxy = get_next_proxy(exclude=None, domain=domain)
+
         if active_proxy:
             tried_proxies.add(active_proxy)
+        else:
+            tried_proxies.add("Direct")
         proxy_label = active_proxy if active_proxy else "Direct"
 
         log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'AR-SAAS' if is_arsaas else 'WEBAPI'}): phone={target_phone} dev='{dev_model}' proxy={proxy_label}")
@@ -889,7 +893,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         if active_proxy:
             session.proxies = {"http": f"http://{active_proxy}", "https": f"http://{active_proxy}"}
 
-        # 1. Fetch Captcha - Strict 1.8s connect, 2.5s read
+        # 1. Fetch Captcha - Strict 2.0s connect, 2.8s read
         try:
             if is_arsaas:
                 cap_url = f"{target_site}/api/Home/Captcha"
@@ -898,7 +902,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 cap_url = f"{target_api}/api/webapi/Captcha"
                 cap_payload = signed_body({})
 
-            r_cap = session.post(cap_url, json=cap_payload, timeout=(1.8, 2.5))
+            r_cap = session.post(cap_url, json=cap_payload, timeout=(2.0, 2.8))
             cdata = r_cap.json().get("data", {})
             cid = cdata.get("captchaId")
             bg_b64 = cdata.get("backgroundImage")
@@ -907,17 +911,23 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             log(f"[bot] Proxy {proxy_label} captcha connection error: {e}")
             if active_proxy:
                 mark_proxy_dead(active_proxy)
+            last_error = f"Captcha connection error via {proxy_label}: {str(e)[:80]}"
             time.sleep(0.1)
             continue
 
         if not cid or not bg_b64 or not sl_b64:
+            log(f"[bot] Proxy {proxy_label} captcha missing images/ID")
+            if active_proxy:
+                mark_proxy_dead(active_proxy)
+            last_error = f"Captcha returned empty data via {proxy_label}"
+            time.sleep(0.1)
             continue
 
         # 2. Solve slider puzzle via native PIL + NumPy contour matching
         container_x, score = solve_slider(bg_b64, sl_b64)
         track = make_track(container_x)
 
-        # 3. Submit Register POST - Strict 2.0s connect, 3.0s read
+        # 3. Submit Register POST - Strict 2.2s connect, 3.2s read
         if is_arsaas:
             reg_url = f"{target_site}/api/Home/Register"
             reg_dict = {
@@ -948,12 +958,13 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             reg_payload = signed_body(reg_dict)
 
         try:
-            r = session.post(reg_url, json=reg_payload, timeout=(2.0, 3.0))
+            r = session.post(reg_url, json=reg_payload, timeout=(2.2, 3.2))
             j = r.json()
         except Exception as e:
             log(f"[bot] Proxy {proxy_label} Register POST error: {e}")
             if active_proxy:
                 mark_proxy_dead(active_proxy)
+            last_error = f"Register POST error via {proxy_label}: {str(e)[:80]}"
             time.sleep(0.1)
             continue
 
@@ -996,6 +1007,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         # If phone is already registered and in auto-mode, pick another number
         if (msg_code in (111, 5033) or "already registered" in str(msg).lower()) and is_auto:
             log("[bot] Number already registered, picking another...")
+            last_error = "Number already registered"
             time.sleep(0.2)
             continue
 
@@ -1005,14 +1017,23 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         # Captcha verification failed -> retry
         if msg_code in (31, 143, 5008) or "captcha" in str(msg).lower() or "verification failed" in str(msg).lower():
             log("[bot] Captcha verification failed, retrying...")
+            last_error = f"Captcha verification failed ({msg})"
             time.sleep(0.2)
             continue
 
-        # If server blocks operation or rate limits this proxy, rotate to next proxy immediately
-        if msg_code in (2, 13) or "frequently" in str(msg).lower():
+        # If server blocks operation or rate limits this proxy / IP forbidden (Code 114)
+        if (
+            msg_code in (2, 8, 13, 114)
+            or "frequently" in str(msg).lower()
+            or "forbidden" in str(msg).lower()
+            or "the ip has been" in str(msg).lower()
+            or "ip blocked" in str(msg).lower()
+            or "limit" in str(msg).lower()
+        ):
             log(f"[bot] Proxy {proxy_label} flagged by server ({msg}), rotating to next IP...")
             if active_proxy:
                 mark_proxy_used(active_proxy, domain=domain)
+                mark_proxy_dead(active_proxy)
             last_error = f"{msg} (code {msg_code})"
             time.sleep(0.2)
             continue
@@ -1615,8 +1636,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
         success_accounts = []
         failed_count = 0
         total_attempts = 0
-        max_total_attempts = count + 30
-        max_consecutive_fails = 8
+        max_total_attempts = count * 4 + 60
+        max_consecutive_fails = 25
         consecutive_fails = 0
         lock = threading.Lock()
         last_edit_time = [time.time()]
@@ -1646,8 +1667,10 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
                     else:
                         failed_count += 1
                         consecutive_fails += 1
-                        if "sms" in str(res.get("msg", "")).lower():
+                        if "sms" in str(res.get("msg", "")).lower() and "required" in str(res.get("msg", "")).lower():
                             consecutive_fails = max_consecutive_fails
+                        elif consecutive_fails % 6 == 0:
+                            threading.Thread(target=proxy_manager.refill_proxies, kwargs={"target_count": 250}, daemon=True).start()
 
                     now = time.time()
                     cur_succ = len(success_accounts)
