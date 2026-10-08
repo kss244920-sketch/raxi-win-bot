@@ -438,6 +438,116 @@ def detect_and_parse_referral_link(text_or_url):
         "raw_url": raw_url
     }
 
+def decode_pwa_domain(raw):
+    """Decodes PWA domain string (may be base64-encoded or raw URL)."""
+    if not raw or not isinstance(raw, str):
+        return ""
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return raw
+    try:
+        decoded = base64.b64decode(raw).decode("utf-8")
+        if "." in decoded:
+            return f"https://{decoded}" if not decoded.startswith("http") else decoded
+    except Exception:
+        pass
+    return f"https://{raw}" if not raw.startswith("http") else raw
+
+def check_platform_sms_and_mirrors(api_url, current_site):
+    """
+    Checks if target platform requires SMS OTP.
+    If required, scans PWA mirror list to check if an alternative SMS-free mirror exists.
+    Returns:
+      sms_required: bool
+      site: str
+      domain: str
+      switched_mirror: bool
+      mirror_count: int
+    """
+    sms_required = False
+    try:
+        r = requests.post(f"{api_url}/api/webapi/RegisterState", json=signed_body({}), timeout=4)
+        if r.status_code == 200:
+            data = r.json().get("data", {})
+            sms_required = (data.get("isOpenRegisterSMS") == "1")
+    except Exception as e:
+        log(f"[bot] RegisterState check error for {api_url}: {e}")
+
+    parsed = urllib.parse.urlparse(current_site)
+    if not sms_required:
+        return {
+            "sms_required": False,
+            "site": current_site,
+            "api": api_url,
+            "domain": parsed.netloc,
+            "switched_mirror": False,
+            "mirror_count": 0
+        }
+
+    # If SMS OTP is ON, scan official PWA domain list
+    mirrors_scanned = 0
+    try:
+        r_pwa = requests.post(f"{api_url}/api/webapi/GetPwaDomainList", json=signed_body({}), timeout=4)
+        if r_pwa.status_code == 200:
+            raw_mirrors = r_pwa.json().get("data", [])
+            if isinstance(raw_mirrors, list):
+                mirrors_scanned = len(raw_mirrors)
+                for raw_d in raw_mirrors:
+                    clean_url = decode_pwa_domain(raw_d)
+                    parsed_m = urllib.parse.urlparse(clean_url)
+                    mirror_domain = parsed_m.netloc
+                    if not mirror_domain:
+                        continue
+                    try:
+                        m_info = detect_and_parse_referral_link(clean_url)
+                        if m_info and m_info.get("api") and m_info["api"] != api_url:
+                            r_m = requests.post(f"{m_info['api']}/api/webapi/RegisterState", json=signed_body({}), timeout=3)
+                            if r_m.status_code == 200:
+                                d_m = r_m.json().get("data", {})
+                                if d_m.get("isOpenRegisterSMS") != "1":
+                                    log(f"[bot] Found SMS-free mirror: {clean_url} (API: {m_info['api']})")
+                                    return {
+                                        "sms_required": False,
+                                        "site": clean_url,
+                                        "api": m_info["api"],
+                                        "domain": mirror_domain,
+                                        "switched_mirror": True,
+                                        "mirror_count": mirrors_scanned
+                                    }
+                    except Exception:
+                        pass
+    except Exception as e:
+        log(f"[bot] Mirror scan error: {e}")
+
+    return {
+        "sms_required": True,
+        "site": current_site,
+        "api": api_url,
+        "domain": parsed.netloc,
+        "switched_mirror": False,
+        "mirror_count": mirrors_scanned
+    }
+
+def send_sms_otp(api_url, phone_10_digit):
+    """
+    Triggers SMS OTP using official platform webapi.
+    phone_10_digit: 10-digit Indian mobile number
+    Returns (ok: bool, msg: str)
+    """
+    try:
+        full_phone = f"91{phone_10_digit}"
+        payload = {"phone": full_phone, "codeType": 1}
+        r = requests.post(f"{api_url}/api/webapi/SmsVerifyCode", json=signed_body(payload), timeout=6)
+        if r.status_code == 200:
+            j = r.json()
+            code = j.get("code")
+            msg = j.get("msg") or ""
+            if code == 0 or "success" in msg.lower():
+                return True, "SMS sent successfully"
+            return False, msg or f"Error code {code}"
+        return False, f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, str(e)
+
 def get_chat_config(chat_id):
     """Returns current active configuration for the given chat ID."""
     if chat_id not in CHAT_CONFIGS:
@@ -445,7 +555,10 @@ def get_chat_config(chat_id):
             "site": SITE,
             "api": API,
             "invite": INVITE,
-            "domain": urllib.parse.urlparse(SITE).netloc
+            "domain": urllib.parse.urlparse(SITE).netloc,
+            "sms_required": False,
+            "switched_mirror": False,
+            "mirrors_scanned": 0
         }
     return CHAT_CONFIGS[chat_id]
 
@@ -584,11 +697,11 @@ def count_saved_accounts():
 #  CORE REGISTRATION WORKER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=6, creator_id=None):
+def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=6, creator_id=None, smsvcode=""):
     """
     Registers a new account with dynamic phone, password, device profile, and proxy rotation.
     Automatically marks dead proxies and skips them seamlessly.
-    Uses ultra-fast connection timeouts (max 2s) so registration never lags.
+    Supports smsvcode for OTP verification.
     """
     target_site = site or SITE
     target_api = api or API
@@ -655,7 +768,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         # 3. Submit Register POST - Strict 2.0s connect, 3.0s read
         reg_body = {
             "username": f"91{target_phone}",
-            "smsvcode": "",
+            "smsvcode": smsvcode or "",
             "registerType": "mobile",
             "pwd": target_pwd,
             "invitecode": target_invite,
@@ -782,26 +895,29 @@ def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
     user_id = user.id if user else chat_id
     first_name = html.escape(user.first_name if user else "User")
     tokens_disp = admin_manager.get_display_tokens(user_id)
+    cfg = get_chat_config(chat_id)
 
     text = (
         f"👋 <b>Welcome {first_name}!</b>\n\n"
         f"👤 <b>User:</b> {first_name} | 🆔 <b>ID:</b> <code>{user_id}</code>\n"
         f"🎫 <b>Tokens:</b> <b>{tokens_disp}</b>\n\n"
+        f"🌐 <b>Current Target Site:</b> <code>{cfg['site']}</code>\n"
+        f"🎟️ <b>Invite Code:</b> <code>{cfg['invite']}</code>\n\n"
         f"🔗 <b>Please send your Platform Referral Link / URL:</b>\n"
-        f"Aap jis bhi platform ya website par registration karna chahte hain, uska <b>referral link</b> yahan chat me paste karein.\n\n"
+        f"Aap jis bhi platform ya website par registration karna chahte hain, uska <b>referral link</b> yahan chat me paste karein. "
+        f"Bot automatically official backend API, mirrors, aur SMS requirement discover kar lega.\n\n"
         f"💡 <i>Example:</i>\n"
         f"<code>https://www.raxi4.com/#/register?invitationCode=12345678901</code>\n\n"
-        f"⚡ <i>Bot automatically target API endpoint, invitation code aur domain discover kar lega.</i>"
+        f"⚡ <i>Ya fir current site par direct registration start karne ke liye button dabayein:</i>"
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
+    b_start = types.InlineKeyboardButton("⚡ Start Registration", callback_data="show_link_options")
     b_tok = types.InlineKeyboardButton("🎫 My Token Balance", callback_data="my_tokens")
-    markup.add(b_tok)
+    markup.add(b_start, b_tok)
 
-    if chat_id in CHAT_CONFIGS:
-        cfg = CHAT_CONFIGS[chat_id]
-        b_curr = types.InlineKeyboardButton(f"⚡ Use Saved ({cfg['domain']})", callback_data="show_link_options")
-        markup.add(b_curr)
+    b_help = types.InlineKeyboardButton("❓ Help & Guide", callback_data="show_help")
+    markup.add(b_help)
 
     if admin_manager.is_admin(user_id):
         b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin")
@@ -820,11 +936,32 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
     tokens_disp = admin_manager.get_display_tokens(user_id)
     cfg = get_chat_config(chat_id)
 
+    sms_req = cfg.get("sms_required", False)
+    switched = cfg.get("switched_mirror", False)
+    mirrors_scanned = cfg.get("mirrors_scanned", 0)
+
+    if sms_req:
+        sms_badge = "🔴 <b>MANDATORY (Live Mobile OTP Required)</b>"
+        sms_note = (
+            "⚠️ <b>Security Notice:</b> Is platform par registration ke liye live mobile SMS OTP zaroori hai. "
+            "Aapke tokens protect karne ke liye random bulk creation pause ki gayi hai.\n\n"
+            "👉 <b>Solution:</b> <b>⚡ Single Registration -> ✍️ Custom Details</b> use karein jahan bot "
+            "aapke number par official SMS OTP trigger karega aur code enter karte hi slider solve karke account create karega!"
+        )
+    else:
+        sms_badge = "🟢 <b>DISABLED (Free Auto Bulk Enabled)</b>"
+        if switched:
+            sms_note = f"🎉 <b>Backup Mirror Connected:</b> Platform mirrors scan karke SMS-free official mirror auto-connect kar diya gaya hai (Scanned {mirrors_scanned} mirrors)."
+        else:
+            sms_note = "⚡ <b>Ready:</b> Direct instant registration bina kisi OTP ke supported hai."
+
     text = (
-        f"🎯 <b>Platform Successfully Configured!</b>\n\n"
+        f"🎯 <b>Platform Configuration Active!</b>\n\n"
         f"🌐 <b>Target Site:</b> <code>{cfg['site']}</code>\n"
         f"🎟️ <b>Invite Code:</b> <code>{cfg['invite']}</code>\n"
-        f"⚡ <b>Backend API:</b> <code>{cfg['api']}</code> <i>(Auto-Detected)</i>\n\n"
+        f"⚡ <b>Backend API:</b> <code>{cfg['api']}</code>\n"
+        f"🔒 <b>SMS OTP Status:</b> {sms_badge}\n\n"
+        f"{sms_note}\n\n"
         f"👤 <b>User:</b> {first_name} | 🆔 <b>ID:</b> <code>{user_id}</code>\n"
         f"🎫 <b>Token Balance:</b> <b>{tokens_disp}</b> <i>(1 Token = 1 Account)</i>\n\n"
         f"Select Registration Mode:"
@@ -838,6 +975,10 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
     b3 = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link")
     b4 = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt")
     markup.add(b3, b4)
+
+    b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
+    b_tok = types.InlineKeyboardButton("🎫 My Balance", callback_data="my_tokens")
+    markup.add(b_home, b_tok)
 
     if admin_manager.is_admin(user_id):
         b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin")
@@ -854,22 +995,36 @@ def show_single_menu(chat_id, user, message_id=None):
     user_id = user.id if user else chat_id
     tokens_disp = admin_manager.get_display_tokens(user_id)
     cfg = get_chat_config(chat_id)
+    sms_req = cfg.get("sms_required", False)
+
+    if sms_req:
+        info_lines = (
+            "⚠️ <b>Platform SMS OTP Enforced:</b>\n"
+            "• 🎲 <b>Random Details:</b> ❌ Unavailable (Platform requires real mobile OTP)\n\n"
+            "• ✍️ <b>Custom Details:</b> 🟢 <b>Recommended!</b> Enter your 10-digit number; "
+            "bot will send live OTP to your phone, verify slider & register account seamlessly."
+        )
+    else:
+        info_lines = (
+            "Registration ka method select karein:\n\n"
+            "• 🎲 <b>Random Details:</b> Bot automatically fresh Indian phone number, unique real device &amp; password generate karega.\n\n"
+            "• ✍️ <b>Custom Details:</b> Aap apna khud ka mobile number aur password enter karke account create kar sakte hain."
+        )
 
     text = (
         f"⚡ <b>Single Account Registration</b>\n\n"
         f"🌐 <b>Platform:</b> <code>{cfg['site']}</code>\n"
         f"🎟️ <b>Invite Code:</b> <code>{cfg['invite']}</code>\n"
         f"🎫 <b>Your Balance:</b> <b>{tokens_disp}</b> <i>(1 Token = 1 Account)</i>\n\n"
-        f"Registration ka method select karein:\n\n"
-        f"• 🎲 <b>Random Details:</b> Bot automatically fresh Indian phone number, unique real device &amp; password generate karega.\n\n"
-        f"• ✍️ <b>Custom Details:</b> Aap apna khud ka mobile number aur password enter karke account create kar sakte hain."
+        f"{info_lines}"
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
     b1 = types.InlineKeyboardButton("🎲 Random Details", callback_data="single_random")
-    b2 = types.InlineKeyboardButton("✍️ Custom Details", callback_data="single_custom")
+    b2 = types.InlineKeyboardButton("✍️ Custom Details" + (" (OTP)" if sms_req else ""), callback_data="single_custom")
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
+    b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
     markup.add(b1, b2)
-    markup.add(b_back)
+    markup.add(b_back, b_home)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
 
@@ -878,6 +1033,26 @@ def show_multi_menu(chat_id, user, message_id=None):
     user_id = user.id if user else chat_id
     tokens_disp = admin_manager.get_display_tokens(user_id)
     cfg = get_chat_config(chat_id)
+    sms_req = cfg.get("sms_required", False)
+
+    if sms_req:
+        text = (
+            f"🔢 <b>Multi-Registration (Bulk Mode) — PAUSED</b>\n\n"
+            f"🌐 <b>Target Platform:</b> <code>{cfg['site']}</code>\n"
+            f"🔒 <b>SMS OTP Status:</b> 🔴 <b>MANDATORY OTP</b>\n\n"
+            f"⚠️ <b>Notice:</b> Is platform par har naye registration ke liye real mobile SMS OTP zaroori hai.\n"
+            f"Random virtual numbers par OTP receive nahi hota, isliye aapke tokens protect karne ke liye "
+            f"Bulk mode is platform par pause kiya gaya hai.\n\n"
+            f"💡 <b>Kripya 'Single Registration -> Custom Details' use karein</b> jahan aap apna mobile number "
+            f"enter karke OTP ke sath account create kar sakte hain."
+        )
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        b_custom = types.InlineKeyboardButton("⚡ Use Single (Custom OTP)", callback_data="single_custom")
+        b_change = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link")
+        b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
+        markup.add(b_custom, b_change, b_back)
+        send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
+        return
 
     text = (
         f"🔢 <b>Multi-Registration (Bulk Mode)</b>\n\n"
@@ -899,10 +1074,11 @@ def show_multi_menu(chat_id, user, message_id=None):
     b4 = types.InlineKeyboardButton("⚡ 20 Accounts (20 🎫)", callback_data="multi_run_20")
     b_custom = types.InlineKeyboardButton("✍️ Custom Amount", callback_data="multi_custom")
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
+    b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
     markup.add(b1, b2)
     markup.add(b3, b4)
     markup.add(b_custom)
-    markup.add(b_back)
+    markup.add(b_back, b_home)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
@@ -1056,9 +1232,10 @@ def show_help_menu(chat_id, user, message_id=None):
             "• <code>/deladmin &lt;id&gt;</code> — Demote Admin\n"
             "• <code>/broadcast &lt;msg&gt;</code> — Broadcast announcement"
         )
-    markup = types.InlineKeyboardMarkup()
+    markup = types.InlineKeyboardMarkup(row_width=2)
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
-    markup.add(b_back)
+    b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
+    markup.add(b_back, b_home)
 
     if message_id:
         try:
@@ -1084,11 +1261,12 @@ def execute_cleanup():
 #  SINGLE REGISTRATION WORKER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=None, invite=None, message_id=None):
+def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=None, invite=None, message_id=None, smsvcode=""):
     """
     Executes Single Account Registration:
     Shows UID, Phone, Password, Proxy IP, and Device Model.
     Edits existing message in place so no message spam occurs.
+    Supports smsvcode for OTP-verified registrations.
     """
     uid = user_id or chat_id
     if not is_user_member(uid):
@@ -1122,12 +1300,13 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
         target_invite = invite or cfg["invite"]
 
         bar_single = render_progress_bar(1, 2, length=10)
+        otp_line = f"\n• 📩 SMS Code: <code>{smsvcode}</code>" if smsvcode else ""
         mid = send_or_edit(
             chat_id,
             f"⏳ <b>Processing Single Registration...</b>\n\n"
             f"{bar_single}\n\n"
             f"• 🌐 Target: <code>{target_site}</code>\n"
-            f"• 🎟️ Invite: <code>{target_invite}</code>\n"
+            f"• 🎟️ Invite: <code>{target_invite}</code>{otp_line}\n"
             f"• 🧩 Solving native AI slider captcha...\n"
             f"• ⚡ Submitting direct API POST with fresh IP &amp; Device...",
             message_id=message_id
@@ -1140,7 +1319,8 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
                 invite=target_invite,
                 site=target_site,
                 api=target_api,
-                creator_id=uid
+                creator_id=uid,
+                smsvcode=smsvcode
             )
 
             if not res.get("ok"):
@@ -1413,13 +1593,26 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
 @bot.message_handler(commands=["start"])
 def handle_start(message):
     user = message.from_user
+    chat_id = message.chat.id
     log(f"[bot] /start from user={user.id} ({user.first_name or 'User'})")
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+
+    # Cancel any active custom registration flow
+    CUSTOM_REG_STATE.pop(user.id, None)
+
+    # Clean old bot message if possible so a fresh welcome screen lands right at the bottom
+    old_mid = LAST_BOT_MSG.pop(chat_id, None)
+    if old_mid:
+        try:
+            bot.delete_message(chat_id, old_mid)
+        except Exception:
+            pass
+
     if not is_user_member(user.id):
-        show_force_join_screen(message.chat.id, user, del_incoming=message)
+        show_force_join_screen(chat_id, user, del_incoming=message)
         return
 
-    show_link_prompt(message.chat.id, user, del_incoming=message)
+    show_link_prompt(chat_id, user, del_incoming=message)
 
 
 @bot.message_handler(commands=["help"])
@@ -1496,9 +1689,21 @@ def handle_single_cmd(message):
 @bot.message_handler(commands=["multi", "bulk"])
 def handle_multi_cmd(message):
     user = message.from_user
+    chat_id = message.chat.id
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
     if not is_user_member(user.id):
-        show_force_join_screen(message.chat.id, user, del_incoming=message)
+        show_force_join_screen(chat_id, user, del_incoming=message)
+        return
+
+    cfg = get_chat_config(chat_id)
+    if cfg.get("sms_required"):
+        bot.reply_to(
+            message,
+            "⛔ <b>Multi-Registration Paused for this Platform!</b>\n\n"
+            "This platform enforces live SMS OTP verification (🔴 SMS Required). "
+            "Please use <b>Single Registration -> ✍️ Custom Details</b> with your mobile number to create accounts.",
+            parse_mode="HTML"
+        )
         return
 
     parts = message.text.strip().split()
@@ -1506,10 +1711,10 @@ def handle_multi_cmd(message):
     if len(parts) >= 2 and parts[1].isdigit():
         count = min(int(parts[1]), 50)
     try:
-        bot.delete_message(message.chat.id, message.message_id)
+        bot.delete_message(chat_id, message.message_id)
     except Exception:
         pass
-    threading.Thread(target=run_bulk_registration, args=(message.chat.id, user.id, count, LAST_BOT_MSG.get(message.chat.id)), daemon=True).start()
+    threading.Thread(target=run_bulk_registration, args=(chat_id, user.id, count, LAST_BOT_MSG.get(chat_id)), daemon=True).start()
 
 
 @bot.message_handler(commands=["reg", "register"])
@@ -1540,7 +1745,7 @@ def handle_reg_cmd(message):
 
     threading.Thread(
         target=run_registration_and_send_ss,
-        args=(message.chat.id, user.id, phone, password, invite, LAST_BOT_MSG.get(message.chat.id)),
+        args=(message.chat.id, user.id, phone, password, invite, LAST_BOT_MSG.get(message.chat.id), ""),
         daemon=True
     ).start()
 
@@ -1591,13 +1796,25 @@ def process_and_save_link(chat_id, text, orig_msg=None):
                 pass
         return
 
-    log(f"[bot] Configured link for chat={chat_id}: site='{info['site']}' api='{info['api']}' invite='{info['invite']}'")
+    # Check platform SMS requirement & scan mirrors for SMS-free bypass
+    mirror_res = check_platform_sms_and_mirrors(info["api"], info["site"])
+    active_site = mirror_res.get("site") or info["site"]
+    active_api = mirror_res.get("api") or info["api"]
+    active_domain = mirror_res.get("domain") or info["domain"]
+    sms_req = mirror_res.get("sms_required", False)
+    switched = mirror_res.get("switched_mirror", False)
+    mirrors_cnt = mirror_res.get("mirror_count", 0)
+
+    log(f"[bot] Configured link for chat={chat_id}: site='{active_site}' api='{active_api}' sms_req={sms_req} switched={switched}")
 
     CHAT_CONFIGS[chat_id] = {
-        "site": info["site"],
-        "api": info["api"],
+        "site": active_site,
+        "api": active_api,
         "invite": info["invite"],
-        "domain": info["domain"]
+        "domain": active_domain,
+        "sms_required": sms_req,
+        "switched_mirror": switched,
+        "mirrors_scanned": mirrors_cnt
     }
     save_chat_configs()
 
@@ -1629,6 +1846,8 @@ def handle_custom_reg_steps(message):
     step = state_data.get("step")
     target_mid = state_data.get("mid") or LAST_BOT_MSG.get(chat_id)
     raw_text = message.text.strip()
+    sms_req = state_data.get("sms_required", False)
+    steps_total = 3 if sms_req else 2
 
     if step == "phone":
         clean_phone = re.sub(r"\D", "", raw_text)
@@ -1664,7 +1883,7 @@ def handle_custom_reg_steps(message):
         markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg"))
         send_or_edit(
             chat_id,
-            f"🔑 <b>Custom Registration — Step 2/2</b>\n"
+            f"🔑 <b>Custom Registration — Step 2/{steps_total}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📱 <b>Mobile Number:</b> <code>{clean_phone}</code> ✅\n\n"
             f"Ab is account ke liye desired <b>Password</b> bhejein:\n"
@@ -1700,11 +1919,96 @@ def handle_custom_reg_steps(message):
             pass
 
         phone = state_data["phone"]
+        cfg = get_chat_config(chat_id)
+
+        # If SMS OTP is NOT required, proceed directly to registration
+        if not sms_req:
+            CUSTOM_REG_STATE.pop(uid, None)
+            threading.Thread(
+                target=run_registration_and_send_ss,
+                args=(chat_id, uid, phone, pwd, None, target_mid, ""),
+                daemon=True
+            ).start()
+            return
+
+        # If SMS OTP IS required, trigger SMS OTP via platform WebAPI
+        CUSTOM_REG_STATE[uid]["password"] = pwd
+        send_or_edit(
+            chat_id,
+            f"⏳ <b>Triggering SMS Verification Code...</b>\n\n"
+            f"• 📱 Mobile: <code>{phone}</code>\n"
+            f"• 🌐 Platform: <code>{cfg['site']}</code>\n"
+            f"• ⚡ Sending official SMS OTP request to server...",
+            message_id=target_mid
+        )
+
+        ok, msg = send_sms_otp(cfg["api"], phone)
+        if not ok:
+            CUSTOM_REG_STATE.pop(uid, None)
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            markup.add(types.InlineKeyboardButton("🔄 Try Again", callback_data="single_custom"))
+            markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options"))
+            send_or_edit(
+                chat_id,
+                f"❌ <b>SMS OTP Failed to Send!</b>\n\n"
+                f"• 📱 Number: <code>{phone}</code>\n"
+                f"• ⚠️ Server Error: <code>{html.escape(msg)}</code>\n\n"
+                f"<i>Note: Koi token deduct nahi hua.</i>",
+                reply_markup=markup,
+                message_id=target_mid
+            )
+            return
+
+        CUSTOM_REG_STATE[uid]["step"] = "otp"
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg"))
+        send_or_edit(
+            chat_id,
+            f"📩 <b>Custom Registration — Step 3/3 (SMS OTP)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 <b>Mobile Number:</b> <code>{phone}</code> ✅\n"
+            f"🔑 <b>Password:</b> <code>{'*' * len(pwd)}</code> ✅\n\n"
+            f"📨 <b>SMS Sent Successfully!</b>\n"
+            f"Aapke mobile number par verification code bhej diya gaya hai.\n\n"
+            f"✍️ <b>Kripya SMS me aaya OTP code chat me send karein:</b>\n"
+            f"⏳ <i>Bot verification code ka wait kar raha hai...</i>",
+            reply_markup=markup,
+            message_id=target_mid
+        )
+        return
+
+    elif step == "otp":
+        otp = re.sub(r"\D", "", raw_text)
+        if len(otp) < 4 or len(otp) > 8:
+            try:
+                bot.delete_message(chat_id, message.message_id)
+            except Exception:
+                pass
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg"))
+            send_or_edit(
+                chat_id,
+                f"❌ <b>Invalid OTP format!</b>\n\n"
+                f"OTP usually 4 se 6 digits ka hota hai.\n"
+                f"Aapne bheja: <code>{html.escape(raw_text)}</code>\n\n"
+                f"Kripya valid OTP dobara send karein:",
+                reply_markup=markup,
+                message_id=target_mid
+            )
+            return
+
+        try:
+            bot.delete_message(chat_id, message.message_id)
+        except Exception:
+            pass
+
+        phone = state_data["phone"]
+        pwd = state_data["password"]
         CUSTOM_REG_STATE.pop(uid, None)
 
         threading.Thread(
             target=run_registration_and_send_ss,
-            args=(chat_id, uid, phone, pwd, None, target_mid),
+            args=(chat_id, uid, phone, pwd, None, target_mid, otp),
             daemon=True
         ).start()
         return
@@ -1718,6 +2022,17 @@ def handle_custom_bulk_number_msg(message):
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
     if not is_user_member(user.id):
         show_force_join_screen(chat_id, user, del_incoming=message)
+        return
+
+    cfg = get_chat_config(chat_id)
+    if cfg.get("sms_required"):
+        bot.reply_to(
+            message,
+            "⛔ <b>Multi-Registration Paused for this Platform!</b>\n\n"
+            "This platform enforces live SMS OTP verification (🔴 SMS Required). "
+            "Please use <b>Single Registration -> ✍️ Custom Details</b>.",
+            parse_mode="HTML"
+        )
         return
 
     count = int(message.text.strip())
@@ -2136,7 +2451,15 @@ def handle_callback_clicks(call):
         return
 
     # Navigation & Core Actions
-    if data in ("show_link_options", "start_menu"):
+    if data in ("show_start", "start_menu"):
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        CUSTOM_REG_STATE.pop(user_id, None)
+        show_link_prompt(chat_id, user, message_id=msg_id)
+
+    elif data in ("show_link_options", "link_menu"):
         try:
             bot.answer_callback_query(call.id)
         except Exception:
@@ -2166,6 +2489,18 @@ def handle_callback_clicks(call):
         show_single_menu(chat_id, user, message_id=msg_id)
 
     elif data in ("single_random", "auto_reg"):
+        cfg = get_chat_config(chat_id)
+        if cfg.get("sms_required"):
+            try:
+                bot.answer_callback_query(
+                    call.id,
+                    "❌ Platform Enforces SMS OTP!\n\nRandom generated numbers cannot receive SMS OTP. Please use 'Custom Details' with a real mobile number.",
+                    show_alert=True
+                )
+            except Exception:
+                pass
+            return
+
         if chat_id in BUSY_CHATS:
             try:
                 bot.answer_callback_query(call.id, "⏳ Registration in progress! Please wait a moment.", show_alert=True)
@@ -2215,22 +2550,29 @@ def handle_callback_clicks(call):
         except Exception:
             pass
 
+        cfg = get_chat_config(chat_id)
+        sms_req = cfg.get("sms_required", False)
+        steps_total = 3 if sms_req else 2
+
         CUSTOM_REG_STATE[user_id] = {
             "chat_id": chat_id,
             "step": "phone",
             "phone": None,
-            "mid": msg_id
+            "password": None,
+            "mid": msg_id,
+            "sms_required": sms_req
         }
 
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg"))
 
         text = (
-            "📱 <b>Custom Registration — Step 1/2</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "Kripya account ke liye <b>10-digit Mobile Number</b> bhejein:\n"
-            "<i>(Example: 9876543210)</i>\n\n"
-            "💡 <i>Chat me number likh kar send karein ya Cancel dabayein.</i>"
+            f"📱 <b>Custom Registration — Step 1/{steps_total}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🌐 <b>Platform:</b> <code>{cfg['site']}</code>\n\n"
+            f"Kripya account ke liye <b>10-digit Indian Mobile Number</b> bhejein:\n"
+            f"<i>(Example: 9876543210)</i>\n\n"
+            f"💡 <i>Chat me number likh kar send karein ya Cancel dabayein.</i>"
         )
         send_or_edit(chat_id, text, reply_markup=markup, message_id=msg_id)
 
@@ -2251,6 +2593,18 @@ def handle_callback_clicks(call):
         show_multi_menu(chat_id, user, message_id=msg_id)
 
     elif data == "multi_custom":
+        cfg = get_chat_config(chat_id)
+        if cfg.get("sms_required"):
+            try:
+                bot.answer_callback_query(
+                    call.id,
+                    "⛔ Platform Enforces SMS OTP!\n\nBulk registration is paused for this platform to save your tokens. Please use Single Registration -> Custom Details.",
+                    show_alert=True
+                )
+            except Exception:
+                pass
+            return
+
         try:
             bot.answer_callback_query(call.id)
         except Exception:
@@ -2258,6 +2612,18 @@ def handle_callback_clicks(call):
         show_custom_amount_prompt(chat_id, user, message_id=msg_id)
 
     elif data.startswith("multi_run_") or data.startswith("bulk_run_"):
+        cfg = get_chat_config(chat_id)
+        if cfg.get("sms_required"):
+            try:
+                bot.answer_callback_query(
+                    call.id,
+                    "⛔ Platform Enforces SMS OTP!\n\nBulk registration is paused for this platform to save your tokens. Please use Single Registration -> Custom Details.",
+                    show_alert=True
+                )
+            except Exception:
+                pass
+            return
+
         if chat_id in BUSY_CHATS:
             try:
                 bot.answer_callback_query(call.id, "⏳ Multi-Registration in progress! Please wait a moment.", show_alert=True)
@@ -2469,6 +2835,21 @@ if __name__ == "__main__":
         log(f"[ProxyEngine] Warning starting daemon: {e}")
 
     log("=" * 60)
+
+    try:
+        bot.set_my_commands([
+            types.BotCommand("start", "🚀 Main Menu & Setup"),
+            types.BotCommand("single", "⚡ Single Registration"),
+            types.BotCommand("multi", "🔢 Multi Registration"),
+            types.BotCommand("tokens", "🎫 Check Token Balance"),
+            types.BotCommand("link", "🔗 Set / Change Referral Link"),
+            types.BotCommand("export", "📋 Export Saved Accounts"),
+            types.BotCommand("help", "❓ Commands Guide"),
+            types.BotCommand("status", "⚡ Bot & Server Status"),
+        ])
+        log("[bot] Telegram bot command menu registered successfully! ✅")
+    except Exception as e:
+        log(f"[bot] Warning setting bot commands: {e}")
 
     try:
         bot.remove_webhook()
