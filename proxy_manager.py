@@ -13,6 +13,7 @@ import threading
 import urllib.parse
 import requests
 import concurrent.futures
+import random
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [ProxyEngine] %(message)s")
 logger = logging.getLogger("ProxyEngine")
@@ -33,9 +34,10 @@ USED_PROXIES_FILE = os.path.join(DATA_DIR, "used_proxies.txt")
 
 ALT_DIRS = ["/home/piyush/Desktop", "/home/piyush/Downloads/Telegram Desktop"]
 
-# Curated High-Speed HTTPS & HTTP Sources (100,000+ candidates)
+# Curated High-Speed HTTPS & HTTP Sources (150,000+ candidates across open-source lists)
 SOURCES = [
     "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=2500&country=all&ssl=yes&anonymity=all",
+    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=4000&country=all&ssl=all&anonymity=all",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
     "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/https.txt",
     "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/https.txt",
@@ -48,15 +50,43 @@ SOURCES = [
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
     "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
-    "https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt"
+    "https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/https.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
+    "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt",
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt",
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/https/https.txt",
+    "https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/HTTP.txt",
+    "https://raw.githubusercontent.com/HyperBeats/proxy-list/main/https.txt",
+    "https://raw.githubusercontent.com/HyperBeats/proxy-list/main/http.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/https.txt",
+    "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
+    "https://raw.githubusercontent.com/hendrikbgr/Free-Proxy-Repo/master/proxy_list.txt",
+    "https://raw.githubusercontent.com/ObcbO/getproxy/master/file/http.txt",
+    "https://raw.githubusercontent.com/ObcbO/getproxy/master/file/https.txt",
+    "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/http.txt",
+    "https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_files/http_proxies.txt",
+    "https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_files/https_proxies.txt",
+    "https://raw.githubusercontent.com/zloi-user/hideip.me/master/http.txt",
+    "https://raw.githubusercontent.com/zloi-user/hideip.me/master/https.txt",
+    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt"
 ]
 
-TARGET_CHECK_URL = "https://api.raxiqaz.com/api/webapi/Captcha"
+PLATFORM_TEST_URLS = [
+    "https://api.dmfirst9api.com/api/webapi/Captcha",
+    "https://api.raxiqaz.com/api/webapi/Captcha",
+    "https://api.api51gameapi.com/api/webapi/Captcha"
+]
+TARGET_CHECK_URL = PLATFORM_TEST_URLS[0]
 CONNECT_TIMEOUT = 2.2
 READ_TIMEOUT = 2.8
 
-POOL_TARGET = 250       # Target: 250 verified working proxies
-POOL_MIN_THRESHOLD = 50 # Trigger auto-refill when pool drops below 50
+POOL_TARGET = 500       # Target: Minimum 500 verified working proxies
+POOL_MIN_THRESHOLD = 300 # Trigger auto-refill when pool drops below 300
+HEALTH_CHECK_INTERVAL = 1800 # 30 minutes in seconds
+POLL_INTERVAL = 45      # Active poll interval in seconds
 
 class ProxyManager:
     def __init__(self):
@@ -293,9 +323,10 @@ class ProxyManager:
         return False
 
     def scrape_candidates(self) -> set:
-        """Scrapes fresh candidate proxies from all public sources in parallel."""
+        """Scrapes fresh candidate proxies from all public sources and local candidate files in parallel."""
         candidates = set()
 
+        # 1. Scrape from 35+ online public sources concurrently
         def fetch_url(url):
             try:
                 r = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
@@ -303,17 +334,36 @@ class ProxyManager:
             except Exception:
                 return set()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(SOURCES)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(SOURCES), 30)) as executor:
             for found in executor.map(fetch_url, SOURCES):
                 candidates.update(found)
 
+        # 2. Also incorporate local candidate sources
+        local_candidate_files = [
+            os.path.join(BASE_DIR, "fresh_raw_proxies.txt"),
+            "/app/fresh_raw_proxies.txt",
+            "/home/piyush/raxi4-bot/fresh_raw_proxies.txt",
+            "/home/piyush/Desktop/fresh_raw_proxies.txt"
+        ]
+        for lf in local_candidate_files:
+            if os.path.exists(lf):
+                try:
+                    with open(lf, "r", encoding="utf-8") as f:
+                        for line in f:
+                            p = line.strip()
+                            if p and not p.startswith("#"):
+                                m = re.findall(r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}", p)
+                                candidates.update(m)
+                except Exception:
+                    pass
+
         fresh_candidates = {p for p in candidates if p not in self.dead_proxies}
-        logger.info(f"Scraped {len(candidates)} raw proxies, {len(fresh_candidates)} fresh candidates.")
+        logger.info(f"Gathered {len(candidates)} raw candidates ({len(fresh_candidates)} fresh candidates).")
         return fresh_candidates
 
-    def refill_proxies(self, target_count=POOL_TARGET, max_test=2000):
+    def refill_proxies(self, target_count=POOL_TARGET, max_workers=120):
         """
-        Scrapes candidates and validates them concurrently with 80 high-speed workers.
+        Scrapes candidates and validates them concurrently with 120 high-speed workers until pool target (500) is reached.
         """
         with self.lock:
             if self.is_refilling:
@@ -335,20 +385,34 @@ class ProxyManager:
                 logger.warning("No fresh candidates found from scraper sources.")
                 return
 
-            test_subset = candidates[:max_test]
+            random.shuffle(candidates)
             new_verified = []
+            active_set = set(active_existing)
 
-            def worker(p):
-                if p not in active_existing and self.test_single_proxy(p):
-                    return p
-                return None
+            # Test in streaming batches of 1500 candidates with 120 workers
+            batch_size = 1500
+            for i in range(0, len(candidates), batch_size):
+                if len(active_existing) + len(new_verified) >= target_count:
+                    break
+                batch = candidates[i:i + batch_size]
+                candidates_to_test = [p for p in batch if p not in active_set and p not in new_verified]
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=80) as executor:
-                for res in executor.map(worker, test_subset):
-                    if res:
-                        new_verified.append(res)
-                        if len(active_existing) + len(new_verified) >= target_count:
-                            break
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(self.test_single_proxy, p): p for p in candidates_to_test}
+                    for f in concurrent.futures.as_completed(futures):
+                        p = futures[f]
+                        try:
+                            if f.result():
+                                new_verified.append(p)
+                                # Incrementally persist every 15 proxies so bot always has live fresh IPs
+                                if len(new_verified) % 15 == 0:
+                                    current_combined = active_existing + new_verified
+                                    self.save_pool(current_combined)
+                                    logger.info(f"[Refill] Live pool: {len(current_combined)}/{target_count} verified proxies...")
+                                if len(active_existing) + len(new_verified) >= target_count:
+                                    break
+                        except Exception:
+                            pass
 
             combined = active_existing + new_verified
             self.save_pool(combined)
@@ -363,10 +427,10 @@ class ProxyManager:
 
     def health_check_pool(self):
         """
-        Periodic maintenance: re-tests all proxies in current pool,
-        purges dead/slow ones, and refills if below target (500).
+        Runs every 30 minutes: Re-tests ALL proxies in the current pool,
+        purges dead/slow ones, and immediately refills fresh proxies to guarantee 500+ active.
         """
-        logger.info("Running scheduled health check on working proxies pool...")
+        logger.info(f"Running scheduled 30-min health check on working proxies pool...")
         pool = self.load_local_pool()
 
         if not pool:
@@ -374,41 +438,55 @@ class ProxyManager:
             return
 
         verified_still_alive = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
-            results = executor.map(lambda p: (p, self.test_single_proxy(p)), pool)
-            for p, ok in results:
-                if ok:
-                    verified_still_alive.append(p)
-                else:
+        dead_count = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=80) as executor:
+            futures = {executor.submit(self.test_single_proxy, p): p for p in pool}
+            for f in concurrent.futures.as_completed(futures):
+                p = futures[f]
+                try:
+                    if f.result():
+                        verified_still_alive.append(p)
+                    else:
+                        dead_count += 1
+                        self.dead_proxies.add(p)
+                except Exception:
+                    dead_count += 1
                     self.dead_proxies.add(p)
 
         self.save_pool(verified_still_alive)
-        logger.info(f"Health check done: {len(verified_still_alive)} verified alive.")
+        logger.info(f"Health check done: {len(verified_still_alive)} verified alive, {dead_count} dead removed.")
 
-        if len(verified_still_alive) < POOL_MIN_THRESHOLD:
+        # Immediately refill to replace all dead proxies and maintain 500+ target
+        if len(verified_still_alive) < POOL_TARGET:
+            logger.info(f"Pool size ({len(verified_still_alive)}) is below {POOL_TARGET}. Triggering instant refill...")
             self.refill_proxies(target_count=POOL_TARGET)
 
     def start_background_daemon(self):
-        """Launches continuous background monitoring and auto-refill daemon thread."""
+        """Launches continuous background monitoring, instant auto-refill, and 30-min health checks."""
         def daemon_loop():
-            logger.info(f"Proxy Background Daemon started (Target Pool: {POOL_TARGET}+, Min: {POOL_MIN_THRESHOLD}).")
-            if len(self.load_local_pool()) < POOL_MIN_THRESHOLD:
-                self.refill_proxies(target_count=POOL_TARGET)
+            logger.info(f"Proxy Background Daemon started (Target Pool: {POOL_TARGET}+, Min: {POOL_MIN_THRESHOLD}, Health-Check: every {HEALTH_CHECK_INTERVAL // 60}m).")
+            # Immediate initial refill if pool is below target
+            if len(self.load_local_pool()) < POOL_TARGET:
+                threading.Thread(target=self.refill_proxies, kwargs={"target_count": POOL_TARGET}, daemon=True).start()
 
             last_health_check = time.time()
 
             while True:
-                time.sleep(300)
+                time.sleep(POLL_INTERVAL)
                 try:
-                    pool_len = len(self.load_local_pool())
                     now = time.time()
-                    if pool_len < POOL_MIN_THRESHOLD and not self.is_refilling and (now - self.last_refill_time > 600):
-                        logger.info(f"Pool size ({pool_len}) below {POOL_MIN_THRESHOLD}. Refilling to {POOL_TARGET}...")
-                        self.refill_proxies(target_count=POOL_TARGET)
+                    pool_len = len(self.load_local_pool())
 
-                    if now - last_health_check > 3600 and not self.is_refilling:
+                    # 1. Periodic 30-Minute Health Check
+                    if (now - last_health_check >= HEALTH_CHECK_INTERVAL) and not self.is_refilling:
                         self.health_check_pool()
                         last_health_check = time.time()
+
+                    # 2. Fast Auto-Refill if pool drops below threshold
+                    elif pool_len < POOL_MIN_THRESHOLD and not self.is_refilling:
+                        logger.info(f"Pool size ({pool_len}) below threshold ({POOL_MIN_THRESHOLD}). Refilling to {POOL_TARGET}...")
+                        self.refill_proxies(target_count=POOL_TARGET)
+
                 except Exception as e:
                     logger.error(f"Daemon error: {e}")
 
