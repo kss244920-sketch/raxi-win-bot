@@ -102,6 +102,20 @@ class AdminManager:
 
             self.user_registry = data.get("user_registry", {})
 
+            # Ensure Dino and GoLu are strictly Free Users (not Admins) as requested
+            needs_save = False
+            for demote_id in [1879784162, 7812349806]:
+                if demote_id in self.admin_user_ids:
+                    self.admin_user_ids.discard(demote_id)
+                    needs_save = True
+                uid_str = str(demote_id)
+                if uid_str in self.user_registry:
+                    if self.user_registry[uid_str].get("role") != "⚪ Free User":
+                        self.user_registry[uid_str]["role"] = "⚪ Free User"
+                        needs_save = True
+            if needs_save:
+                self.save()
+
 
         except Exception as e:
             print(f"[AdminManager] Error loading settings: {e}")
