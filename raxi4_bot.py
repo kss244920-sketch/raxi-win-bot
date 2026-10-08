@@ -17,6 +17,7 @@ import glob
 import random
 import secrets
 import base64
+import hashlib
 import threading
 import urllib.parse
 from datetime import datetime
@@ -363,10 +364,27 @@ def format_duration(seconds: int) -> str:
     parts.append(f"{secs}s")
     return " ".join(parts)
 
+def sign_arsaas(body):
+    """
+    Signature algorithm for AR-SAAS platforms (MaanWin, GoaGames, Tiranga, BigDaddy clones).
+    Uses a 12-digit random integer and uppercase MD5 of sorted non-empty keys.
+    """
+    t = dict(body)
+    t.pop("signature", None)
+    t.pop("timestamp", None)
+    t["random"] = random.randint(100000000000, 999999999999)
+    ignored = {"signature", "track", "timestamp"}
+    keys = sorted([k for k in t.keys() if t[k] is not None and t[k] != "" and k not in ignored])
+    a = {k: (0 if t[k] == 0 else t[k]) for k in keys}
+    json_str = json.dumps(a, separators=(",", ":"))
+    t["signature"] = hashlib.md5(json_str.encode()).hexdigest().upper()
+    t["timestamp"] = int(time.time())
+    return t
+
 def detect_and_parse_referral_link(text_or_url):
     """
-    Extracts site URL, backend API, and invite code from ANY referral link or text
-    (supports raxi4, raxi win, and all clone sites with the same UI).
+    Extracts site URL, backend API, invite code, and platform engine type from ANY referral link or text
+    (supports raxi4, raxi win, maanwin, 51game, and all clone sites).
     """
     match = re.search(r"(https?://[^\s\"'<>]+)", text_or_url)
     if not match:
@@ -389,7 +407,30 @@ def detect_and_parse_referral_link(text_or_url):
     if not invite_code:
         invite_code = INVITE
 
-    # 2. Discover backend API endpoint (VITE_API_URL / bundle scripts)
+    # 2. Check Platform Engine (AR-SAAS vs VITE/WEBAPI)
+    # Check 2A: AR-SAAS platform (MaanWin, GoaGames, BigDaddy, etc.)
+    try:
+        r_ar = requests.post(
+            f"{base_site}/api/Home/Captcha",
+            json=sign_arsaas({}),
+            headers={"Origin": base_site, "Referer": f"{base_site}/register", "Content-Type": "application/json;charset=UTF-8"},
+            timeout=2.5
+        )
+        if r_ar.status_code == 200 and r_ar.json().get("data", {}).get("captchaId"):
+            log(f"[bot] Detected AR-SAAS platform engine for {base_site}")
+            return {
+                "site": base_site,
+                "api": f"{base_site}/api",
+                "api_type": "arsaas",
+                "invite": invite_code,
+                "domain": parsed.netloc,
+                "raw_url": raw_url,
+                "sms_required": False
+            }
+    except Exception:
+        pass
+
+    # Check 2B: 51game / Raxi clone (VITE / WEBAPI)
     api_url = None
     # FAST PATH: Instant 0.01ms resolution for raxi domains
     if any(k in parsed.netloc.lower() for k in ["raxi", "raxi4", "raxi11", "raxiqaz", "raxiwin"]):
@@ -433,9 +474,11 @@ def detect_and_parse_referral_link(text_or_url):
     return {
         "site": base_site,
         "api": api_url,
+        "api_type": "webapi",
         "invite": invite_code,
         "domain": parsed.netloc,
-        "raw_url": raw_url
+        "raw_url": raw_url,
+        "sms_required": False
     }
 
 def decode_pwa_domain(raw):
@@ -452,7 +495,7 @@ def decode_pwa_domain(raw):
         pass
     return f"https://{raw}" if not raw.startswith("http") else raw
 
-def check_platform_sms_and_mirrors(api_url, current_site):
+def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
     """
     Checks if target platform requires SMS OTP.
     If required, scans PWA mirror list to check if an alternative SMS-free mirror exists.
@@ -462,7 +505,20 @@ def check_platform_sms_and_mirrors(api_url, current_site):
       domain: str
       switched_mirror: bool
       mirror_count: int
+      api_type: str
     """
+    parsed = urllib.parse.urlparse(current_site)
+    if api_type == "arsaas" or "/Home" in str(api_url) or api_url == f"{current_site}/api":
+        return {
+            "sms_required": False,
+            "site": current_site,
+            "api": api_url,
+            "domain": parsed.netloc,
+            "switched_mirror": False,
+            "mirror_count": 0,
+            "api_type": "arsaas"
+        }
+
     sms_required = False
     try:
         r = requests.post(f"{api_url}/api/webapi/RegisterState", json=signed_body({}), timeout=4)
@@ -472,7 +528,6 @@ def check_platform_sms_and_mirrors(api_url, current_site):
     except Exception as e:
         log(f"[bot] RegisterState check error for {api_url}: {e}")
 
-    parsed = urllib.parse.urlparse(current_site)
     if not sms_required:
         return {
             "sms_required": False,
@@ -480,7 +535,8 @@ def check_platform_sms_and_mirrors(api_url, current_site):
             "api": api_url,
             "domain": parsed.netloc,
             "switched_mirror": False,
-            "mirror_count": 0
+            "mirror_count": 0,
+            "api_type": "webapi"
         }
 
     # If SMS OTP is ON, scan official PWA domain list
@@ -511,7 +567,8 @@ def check_platform_sms_and_mirrors(api_url, current_site):
                                         "api": m_info["api"],
                                         "domain": mirror_domain,
                                         "switched_mirror": True,
-                                        "mirror_count": mirrors_scanned
+                                        "mirror_count": mirrors_scanned,
+                                        "api_type": "webapi"
                                     }
                     except Exception:
                         pass
@@ -524,24 +581,32 @@ def check_platform_sms_and_mirrors(api_url, current_site):
         "api": api_url,
         "domain": parsed.netloc,
         "switched_mirror": False,
-        "mirror_count": mirrors_scanned
+        "mirror_count": mirrors_scanned,
+        "api_type": "webapi"
     }
 
-def send_sms_otp(api_url, phone_10_digit):
+def send_sms_otp(api_url, phone_10_digit, site_url=None):
     """
-    Triggers SMS OTP using official platform webapi.
+    Triggers SMS OTP using official platform webapi or AR-SAAS SendVerifiyCode.
     phone_10_digit: 10-digit Indian mobile number
     Returns (ok: bool, msg: str)
     """
     try:
         full_phone = f"91{phone_10_digit}"
-        payload = {"phone": full_phone, "codeType": 1}
-        r = requests.post(f"{api_url}/api/webapi/SmsVerifyCode", json=signed_body(payload), timeout=6)
+        if "/Home" in str(api_url) or (site_url and api_url == f"{site_url}/api"):
+            target = f"{site_url}/api/Home/SendVerifiyCode"
+            payload = sign_arsaas({"verifyCodeType": 1, "phoneOrEmail": full_phone, "codeType": 1})
+            headers = {"Origin": site_url, "Referer": f"{site_url}/register", "Content-Type": "application/json;charset=UTF-8"}
+            r = requests.post(target, json=payload, headers=headers, timeout=6)
+        else:
+            payload = {"phone": full_phone, "codeType": 1}
+            r = requests.post(f"{api_url}/api/webapi/SmsVerifyCode", json=signed_body(payload), timeout=6)
+
         if r.status_code == 200:
             j = r.json()
             code = j.get("code")
             msg = j.get("msg") or ""
-            if code == 0 or "success" in msg.lower():
+            if code == 0 or "success" in msg.lower() or "succeed" in msg.lower():
                 return True, "SMS sent successfully"
             return False, msg or f"Error code {code}"
         return False, f"HTTP {r.status_code}"
@@ -554,12 +619,15 @@ def get_chat_config(chat_id):
         CHAT_CONFIGS[chat_id] = {
             "site": SITE,
             "api": API,
+            "api_type": "webapi",
             "invite": INVITE,
             "domain": urllib.parse.urlparse(SITE).netloc,
             "sms_required": False,
             "switched_mirror": False,
             "mirrors_scanned": 0
         }
+    if "api_type" not in CHAT_CONFIGS[chat_id]:
+        CHAT_CONFIGS[chat_id]["api_type"] = "webapi"
     return CHAT_CONFIGS[chat_id]
 
 def generate_random_phone():
@@ -697,16 +765,18 @@ def count_saved_accounts():
 #  CORE REGISTRATION WORKER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=6, creator_id=None, smsvcode=""):
+def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=6, creator_id=None, smsvcode="", api_type=None):
     """
     Registers a new account with dynamic phone, password, device profile, and proxy rotation.
-    Automatically marks dead proxies and skips them seamlessly.
+    Automatically supports both AR-SAAS (MaanWin, GoaGames, etc.) and VITE/WEBAPI (51game, Raxi).
     Supports smsvcode for OTP verification.
     """
     target_site = site or SITE
     target_api = api or API
     target_invite = invite or INVITE
     domain = urllib.parse.urlparse(target_site).netloc
+
+    is_arsaas = (api_type == "arsaas") or ("/Home" in str(target_api)) or (target_api == f"{target_site}/api") or ("maanwin" in domain)
 
     is_auto = (phone is None)
     last_error = "Unknown error"
@@ -715,18 +785,23 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
     for attempt in range(1, max_search_attempts + 1):
         target_phone = phone if not is_auto else generate_random_phone()
         target_pwd = password if password else generate_random_password()
+        if is_arsaas and len(target_pwd) < 8:
+            target_pwd = f"{target_pwd}1234"
 
         dev_profile = random.choice(DEVICE_PROFILES)
         dev_model = dev_profile["model"]
         dev_ua = dev_profile["ua"]
         device_id = secrets.token_hex(16)
 
-        active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain)
+        if attempt == max_search_attempts and attempt > 1:
+            active_proxy = None
+        else:
+            active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain)
         if active_proxy:
             tried_proxies.add(active_proxy)
         proxy_label = active_proxy if active_proxy else "Direct"
 
-        log(f"[bot] Register attempt {attempt}/{max_search_attempts}: phone={target_phone} dev='{dev_model}' proxy={proxy_label}")
+        log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'AR-SAAS' if is_arsaas else 'WEBAPI'}): phone={target_phone} dev='{dev_model}' proxy={proxy_label}")
 
         session = requests.Session()
         session.headers.update({
@@ -735,7 +810,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             "Content-Type": "application/json;charset=UTF-8",
             "Ar-Origin": target_site,
             "Origin": target_site,
-            "Referer": f"{target_site}/",
+            "Referer": f"{target_site}/register" if is_arsaas else f"{target_site}/",
             "Accept-Language": "en-IN,en;q=0.9,hi;q=0.8",
             "sec-ch-ua": dev_profile["sec_ch_ua"],
             "sec-ch-ua-mobile": "?1",
@@ -746,7 +821,14 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
 
         # 1. Fetch Captcha - Strict 1.8s connect, 2.5s read
         try:
-            r_cap = session.post(f"{target_api}/api/webapi/Captcha", json=signed_body({}), timeout=(1.8, 2.5))
+            if is_arsaas:
+                cap_url = f"{target_site}/api/Home/Captcha"
+                cap_payload = sign_arsaas({})
+            else:
+                cap_url = f"{target_api}/api/webapi/Captcha"
+                cap_payload = signed_body({})
+
+            r_cap = session.post(cap_url, json=cap_payload, timeout=(1.8, 2.5))
             cdata = r_cap.json().get("data", {})
             cid = cdata.get("captchaId")
             bg_b64 = cdata.get("backgroundImage")
@@ -766,22 +848,37 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         track = make_track(container_x)
 
         # 3. Submit Register POST - Strict 2.0s connect, 3.0s read
-        reg_body = {
-            "username": f"91{target_phone}",
-            "smsvcode": smsvcode or "",
-            "registerType": "mobile",
-            "pwd": target_pwd,
-            "invitecode": target_invite,
-            "packId": "",
-            "domainurl": domain,
-            "phonetype": 1,
-            "captchaId": cid,
-            "track": track,
-            "deviceId": device_id,
-        }
+        if is_arsaas:
+            reg_url = f"{target_site}/api/Home/Register"
+            reg_dict = {
+                "loginType": "Mobile",
+                "userName": f"91{target_phone}",
+                "password": target_pwd,
+                "inviteCode": target_invite,
+                "code": smsvcode or "",
+                "captchaId": cid,
+                "track": track
+            }
+            reg_payload = sign_arsaas(reg_dict)
+        else:
+            reg_url = f"{target_api}/api/webapi/Register"
+            reg_dict = {
+                "username": f"91{target_phone}",
+                "smsvcode": smsvcode or "",
+                "registerType": "mobile",
+                "pwd": target_pwd,
+                "invitecode": target_invite,
+                "packId": "",
+                "domainurl": domain,
+                "phonetype": 1,
+                "captchaId": cid,
+                "track": track,
+                "deviceId": device_id,
+            }
+            reg_payload = signed_body(reg_dict)
 
         try:
-            r = session.post(f"{target_api}/api/webapi/Register", json=signed_body(reg_body), timeout=(2.0, 3.0))
+            r = session.post(reg_url, json=reg_payload, timeout=(2.0, 3.0))
             j = r.json()
         except Exception as e:
             log(f"[bot] Proxy {proxy_label} Register POST error: {e}")
@@ -800,14 +897,15 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         if code == 0 and j.get("data"):
             d = j["data"]
             token = d.get("token")
-            uid = None
-            try:
-                part = token.split(".")[1]
-                part += "=" * (-len(part) % 4)
-                decoded = json.loads(base64.urlsafe_b64decode(part))
-                uid = decoded.get("UserId")
-            except Exception:
-                pass
+            uid = d.get("userId") or None
+            if not uid and token:
+                try:
+                    part = token.split(".")[1]
+                    part += "=" * (-len(part) % 4)
+                    decoded = json.loads(base64.urlsafe_b64decode(part))
+                    uid = decoded.get("UserId")
+                except Exception:
+                    pass
 
             save_account_to_file(target_phone, target_pwd, uid, token, target_invite, target_site, device=dev_model, proxy=proxy_label, creator_id=creator_id)
             if active_proxy:
@@ -826,16 +924,16 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             }
 
         # If phone is already registered and in auto-mode, pick another number
-        if msg_code == 111 and is_auto:
+        if (msg_code in (111, 5033) or "already registered" in str(msg).lower()) and is_auto:
             log("[bot] Number already registered, picking another...")
             time.sleep(0.2)
             continue
 
-        if msg_code == 111 and not is_auto:
+        if (msg_code in (111, 5033) or "already registered" in str(msg).lower()) and not is_auto:
             return {"ok": False, "phone": target_phone, "msg": "Phone number is already registered"}
 
         # Captcha verification failed -> retry
-        if msg_code == 31:
+        if msg_code in (31, 143, 5008) or "captcha" in str(msg).lower() or "verification failed" in str(msg).lower():
             log("[bot] Captcha verification failed, retrying...")
             time.sleep(0.2)
             continue
@@ -1320,7 +1418,8 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
                 site=target_site,
                 api=target_api,
                 creator_id=uid,
-                smsvcode=smsvcode
+                smsvcode=smsvcode,
+                api_type=cfg.get("api_type")
             )
 
             if not res.get("ok"):
@@ -1466,7 +1565,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
                             break
                     total_attempts += 1
 
-                res = auto_register_account(site=target_site, api=target_api, invite=target_invite, creator_id=uid)
+                res = auto_register_account(site=target_site, api=target_api, invite=target_invite, creator_id=uid, api_type=cfg.get("api_type"))
 
                 with lock:
                     if res.get("ok"):
@@ -1797,19 +1896,21 @@ def process_and_save_link(chat_id, text, orig_msg=None):
         return
 
     # Check platform SMS requirement & scan mirrors for SMS-free bypass
-    mirror_res = check_platform_sms_and_mirrors(info["api"], info["site"])
+    mirror_res = check_platform_sms_and_mirrors(info["api"], info["site"], api_type=info.get("api_type", "webapi"))
     active_site = mirror_res.get("site") or info["site"]
     active_api = mirror_res.get("api") or info["api"]
     active_domain = mirror_res.get("domain") or info["domain"]
+    active_api_type = mirror_res.get("api_type") or info.get("api_type", "webapi")
     sms_req = mirror_res.get("sms_required", False)
     switched = mirror_res.get("switched_mirror", False)
     mirrors_cnt = mirror_res.get("mirror_count", 0)
 
-    log(f"[bot] Configured link for chat={chat_id}: site='{active_site}' api='{active_api}' sms_req={sms_req} switched={switched}")
+    log(f"[bot] Configured link for chat={chat_id}: site='{active_site}' api='{active_api}' api_type='{active_api_type}' sms_req={sms_req} switched={switched}")
 
     CHAT_CONFIGS[chat_id] = {
         "site": active_site,
         "api": active_api,
+        "api_type": active_api_type,
         "invite": info["invite"],
         "domain": active_domain,
         "sms_required": sms_req,
@@ -1942,7 +2043,7 @@ def handle_custom_reg_steps(message):
             message_id=target_mid
         )
 
-        ok, msg = send_sms_otp(cfg["api"], phone)
+        ok, msg = send_sms_otp(cfg["api"], phone, site_url=cfg.get("site"))
         if not ok:
             CUSTOM_REG_STATE.pop(uid, None)
             markup = types.InlineKeyboardMarkup(row_width=2)

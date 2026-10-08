@@ -198,7 +198,7 @@ class ProxyManager:
             threading.Thread(target=self.refill_proxies, kwargs={"target_count": POOL_TARGET}, daemon=True).start()
 
         if not available:
-            available = [p for p in pool if p not in used]
+            available = [p for p in pool if p not in self.dead_proxies and p not in used]
             if not available:
                 if not self.is_refilling:
                     threading.Thread(target=self.refill_proxies, kwargs={"target_count": POOL_TARGET}, daemon=True).start()
