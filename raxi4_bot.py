@@ -392,29 +392,35 @@ def detect_and_parse_referral_link(text_or_url):
 
     raw_url = match.group(1).rstrip("/#")
     parsed = urllib.parse.urlparse(raw_url)
-    base_site = f"{parsed.scheme}://{parsed.netloc}"
+    scheme = parsed.scheme if parsed.scheme in ("http", "https") else "https"
+    base_site = f"{scheme}://{parsed.netloc}"
 
     # 1. Extract Invitation Code from URL parameters / fragment / path
     invite_code = None
-    inv_match = re.search(r"(?:invitationCode|invitecode|invite_code|r_code|code|invite|c)=([A-Za-z0-9]+)", raw_url, re.I)
+    inv_match = re.search(r"(?:invitationCode|invitecode|invite_code|r_code|inviteCode|code|invite|c|r)=([A-Za-z0-9]+)", raw_url, re.I)
     if inv_match:
         invite_code = inv_match.group(1)
     else:
-        m_trail = re.search(r"/([0-9]{5,15})/?$", raw_url)
+        m_trail = re.search(r"/(?:r|register|invite|join)/([A-Za-z0-9]{4,20})/?$", raw_url, re.I)
         if m_trail:
             invite_code = m_trail.group(1)
+        else:
+            m_num = re.search(r"/([0-9]{5,15})/?$", raw_url)
+            if m_num:
+                invite_code = m_num.group(1)
 
     if not invite_code:
         invite_code = INVITE
 
     # 2. Check Platform Engine (AR-SAAS vs VITE/WEBAPI)
-    # Check 2A: AR-SAAS platform (MaanWin, GoaGames, BigDaddy, etc.)
+    # Check 2A: AR-SAAS platform (MaanWin, GoaGames, BigDaddy, Tiranga, etc.)
     try:
         r_ar = requests.post(
             f"{base_site}/api/Home/Captcha",
             json=sign_arsaas({}),
             headers={"Origin": base_site, "Referer": f"{base_site}/register", "Content-Type": "application/json;charset=UTF-8"},
-            timeout=2.5
+            timeout=2.5,
+            allow_redirects=True
         )
         if r_ar.status_code == 200 and r_ar.json().get("data", {}).get("captchaId"):
             log(f"[bot] Detected AR-SAAS platform engine for {base_site}")
@@ -432,9 +438,18 @@ def detect_and_parse_referral_link(text_or_url):
 
     # Check 2B: 51game / Raxi clone (VITE / WEBAPI)
     api_url = None
-    # FAST PATH: Instant 0.01ms resolution for raxi domains
-    if any(k in parsed.netloc.lower() for k in ["raxi", "raxi4", "raxi11", "raxiqaz", "raxiwin"]):
+    domain_lower = parsed.netloc.lower()
+
+    # FAST PATH: Instant 0.01ms resolution for known platform families
+    if any(k in domain_lower for k in ["raxi", "raxi4", "raxi11", "raxiqaz", "raxiwin"]):
         api_url = "https://api.raxiqaz.com"
+    elif any(k in domain_lower for k in [
+        "51game", "51games", "51g",
+        "xqtrpv51", "bqrxst51", "dxqwjtkhsyznvrb", "ewjtfy51", "cwyjdz51",
+        "ajskdn51", "ybjzsw51", "rxvwpe51", "nxdyhrwjtbzsqvk", "51gamem",
+        "nyjkhvztqwxrsbd", "wjyrtdxhnksqzvb", "sjnqyz51", "uyprdm51", "kzqaph51", "fzjnbx51"
+    ]):
+        api_url = "https://api.api51gameapi.com"
     else:
         try:
             resp = requests.get(base_site, timeout=3, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
@@ -450,8 +465,8 @@ def detect_and_parse_referral_link(text_or_url):
 
             # If not in index HTML, scan linked JS bundle scripts (Vite/Vue build)
             if not api_url:
-                script_srcs = re.findall(r'<script[^>]+src=["\']([^"\']+\.js[^"\']*)["\']', html_text)
-                for s_src in script_srcs[:2]:
+                script_srcs = re.findall(r'(?:src=|href=)["\']([^"\']+\.js[^"\']*)["\']', html_text)
+                for s_src in script_srcs[:4]:
                     try:
                         s_url = urllib.parse.urljoin(base_site, s_src)
                         s_resp = requests.get(s_url, timeout=3, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
@@ -469,7 +484,10 @@ def detect_and_parse_referral_link(text_or_url):
             log(f"[bot] Auto-discovery error for {base_site}: {e}")
 
     if not api_url:
-        api_url = API
+        if "51" in domain_lower:
+            api_url = "https://api.api51gameapi.com"
+        else:
+            api_url = API
 
     return {
         "site": base_site,
@@ -554,22 +572,31 @@ def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
                     if not mirror_domain:
                         continue
                     try:
+                        # Verify mirror site is actually reachable
+                        r_ping = requests.get(clean_url, timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+                        if r_ping.status_code != 200:
+                            continue
+
                         m_info = detect_and_parse_referral_link(clean_url)
-                        if m_info and m_info.get("api") and m_info["api"] != api_url:
-                            r_m = requests.post(f"{m_info['api']}/api/webapi/RegisterState", json=signed_body({}), timeout=3)
-                            if r_m.status_code == 200:
-                                d_m = r_m.json().get("data", {})
-                                if d_m.get("isOpenRegisterSMS") != "1":
-                                    log(f"[bot] Found SMS-free mirror: {clean_url} (API: {m_info['api']})")
-                                    return {
-                                        "sms_required": False,
-                                        "site": clean_url,
-                                        "api": m_info["api"],
-                                        "domain": mirror_domain,
-                                        "switched_mirror": True,
-                                        "mirror_count": mirrors_scanned,
-                                        "api_type": "webapi"
-                                    }
+                        if m_info and m_info.get("api"):
+                            # Prevent false cross-platform switching if domain failed to discover API
+                            if m_info["api"] == API and api_url != API:
+                                continue
+                            if m_info["api"] != api_url:
+                                r_m = requests.post(f"{m_info['api']}/api/webapi/RegisterState", json=signed_body({}), timeout=2.5)
+                                if r_m.status_code == 200:
+                                    d_m = r_m.json().get("data", {})
+                                    if d_m.get("isOpenRegisterSMS") != "1":
+                                        log(f"[bot] Found SMS-free mirror: {clean_url} (API: {m_info['api']})")
+                                        return {
+                                            "sms_required": False,
+                                            "site": clean_url,
+                                            "api": m_info["api"],
+                                            "domain": mirror_domain,
+                                            "switched_mirror": True,
+                                            "mirror_count": mirrors_scanned,
+                                            "api_type": m_info.get("api_type", "webapi")
+                                        }
                     except Exception:
                         pass
     except Exception as e:
