@@ -3,7 +3,9 @@
   "master_log_channel": "-1003946923981",
   "master_storage_channel": "-1003907841421",
   "admin_user_ids": [
-    8327850869
+    8327850869,
+    7812349806,
+    1879784162
   ],
   "whitelisted_user_ids": [],
   "user_registry": {
@@ -22,7 +24,7 @@
       "user_id": 7812349806,
       "username": "GandaLund",
       "first_name": "GoLu",
-      "role": "⚪ Guest",
+      "role": "🛡️ Admin",
       "tokens": 1000,
       "joined_at": 1791369390.3403897,
       "last_active": 1791369506.837519,
@@ -33,7 +35,7 @@
       "user_id": 1879784162,
       "username": "",
       "first_name": "∞",
-      "role": "⚪ Guest",
+      "role": "🛡️ Admin",
       "tokens": 1000,
       "joined_at": 1791368000.0,
       "last_active": 1791369000.0,

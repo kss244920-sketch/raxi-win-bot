@@ -55,8 +55,8 @@ TARGET_CHECK_URL = "https://api.raxiqaz.com/api/webapi/Captcha"
 CONNECT_TIMEOUT = 1.8
 READ_TIMEOUT = 2.2
 
-POOL_TARGET = 500       # Target: Minimum 500 verified fresh working proxies
-POOL_MIN_THRESHOLD = 350 # Trigger auto-refill when available pool drops below 350
+POOL_TARGET = 100       # Target: 100 verified working proxies
+POOL_MIN_THRESHOLD = 30 # Trigger auto-refill when pool drops below 30
 
 class ProxyManager:
     def __init__(self):
@@ -249,10 +249,9 @@ class ProxyManager:
         logger.info(f"Scraped {len(candidates)} raw proxies, {len(fresh_candidates)} fresh candidates.")
         return fresh_candidates
 
-    def refill_proxies(self, target_count=POOL_TARGET, max_test=4000):
+    def refill_proxies(self, target_count=POOL_TARGET, max_test=500):
         """
-        Scrapes candidates and validates them concurrently with 65 threads
-        until the working pool reaches at least target_count (500+) verified proxies.
+        Scrapes candidates and validates them concurrently with 15 lightweight workers.
         """
         with self.lock:
             if self.is_refilling:
@@ -282,7 +281,7 @@ class ProxyManager:
                     return p
                 return None
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=65) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
                 for res in executor.map(worker, test_subset):
                     if res:
                         new_verified.append(res)
@@ -337,14 +336,15 @@ class ProxyManager:
             last_health_check = time.time()
 
             while True:
-                time.sleep(30)
+                time.sleep(300)
                 try:
                     pool_len = len(self.load_local_pool())
-                    if pool_len < POOL_MIN_THRESHOLD and not self.is_refilling:
+                    now = time.time()
+                    if pool_len < POOL_MIN_THRESHOLD and not self.is_refilling and (now - self.last_refill_time > 600):
                         logger.info(f"Pool size ({pool_len}) below {POOL_MIN_THRESHOLD}. Refilling to {POOL_TARGET}...")
                         self.refill_proxies(target_count=POOL_TARGET)
 
-                    if time.time() - last_health_check > 900 and not self.is_refilling:
+                    if now - last_health_check > 3600 and not self.is_refilling:
                         self.health_check_pool()
                         last_health_check = time.time()
                 except Exception as e:

@@ -19,8 +19,8 @@ except ImportError:
     print("requests library not found. Please install requests.")
     sys.exit(1)
 
-APP_NAME = "Git r_f5E8W"
-APP_ID = 66771
+APP_NAME = "Git r_e3B2W"
+APP_ID = 68258
 
 
 def get_mcp_config():

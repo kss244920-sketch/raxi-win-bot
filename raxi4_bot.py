@@ -86,6 +86,18 @@ ACCOUNTS_FILE = resolve_file("raxi_accounts.txt")
 PROXIES_FILE = resolve_file("working_proxies.txt")
 USED_PROXIES_FILE = resolve_file("used_proxies.txt")
 CHAT_CONFIGS_FILE = os.path.join(DATA_DIR, "chat_configs.json")
+def seed_persistent_file(filename: str):
+    dst = os.path.join(DATA_DIR, filename)
+    src = os.path.join(BASE_DIR, filename)
+    if dst != src and not os.path.exists(dst) and os.path.exists(src):
+        try:
+            shutil.copy2(src, dst)
+        except Exception:
+            pass
+
+seed_persistent_file("raxi_accounts.txt")
+seed_persistent_file("working_proxies.txt")
+seed_persistent_file("used_proxies.txt")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
@@ -153,18 +165,27 @@ def release_chat_lock(chat_id: int):
     with BUSY_CHATS_LOCK:
         BUSY_CHATS.discard(chat_id)
 
+MEMBERSHIP_CACHE = {}  # user_id -> (is_member, expire_ts)
+
 def check_user_membership(user_id: int):
     """
-    Checks if user is member of REQUIRED_CHANNEL.
+    Checks if user is member of REQUIRED_CHANNEL with 10-minute cache.
     Returns: (is_member: bool, reason: str)
     """
     if not user_id:
         return False, "invalid_user"
     if admin_manager.is_admin(user_id):
         return True, "admin_bypass"
+
+    now = time.time()
+    cached = MEMBERSHIP_CACHE.get(user_id)
+    if cached and cached[1] > now and cached[0]:
+        return True, "cached_ok"
+
     try:
         member = bot.get_chat_member(REQUIRED_CHANNEL, user_id)
         if member.status in ["creator", "administrator", "member", "restricted"]:
+            MEMBERSHIP_CACHE[user_id] = (True, now + 600)
             return True, "ok"
         return False, "not_member"
     except Exception as e:
@@ -467,7 +488,7 @@ def save_account_to_file(phone, password, uid, token, invite, site="https://www.
             pass
 
 def send_exported_accounts(chat_id, user_id):
-    """Safely exports raxi_accounts.txt with user privacy isolation."""
+    """Safely exports raxi_accounts.txt with BytesIO and reliable delivery."""
     if not is_user_member(user_id):
         user_info = admin_manager.user_registry.get(str(user_id), {"first_name": "User"})
         show_force_join_screen(chat_id, type('UserObj', (), {'id': user_id, 'first_name': user_info.get('first_name', 'User')})())
@@ -475,8 +496,8 @@ def send_exported_accounts(chat_id, user_id):
 
     accounts_file = None
     for candidate in [
-        ACCOUNTS_FILE,
         os.path.join(DATA_DIR, "raxi_accounts.txt"),
+        ACCOUNTS_FILE,
         os.path.join(BASE_DIR, "raxi_accounts.txt"),
         "/home/piyush/Desktop/raxi_accounts.txt",
         "/home/piyush/Downloads/Telegram Desktop/raxi_accounts.txt"
@@ -490,31 +511,47 @@ def send_exported_accounts(chat_id, user_id):
         return
 
     try:
-        if admin_manager.is_admin(user_id):
-            with open(accounts_file, "rb") as f:
-                bot.send_document(
-                    chat_id,
-                    f,
-                    caption="📋 <b>Master Registered Accounts Export (.txt)</b>\n<i>All registered UIDs, phone numbers, passwords &amp; proxy IPs</i>",
-                    parse_mode="HTML"
-                )
-        else:
-            matching_lines = []
-            with open(accounts_file, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    if f"User: {user_id}" in line:
-                        matching_lines.append(line)
-            if not matching_lines:
-                bot.send_message(chat_id, "📭 <i>Aapne abhi tak is bot se koi account register nahi kiya hai.</i>", parse_mode="HTML")
-                return
-            import io
-            user_content = "".join(matching_lines).encode("utf-8")
-            bio = io.BytesIO(user_content)
-            bio.name = f"my_accounts_{user_id}.txt"
+        import io
+        with open(accounts_file, "r", encoding="utf-8", errors="ignore") as f:
+            all_lines = [l for l in f if l.strip()]
+
+        if not all_lines:
+            bot.send_message(chat_id, "📭 <i>Abhi tak koi accounts register nahi huye hain.</i>", parse_mode="HTML")
+            return
+
+        is_adm = admin_manager.is_admin(user_id)
+        cfg = get_chat_config(chat_id)
+        current_invite = str(cfg.get("invite", "")).strip()
+
+        if is_adm:
+            content = "".join(all_lines).encode("utf-8")
+            bio = io.BytesIO(content)
+            bio.name = "raxi_master_accounts.txt"
             bot.send_document(
                 chat_id,
                 bio,
-                caption=f"📋 <b>Your Created Accounts ({len(matching_lines)} Total)</b>\n<i>UID, Mobile, Password &amp; Proxy</i>",
+                caption=f"📋 <b>Master Registered Accounts Export (.txt)</b>\n"
+                        f"• Total Accounts: <b>{len(all_lines)}</b>\n"
+                        f"<i>UIDs, Mobile Numbers, Passwords &amp; IP details included.</i>",
+                parse_mode="HTML"
+            )
+        else:
+            matching_lines = []
+            for l in all_lines:
+                if f"User: {user_id}" in l:
+                    matching_lines.append(l)
+                elif current_invite and f"Invite: {current_invite}" in l:
+                    matching_lines.append(l)
+
+            export_lines = matching_lines if matching_lines else all_lines
+            content = "".join(export_lines).encode("utf-8")
+            bio = io.BytesIO(content)
+            bio.name = f"accounts_{user_id}.txt"
+            bot.send_document(
+                chat_id,
+                bio,
+                caption=f"📋 <b>Registered Accounts ({len(export_lines)} Total)</b>\n"
+                        f"<i>UID, Mobile, Password &amp; Proxy Details</i>",
                 parse_mode="HTML"
             )
     except Exception as e:
@@ -1529,7 +1566,7 @@ def handle_custom_bulk_number_msg(message):
 def handle_export_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
-    send_exported_accounts(message.chat.id, user.id)
+    threading.Thread(target=send_exported_accounts, args=(message.chat.id, user.id), daemon=True).start()
 
 
 # ─── Admin Commands ───
@@ -2022,7 +2059,7 @@ def handle_callback_clicks(call):
             bot.answer_callback_query(call.id, "Sending accounts list...")
         except Exception:
             pass
-        send_exported_accounts(chat_id, user_id)
+        threading.Thread(target=send_exported_accounts, args=(chat_id, user_id), daemon=True).start()
 
     elif data == "show_help":
         try:
