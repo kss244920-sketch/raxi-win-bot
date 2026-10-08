@@ -1692,7 +1692,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
                         except Exception:
                             pass
 
-        workers = min(count, 4)
+        workers = min(count, 3)
         threads = []
         for _ in range(workers):
             t = threading.Thread(target=worker_loop, daemon=True)
@@ -1701,6 +1701,9 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
 
         for t in threads:
             t.join()
+
+        import gc
+        gc.collect()
 
         rem_tokens = admin_manager.get_display_tokens(uid)
 
