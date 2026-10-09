@@ -41,7 +41,19 @@ SOURCES = [
     "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
     "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/generated/http_proxies.txt",
-    "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt"
+    "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
+    "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+    "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt",
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http.txt",
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/https.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/https.txt",
+    "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/http.txt",
+    "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt",
+    "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/https.txt",
+    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/http.txt",
+    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/https.txt",
+    "https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt"
 ]
 
 PLATFORM_TEST_URLS = [
@@ -53,8 +65,8 @@ TARGET_CHECK_URL = PLATFORM_TEST_URLS[0]
 CONNECT_TIMEOUT = 2.2
 READ_TIMEOUT = 2.8
 
-POOL_TARGET = 150       # Memory-safe target: 150 verified working proxies
-POOL_MIN_THRESHOLD = 60 # Trigger auto-refill when pool drops below 60
+POOL_TARGET = 300       # Target: 300 verified working proxies
+POOL_MIN_THRESHOLD = 80 # Trigger auto-refill when pool drops below 80
 HEALTH_CHECK_INTERVAL = 1800 # 30 minutes in seconds
 POLL_INTERVAL = 60      # Active poll interval in seconds
 
@@ -304,7 +316,7 @@ class ProxyManager:
             except Exception:
                 return set()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(SOURCES), 30)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(SOURCES), 12)) as executor:
             for found in executor.map(fetch_url, SOURCES):
                 candidates.update(found)
 
@@ -324,24 +336,24 @@ class ProxyManager:
                             if p and not p.startswith("#"):
                                 m = re.findall(r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}", p)
                                 candidates.update(m)
-                            if len(candidates) >= 2500:
+                            if len(candidates) >= 3500:
                                 break
                 except Exception:
                     pass
-            if len(candidates) >= 2500:
+            if len(candidates) >= 3500:
                 break
 
         fresh_candidates = {p for p in candidates if p not in self.dead_proxies}
         cand_list = list(fresh_candidates)
-        if len(cand_list) > 2500:
+        if len(cand_list) > 3500:
             random.shuffle(cand_list)
-            cand_list = cand_list[:2500]
+            cand_list = cand_list[:3500]
         logger.info(f"Gathered {len(cand_list)} fresh candidates for memory-safe validation.")
         return set(cand_list)
 
-    def refill_proxies(self, target_count=POOL_TARGET, max_workers=25):
+    def refill_proxies(self, target_count=POOL_TARGET, max_workers=20):
         """
-        Scrapes candidates and validates them concurrently with 25 memory-safe workers.
+        Scrapes candidates and validates them concurrently with 20 memory-safe workers.
         Keeps RAM strictly under 60MB.
         """
         import gc
@@ -369,8 +381,8 @@ class ProxyManager:
             new_verified = []
             active_set = set(active_existing)
 
-            # Test in streaming batches of 500 candidates with 25 workers
-            batch_size = 500
+            # Test in streaming batches of 250 candidates with 20 workers
+            batch_size = 250
             for i in range(0, len(candidates), batch_size):
                 if len(active_existing) + len(new_verified) >= target_count:
                     break
@@ -384,7 +396,7 @@ class ProxyManager:
                         try:
                             if f.result():
                                 new_verified.append(p)
-                                if len(new_verified) % 10 == 0:
+                                if len(new_verified) % 5 == 0:
                                     current_combined = active_existing + new_verified
                                     self.save_pool(current_combined)
                                     logger.info(f"[Refill] Live pool: {len(current_combined)}/{target_count} verified proxies...")
@@ -421,7 +433,7 @@ class ProxyManager:
 
         verified_still_alive = []
         dead_count = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
             futures = {executor.submit(self.test_single_proxy, p): p for p in pool}
             for f in concurrent.futures.as_completed(futures):
                 p = futures[f]

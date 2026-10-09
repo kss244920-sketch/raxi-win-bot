@@ -156,6 +156,7 @@ def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming
 BUSY_CHATS = set()
 BUSY_CHATS_LOCK = threading.Lock()
 CUSTOM_REG_STATE = {}  # user_id -> {"step": "phone"|"password", "phone": str, "chat_id": int, "mid": int}
+CUSTOM_SPEED_STATE = {}  # user_id -> {"count": int, "chat_id": int, "mid": int, "time": float}
 
 def acquire_chat_lock(chat_id: int) -> bool:
     with BUSY_CHATS_LOCK:
@@ -739,94 +740,206 @@ def save_account_to_file(phone, password, uid, token, invite, site="https://www.
         except Exception:
             pass
 
-def send_exported_accounts(chat_id, user_id):
-    """Safely exports raxi_accounts.txt with BytesIO and reliable delivery."""
-    if not is_user_member(user_id):
-        user_info = admin_manager.user_registry.get(str(user_id), {"first_name": "User"})
-        show_force_join_screen(chat_id, type('UserObj', (), {'id': user_id, 'first_name': user_info.get('first_name', 'User')})())
-        return
-
-    accounts_file = None
+def get_accounts_file():
+    """Finds the active accounts file from candidate paths."""
     for candidate in [
         os.path.join(DATA_DIR, "raxi_accounts.txt"),
         ACCOUNTS_FILE,
         os.path.join(BASE_DIR, "raxi_accounts.txt"),
+        "/app/data/raxi_accounts.txt",
         "/home/piyush/Desktop/raxi_accounts.txt",
         "/home/piyush/Downloads/Telegram Desktop/raxi_accounts.txt"
     ]:
         if os.path.exists(candidate) and os.path.getsize(candidate) > 0:
-            accounts_file = candidate
-            break
+            return candidate
+    return None
 
-    if not accounts_file:
-        bot.send_message(chat_id, "📭 <i>Abhi tak koi accounts register nahi huye hain.</i>", parse_mode="HTML")
+def parse_account_records(lines):
+    """Parses raw account log lines into structured account dictionaries."""
+    records = []
+    for l in lines:
+        if not l.strip() or l.startswith("#"):
+            continue
+        rec = {}
+        ts_m = re.search(r"\[(.*?)\]", l)
+        rec["time"] = ts_m.group(1).strip() if ts_m else ""
+        uid_m = re.search(r"UID:\s*(\S+)", l)
+        rec["uid"] = uid_m.group(1).strip() if uid_m else ""
+        ph_m = re.search(r"Phone:\s*(\S+)", l)
+        rec["phone"] = ph_m.group(1).strip() if ph_m else ""
+        pw_m = re.search(r"Password:\s*(\S+)", l)
+        rec["password"] = pw_m.group(1).strip() if pw_m else ""
+        dev_m = re.search(r"Device:\s*([^|]+)", l)
+        rec["device"] = dev_m.group(1).strip() if dev_m else ""
+        ip_m = re.search(r"IP:\s*(\S+)", l)
+        rec["ip"] = ip_m.group(1).strip() if ip_m else ""
+        inv_m = re.search(r"Invite:\s*(\S+)", l)
+        rec["invite"] = inv_m.group(1).strip() if inv_m else ""
+        site_m = re.search(r"Site:\s*([^|]+)", l)
+        rec["site"] = site_m.group(1).strip() if site_m else ""
+        usr_m = re.search(r"User:\s*(\S+)", l)
+        rec["user"] = usr_m.group(1).strip() if usr_m else ""
+        tok_m = re.search(r"Token:\s*(\S+)", l)
+        rec["token"] = tok_m.group(1).strip() if tok_m else ""
+        if rec["phone"] and rec["password"]:
+            records.append(rec)
+    return records
+
+def get_user_account_records(user_id, chat_id=None):
+    """Retrieves and parses account records accessible to this user."""
+    acc_file = get_accounts_file()
+    if not acc_file:
+        return []
+    try:
+        with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
+            lines = [l for l in f if l.strip()]
+        all_recs = parse_account_records(lines)
+        if admin_manager.is_admin(user_id):
+            return all_recs
+
+        cfg = get_chat_config(chat_id) if chat_id else {}
+        curr_invite = str(cfg.get("invite", "")).strip()
+        filtered = [
+            r for r in all_recs
+            if r.get("user") == str(user_id) or (curr_invite and r.get("invite") == curr_invite)
+        ]
+        return filtered if filtered else all_recs
+    except Exception as e:
+        log(f"[bot] Error reading user account records: {e}")
+        return []
+
+def show_export_menu(chat_id, user, message_id=None):
+    """Interactive export menu offering Combos (phone:pass), Full Report, or Both."""
+    user_id = user.id if hasattr(user, "id") else (user or chat_id)
+    if not is_user_member(user_id):
+        user_info = admin_manager.user_registry.get(str(user_id), {"first_name": "User"})
+        show_force_join_screen(chat_id, type('UserObj', (), {'id': user_id, 'first_name': user_info.get('first_name', 'User')})(), message_id=message_id)
         return
 
-    try:
-        import io
-        with open(accounts_file, "r", encoding="utf-8", errors="ignore") as f:
-            all_lines = [l for l in f if l.strip()]
+    recs = get_user_account_records(user_id, chat_id)
+    total_accs = len(recs)
+    cfg = get_chat_config(chat_id)
 
-        if not all_lines:
-            bot.send_message(chat_id, "📭 <i>Abhi tak koi accounts register nahi huye hain.</i>", parse_mode="HTML")
-            return
+    if total_accs == 0:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options"))
+        send_or_edit(
+            chat_id,
+            "📭 <b>No Accounts Available for Export</b>\n\n"
+            "Abhi tak koi accounts register nahi huye hain. Pehle Single ya Multi-Registration run karein.",
+            reply_markup=markup,
+            message_id=message_id
+        )
+        return
 
-        is_adm = admin_manager.is_admin(user_id)
-        cfg = get_chat_config(chat_id)
-        current_invite = str(cfg.get("invite", "")).strip()
+    text = (
+        f"📋 <b>Accounts Export Hub</b>\n\n"
+        f"• 📊 <b>Available Accounts:</b> <code>{total_accs} Accounts</code>\n"
+        f"• 🌐 <b>Current Platform:</b> <code>{cfg['site']}</code>\n"
+        f"• 🎟️ <b>Invite Code:</b> <code>{cfg['invite']}</code>\n\n"
+        f"Apna pasandida export format choose karein:\n\n"
+        f"• 📱 <b>Phone:Pass Combos:</b>\n"
+        f"  Clean <code>phone:password</code> list — checkers &amp; account loaders ke liye direct ready.\n\n"
+        f"• 📑 <b>Full Detailed Report:</b>\n"
+        f"  Structured audit table with Phone, Password, UID, Device, IP, Invite, Site &amp; Date.\n\n"
+        f"• 📦 <b>Download Both:</b> Dono files ek sath send hongi."
+    )
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    b1 = types.InlineKeyboardButton("📱 Phone:Pass Combos", callback_data="do_export_combos")
+    b2 = types.InlineKeyboardButton("📑 Full Report (.txt)", callback_data="do_export_full")
+    b3 = types.InlineKeyboardButton("📦 Download Both Files", callback_data="do_export_both")
+    b4 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
+    markup.add(b1, b2)
+    markup.add(b3)
+    markup.add(b4)
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
-        if is_adm:
-            content = "".join(all_lines).encode("utf-8")
-            bio = io.BytesIO(content)
-            bio.name = "raxi_master_accounts.txt"
-            bot.send_document(
-                chat_id,
-                bio,
-                caption=f"📋 <b>Master Registered Accounts Export (.txt)</b>\n"
-                        f"• Total Accounts: <b>{len(all_lines)}</b>\n"
-                        f"<i>UIDs, Mobile Numbers, Passwords &amp; IP details included.</i>",
-                parse_mode="HTML"
-            )
-        else:
-            matching_lines = []
-            for l in all_lines:
-                if f"User: {user_id}" in l:
-                    matching_lines.append(l)
-                elif current_invite and f"Invite: {current_invite}" in l:
-                    matching_lines.append(l)
+def send_exported_combos(chat_id, user_id):
+    """Sends clean Phone:Password combo file."""
+    import io
+    recs = get_user_account_records(user_id, chat_id)
+    if not recs:
+        bot.send_message(chat_id, "📭 <i>Koi accounts nahi mile export ke liye.</i>", parse_mode="HTML")
+        return
 
-            export_lines = matching_lines if matching_lines else all_lines
-            content = "".join(export_lines).encode("utf-8")
-            bio = io.BytesIO(content)
-            bio.name = f"accounts_{user_id}.txt"
-            bot.send_document(
-                chat_id,
-                bio,
-                caption=f"📋 <b>Registered Accounts ({len(export_lines)} Total)</b>\n"
-                        f"<i>UID, Mobile, Password &amp; Proxy Details</i>",
-                parse_mode="HTML"
-            )
-    except Exception as e:
-        log(f"[bot] Export document error: {e}")
-        bot.send_message(chat_id, f"❌ Document send karne me error: <code>{html.escape(str(e))}</code>", parse_mode="HTML")
+    lines = [f"{r['phone']}:{r['password']}" for r in recs if r.get('phone') and r.get('password')]
+    content = "\n".join(lines).encode("utf-8")
+
+    bio = io.BytesIO(content)
+    bio.name = f"combos_{user_id}.txt"
+    caption = (
+        f"📱 <b>Phone:Password Combos Export</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 📊 <b>Total Combos:</b> <code>{len(lines)}</code>\n"
+        f"• 🔑 <b>Format:</b> <code>phone:password</code>\n"
+        f"• 💡 <i>Directly usable in account checkers &amp; automation tools.</i>"
+    )
+    bot.send_document(chat_id, bio, caption=caption, parse_mode="HTML")
+
+def send_exported_full_report(chat_id, user_id):
+    """Sends comprehensive structured audit report."""
+    import io
+    recs = get_user_account_records(user_id, chat_id)
+    if not recs:
+        bot.send_message(chat_id, "📭 <i>Koi accounts nahi mile export ke liye.</i>", parse_mode="HTML")
+        return
+
+    cfg = get_chat_config(chat_id)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    report_lines = [
+        "================================================================================",
+        "RAXI AUTOMATION - REGISTERED ACCOUNTS MASTER AUDIT REPORT",
+        f"Generated: {now_str} | Total Accounts: {len(recs)}",
+        f"Target Site: {cfg.get('site', 'N/A')} | Invite Code: {cfg.get('invite', 'N/A')}",
+        "================================================================================\n",
+        "--- [QUICK COMBOS SUMMARY (PHONE:PASSWORD)] ---"
+    ]
+    for r in recs:
+        report_lines.append(f"{r['phone']}:{r['password']}")
+    report_lines.append("\n================================================================================")
+    report_lines.append("--- [DETAILED ACCOUNT RECORDS] ---")
+    report_lines.append("================================================================================\n")
+
+    for idx, r in enumerate(recs, 1):
+        report_lines.append(f"[{idx}] Phone:    {r.get('phone', 'N/A')}")
+        report_lines.append(f"    Password: {r.get('password', 'N/A')}")
+        report_lines.append(f"    UID:      {r.get('uid', 'N/A')}")
+        report_lines.append(f"    Site:     {r.get('site', 'N/A')}")
+        report_lines.append(f"    Invite:   {r.get('invite', 'N/A')}")
+        report_lines.append(f"    Device:   {r.get('device', 'N/A')}")
+        report_lines.append(f"    IP Proxy: {r.get('ip', 'Direct')}")
+        report_lines.append(f"    Time:     {r.get('time', 'N/A')}")
+        report_lines.append("--------------------------------------------------------------------------------")
+
+    content = "\n".join(report_lines).encode("utf-8")
+    bio = io.BytesIO(content)
+    bio.name = f"accounts_report_{user_id}.txt"
+    caption = (
+        f"📑 <b>Master Accounts Report Export (.txt)</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 📊 <b>Total Accounts:</b> <code>{len(recs)}</code>\n"
+        f"• 🌐 <b>Site:</b> <code>{cfg.get('site', 'N/A')}</code>\n"
+        f"• 📝 Includes: Combos + Detailed Table + Device &amp; Proxy Audit logs."
+    )
+    bot.send_document(chat_id, bio, caption=caption, parse_mode="HTML")
+
+def send_exported_both(chat_id, user_id):
+    """Sends both Combos and Full Report documents."""
+    send_exported_combos(chat_id, user_id)
+    send_exported_full_report(chat_id, user_id)
+
+def send_exported_accounts(chat_id, user_id):
+    """Maintains backward compatibility by launching the full report."""
+    send_exported_full_report(chat_id, user_id)
 
 def count_saved_accounts():
     total = 0
-    accounts_file = None
-    for candidate in [
-        ACCOUNTS_FILE,
-        os.path.join(DATA_DIR, "raxi_accounts.txt"),
-        os.path.join(BASE_DIR, "raxi_accounts.txt"),
-        "/home/piyush/Desktop/raxi_accounts.txt",
-        "/home/piyush/Downloads/Telegram Desktop/raxi_accounts.txt"
-    ]:
-        if os.path.exists(candidate) and os.path.getsize(candidate) > 0:
-            accounts_file = candidate
-            break
+    accounts_file = get_accounts_file()
     if accounts_file:
         try:
             with open(accounts_file, "r", encoding="utf-8") as f:
-                total = sum(1 for line in f if line.strip())
+                total = sum(1 for line in f if line.strip() and not line.strip().startswith("#"))
         except Exception:
             pass
     return total
@@ -1294,6 +1407,62 @@ def show_custom_amount_prompt(chat_id, user, message_id=None):
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
 
+def show_speed_selection_menu(chat_id, user, count, message_id=None):
+    """
+    Prompts user to select registration speed / delay before running bulk registration.
+    Options: FASTEST (Parallel), SAFE (3s delay), STEALTH (6s delay), Custom Speed.
+    """
+    user_id = user.id if hasattr(user, "id") else (user or chat_id)
+    tokens_disp = admin_manager.get_display_tokens(user_id)
+    cfg = get_chat_config(chat_id)
+
+    # Check token requirement for non-admins
+    if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
+        avail = admin_manager.get_tokens(user_id)
+        if avail <= 0:
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options"))
+            send_or_edit(
+                chat_id,
+                "❌ <b>Insufficient Tokens!</b>\n\n"
+                "Aapke pass <code>0 Tokens</code> hain. Har account registration ke liye <code>1 Token</code> lagta hai.\n"
+                "Recharge karne ke liye Admin se contact karein.",
+                reply_markup=markup,
+                message_id=message_id
+            )
+            return
+        if avail < count:
+            count = avail
+
+    text = (
+        f"⚡ <b>Select Registration Speed</b>\n\n"
+        f"• 🎯 <b>Batch Count:</b> <code>{count} Accounts</code>\n"
+        f"• 🌐 <b>Target Platform:</b> <code>{cfg['site']}</code>\n"
+        f"• 🎟️ <b>Invite Code:</b> <code>{cfg['invite']}</code>\n"
+        f"• 🎫 <b>Token Cost:</b> <code>{count} Tokens</code> (Bal: <b>{tokens_disp}</b>)\n\n"
+        f"Kripya speed mode choose karein:\n\n"
+        f"• ⚡ <b>FASTEST (Turbo):</b>\n"
+        f"  Parallel Multi-Engine, 0s delay (Sabse tez registration)\n\n"
+        f"• 🛡️ <b>SAFE (3s Delay):</b>\n"
+        f"  3s gap per ID — site anti-bot / rate-limit protection\n\n"
+        f"• 🐢 <b>STEALTH (6s Delay):</b>\n"
+        f"  6s gap per ID — maximum safety\n\n"
+        f"• ⏱️ <b>Custom Speed:</b>\n"
+        f"  Apna customized delay ya total duration enter karein"
+    )
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    b1 = types.InlineKeyboardButton("⚡ FASTEST (Turbo)", callback_data=f"bspeed_{count}_0")
+    b2 = types.InlineKeyboardButton("🛡️ SAFE (3s Delay)", callback_data=f"bspeed_{count}_3")
+    b3 = types.InlineKeyboardButton("🐢 STEALTH (6s)", callback_data=f"bspeed_{count}_6")
+    b4 = types.InlineKeyboardButton("⏱️ Custom Speed", callback_data=f"bspeed_{count}_custom")
+    b_back = types.InlineKeyboardButton("🔙 Back to Multi-Menu", callback_data="reg_multi")
+    markup.add(b1, b2)
+    markup.add(b3, b4)
+    markup.add(b_back)
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
+
+
+
 def show_admin_menu(chat_id, user, message_id=None):
     """Admin Control Hub matching Jio-Automation bot + Token Engine."""
     user_id = user.id if user else 0
@@ -1581,9 +1750,10 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
 #    <gap>
 # ═══════════════════════════════════════════════════════════════════════════
 
-def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
+def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay=0.0, speed_label="⚡ FASTEST (Turbo)"):
     """
-    Runs Multi-Registration and outputs in the EXACT arranged manner:
+    Runs Multi-Registration with configurable speed mode & delay,
+    and outputs in the EXACT arranged manner:
     IP / Device -> UID -> Number -> Password -> gap -> next account!
     Edits the existing message in place to avoid sending multiple messages.
     """
@@ -1621,13 +1791,19 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
         target_invite = cfg["invite"]
 
         bar_init = render_progress_bar(0, count, length=10)
+        delay_note = f"• ⏱️ Speed: <code>{speed_label}</code>\n"
+        if delay > 0:
+            est_total = int(count * delay)
+            est_str = f"~{est_total}s" if est_total < 60 else f"~{est_total // 60}m {est_total % 60}s"
+            delay_note += f"• ⏳ Est. Total Duration: <code>{est_str}</code>\n"
+
         mid = send_or_edit(
             chat_id,
             f"⏳ <b>Multi-Registration Started...</b>\n\n"
             f"{bar_init}\n\n"
             f"• 🌐 Site: <code>{target_site}</code>\n"
             f"• 🎟️ Invite: <code>{target_invite}</code>\n"
-            f"• ⚡ Parallel High-Speed Engine Active\n"
+            f"{delay_note}"
             f"• 💰 Rate: 1 Token deducted per account\n\n"
             f"<i>Live accounts creating in progress...</i>",
             message_id=message_id
@@ -1678,6 +1854,15 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
                         last_edit_time[0] = now
                         bar_now = render_progress_bar(cur_succ, count, length=10)
                         retry_note = f"\n• 🔄 <b>Retries Handled:</b> <code>{failed_count}</code> <i>(Auto-recovering dropped IPs)</i>" if failed_count > 0 else ""
+
+                        rem_accs = max(0, count - cur_succ)
+                        if delay > 0:
+                            est_rem = int(rem_accs * delay)
+                            eta_str = f"~{est_rem}s" if est_rem < 60 else f"~{est_rem // 60}m {est_rem % 60}s"
+                            eta_line = f"\n• ⏳ <b>ETA Remaining:</b> <code>{eta_str}</code>"
+                        else:
+                            eta_line = ""
+
                         try:
                             send_or_edit(
                                 chat_id,
@@ -1686,13 +1871,20 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
                                 f"• ✅ Created: <code>{cur_succ}/{count}</code>\n"
                                 f"• 🌐 Site: <code>{target_site}</code>\n"
                                 f"• 🎟️ Invite: <code>{target_invite}</code>\n"
-                                f"• ⚡ Parallel Auto-Retry Engine Active{retry_note}",
+                                f"• ⚡ Mode: <code>{speed_label}</code>"
+                                f"{eta_line}{retry_note}",
                                 message_id=mid
                             )
                         except Exception:
                             pass
 
-        workers = min(count, 3)
+                if res.get("ok"):
+                    if delay > 0 and len(success_accounts) < count:
+                        time.sleep(delay)
+                else:
+                    time.sleep(0.5)
+
+        workers = 1 if delay > 0 else min(count, 3)
         threads = []
         for _ in range(workers):
             t = threading.Thread(target=worker_loop, daemon=True)
@@ -1730,6 +1922,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None):
             "🎉 <b>MULTI-REGISTRATION COMPLETED!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"✅ <b>Successfully Created:</b> <code>{len(success_accounts)}/{count}</code>\n"
+            f"⚡ <b>Speed Mode:</b> <code>{speed_label}</code>\n"
             f"{retry_line}"
             f"🎫 <b>Tokens Deducted:</b> <code>{len(success_accounts)} Tokens</code>\n"
             f"🎫 <b>Remaining Balance:</b> <b>{rem_tokens}</b>\n"
@@ -1795,6 +1988,7 @@ def handle_start(message):
 
     # Cancel any active custom registration flow
     CUSTOM_REG_STATE.pop(user.id, None)
+    CUSTOM_SPEED_STATE.pop(user.id, None)
 
     # Clean old bot message if possible so a fresh welcome screen lands right at the bottom
     old_mid = LAST_BOT_MSG.pop(chat_id, None)
@@ -1910,7 +2104,7 @@ def handle_multi_cmd(message):
         bot.delete_message(chat_id, message.message_id)
     except Exception:
         pass
-    threading.Thread(target=run_bulk_registration, args=(chat_id, user.id, count, LAST_BOT_MSG.get(chat_id)), daemon=True).start()
+    show_speed_selection_menu(chat_id, user, count, message_id=LAST_BOT_MSG.get(chat_id))
 
 
 @bot.message_handler(commands=["reg", "register"])
@@ -2023,8 +2217,9 @@ def process_and_save_link(chat_id, text, orig_msg=None):
 @bot.message_handler(commands=["cancel"])
 def handle_cancel_cmd(message):
     uid = message.from_user.id
-    if uid in CUSTOM_REG_STATE:
+    if uid in CUSTOM_REG_STATE or uid in CUSTOM_SPEED_STATE:
         CUSTOM_REG_STATE.pop(uid, None)
+        CUSTOM_SPEED_STATE.pop(uid, None)
         try:
             bot.delete_message(message.chat.id, message.message_id)
         except Exception:
@@ -2212,9 +2407,63 @@ def handle_custom_reg_steps(message):
         return
 
 
+@bot.message_handler(func=lambda msg: msg.from_user and msg.from_user.id in CUSTOM_SPEED_STATE and msg.text and not msg.text.startswith("/"))
+def handle_custom_speed_msg(message):
+    """Processes user response for custom registration speed/delay."""
+    user = message.from_user
+    uid = user.id
+    chat_id = message.chat.id
+    state_data = CUSTOM_SPEED_STATE.pop(uid, None)
+    if not state_data:
+        return
+
+    count = state_data.get("count", 5)
+    target_mid = state_data.get("mid") or LAST_BOT_MSG.get(chat_id)
+
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception:
+        pass
+
+    raw = message.text.strip().lower()
+    delay = 3.0
+    label = "🛡️ SAFE (3s Delay)"
+
+    if raw in ("fast", "fastest", "0", "0s", "turbo"):
+        delay = 0.0
+        label = "⚡ FASTEST (Turbo)"
+    elif raw.endswith("m") or "min" in raw:
+        try:
+            nums = re.findall(r"[\d.]+", raw)
+            if nums:
+                mins = float(nums[0])
+                total_sec = mins * 60.0
+                delay = round(total_sec / max(count, 1), 1)
+                label = f"⏱️ Custom ({mins:g}m total, {delay}s/id)"
+        except Exception:
+            delay = 3.0
+            label = "🛡️ SAFE (3s Delay)"
+    else:
+        try:
+            nums = re.findall(r"[\d.]+", raw)
+            if nums:
+                secs = float(nums[0])
+                delay = round(secs, 1)
+                label = f"⏱️ Custom ({delay}s Delay)"
+        except Exception:
+            delay = 3.0
+            label = "🛡️ SAFE (3s Delay)"
+
+    threading.Thread(
+        target=run_bulk_registration,
+        args=(chat_id, uid, count, target_mid, delay, label),
+        daemon=True
+    ).start()
+
+
 @bot.message_handler(func=lambda msg: msg.text and msg.text.strip().isdigit() and 1 <= int(msg.text.strip()) <= 100)
 def handle_custom_bulk_number_msg(message):
-    """Directly triggers bulk registration if user sends a custom number (1-100)."""
+    """Shows speed selection menu when user sends a custom number (1-100)."""
     user = message.from_user
     chat_id = message.chat.id
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
@@ -2241,14 +2490,28 @@ def handle_custom_bulk_number_msg(message):
         pass
 
     target_msg_id = LAST_BOT_MSG.get(chat_id)
-    threading.Thread(target=run_bulk_registration, args=(chat_id, user.id, count, target_msg_id), daemon=True).start()
+    show_speed_selection_menu(chat_id, user, count, message_id=target_msg_id)
 
 
 @bot.message_handler(commands=["export", "accounts"])
 def handle_export_cmd(message):
+    """Handles /export and /accounts command, routing to specific format or export hub."""
     user = message.from_user
+    chat_id = message.chat.id
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
-    threading.Thread(target=send_exported_accounts, args=(message.chat.id, user.id), daemon=True).start()
+    if not is_user_member(user.id):
+        show_force_join_screen(chat_id, user, del_incoming=message)
+        return
+
+    parts = message.text.strip().split()
+    if len(parts) >= 2 and parts[1].lower() in ("combo", "combos"):
+        threading.Thread(target=send_exported_combos, args=(chat_id, user.id), daemon=True).start()
+    elif len(parts) >= 2 and parts[1].lower() in ("full", "report", "all"):
+        threading.Thread(target=send_exported_full_report, args=(chat_id, user.id), daemon=True).start()
+    elif len(parts) >= 2 and parts[1].lower() == "both":
+        threading.Thread(target=send_exported_both, args=(chat_id, user.id), daemon=True).start()
+    else:
+        show_export_menu(chat_id, user, message_id=LAST_BOT_MSG.get(chat_id))
 
 
 # ─── Admin Commands ───
@@ -2655,6 +2918,7 @@ def handle_callback_clicks(call):
         except Exception:
             pass
         CUSTOM_REG_STATE.pop(user_id, None)
+        CUSTOM_SPEED_STATE.pop(user_id, None)
         show_link_prompt(chat_id, user, message_id=msg_id)
 
     elif data in ("show_link_options", "link_menu"):
@@ -2845,17 +3109,88 @@ def handle_callback_clicks(call):
                 return
 
         try:
-            bot.answer_callback_query(call.id, f"Starting multi-registration of {count} accounts...")
+            bot.answer_callback_query(call.id)
         except Exception:
             pass
-        threading.Thread(target=run_bulk_registration, args=(chat_id, user_id, count, msg_id), daemon=True).start()
+        show_speed_selection_menu(chat_id, user, count, message_id=msg_id)
+
+    elif data.startswith("bspeed_"):
+        parts = data.split("_")
+        count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 5
+        speed_mode = parts[2] if len(parts) > 2 else "0"
+
+        if speed_mode == "custom":
+            CUSTOM_SPEED_STATE[user_id] = {
+                "count": count,
+                "chat_id": chat_id,
+                "mid": msg_id,
+                "time": time.time()
+            }
+            try:
+                bot.answer_callback_query(call.id)
+            except Exception:
+                pass
+            text = (
+                f"⏱️ <b>Custom Speed Configuration</b>\n\n"
+                f"• 🎯 <b>Batch Count:</b> <code>{count} Accounts</code>\n\n"
+                f"Niche chat me desired delay ya duration send karein:\n\n"
+                f"• <b>Per-ID Delay:</b> <code>5s</code>, <code>10s</code>, <code>15s</code> (seconds gap between accounts)\n"
+                f"• <b>Total Time:</b> <code>2m</code>, <code>5m</code> (total batch duration in minutes)\n"
+                f"• <b>Fastest:</b> <code>fast</code> ya <code>0</code> (zero delay)\n\n"
+                f"💡 <i>Example: Send <code>8s</code> for 8 seconds gap between each registration.</i>"
+            )
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔙 Cancel / Back", callback_data=f"multi_run_{count}"))
+            send_or_edit(chat_id, text, reply_markup=markup, message_id=msg_id)
+            return
+
+        delay = 0.0
+        label = "⚡ FASTEST (Turbo)"
+        if speed_mode == "3":
+            delay = 3.0
+            label = "🛡️ SAFE (3s Delay)"
+        elif speed_mode == "6":
+            delay = 6.0
+            label = "🐢 STEALTH (6s Delay)"
+
+        try:
+            bot.answer_callback_query(call.id, f"Speed: {label}")
+        except Exception:
+            pass
+
+        threading.Thread(
+            target=run_bulk_registration,
+            args=(chat_id, user_id, count, msg_id, delay, label),
+            daemon=True
+        ).start()
 
     elif data == "export_txt":
         try:
-            bot.answer_callback_query(call.id, "Sending accounts list...")
+            bot.answer_callback_query(call.id)
         except Exception:
             pass
-        threading.Thread(target=send_exported_accounts, args=(chat_id, user_id), daemon=True).start()
+        show_export_menu(chat_id, user, message_id=msg_id)
+
+    elif data == "do_export_combos":
+        try:
+            bot.answer_callback_query(call.id, "Generating Phone:Pass Combos...")
+        except Exception:
+            pass
+        threading.Thread(target=send_exported_combos, args=(chat_id, user_id), daemon=True).start()
+
+    elif data == "do_export_full":
+        try:
+            bot.answer_callback_query(call.id, "Generating Full Report...")
+        except Exception:
+            pass
+        threading.Thread(target=send_exported_full_report, args=(chat_id, user_id), daemon=True).start()
+
+    elif data == "do_export_both":
+        try:
+            bot.answer_callback_query(call.id, "Generating Combos & Full Report...")
+        except Exception:
+            pass
+        threading.Thread(target=send_exported_both, args=(chat_id, user_id), daemon=True).start()
 
     elif data == "show_help":
         try:
