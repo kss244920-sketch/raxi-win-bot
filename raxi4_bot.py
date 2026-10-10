@@ -1015,7 +1015,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 cap_url = f"{target_api}/api/webapi/Captcha"
                 cap_payload = signed_body({})
 
-            r_cap = session.post(cap_url, json=cap_payload, timeout=(2.0, 2.8))
+            r_cap = session.post(cap_url, json=cap_payload, timeout=(1.8, 2.5))
             cdata = r_cap.json().get("data", {})
             cid = cdata.get("captchaId")
             bg_b64 = cdata.get("backgroundImage")
@@ -1071,7 +1071,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             reg_payload = signed_body(reg_dict)
 
         try:
-            r = session.post(reg_url, json=reg_payload, timeout=(2.2, 3.2))
+            r = session.post(reg_url, json=reg_payload, timeout=(2.0, 2.8))
             j = r.json()
         except Exception as e:
             log(f"[bot] Proxy {proxy_label} Register POST error: {e}")
@@ -1884,7 +1884,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                 else:
                     time.sleep(0.5)
 
-        workers = 1 if delay > 0 else min(count, 3)
+        workers = 1 if delay > 0 else min(count, 8)
         threads = []
         for _ in range(workers):
             t = threading.Thread(target=worker_loop, daemon=True)

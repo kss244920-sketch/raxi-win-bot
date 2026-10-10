@@ -36,34 +36,29 @@ ALT_DIRS = ["/home/piyush/Desktop", "/home/piyush/Downloads/Telegram Desktop"]
 
 # Curated High-Speed HTTPS & HTTP Sources (Curated for low memory & high speed)
 SOURCES = [
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt",
+    "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
+    "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+    "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/generated/http_proxies.txt",
+    "https://api.proxyscrape.com/v3/free-proxy-list/get?request=displayproxies&protocol=http&proxy_format=ipport&format=text",
     "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=2500&country=all&ssl=yes&anonymity=all",
     "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
-    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
-    "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/generated/http_proxies.txt",
-    "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
     "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
-    "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt",
-    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http.txt",
-    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/https.txt",
-    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-    "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/https.txt",
-    "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/http.txt",
+    "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
     "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt",
-    "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/https.txt",
     "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/http.txt",
-    "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/https.txt",
     "https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt"
 ]
 
 PLATFORM_TEST_URLS = [
-    "https://api.dmfirst9api.com/api/webapi/Captcha",
     "https://api.raxiqaz.com/api/webapi/Captcha",
+    "https://api.dmfirst9api.com/api/webapi/Captcha",
     "https://api.api51gameapi.com/api/webapi/Captcha"
 ]
 TARGET_CHECK_URL = PLATFORM_TEST_URLS[0]
-CONNECT_TIMEOUT = 2.2
-READ_TIMEOUT = 2.8
+CONNECT_TIMEOUT = 2.0
+READ_TIMEOUT = 2.5
 
 POOL_TARGET = 300       # Target: 300 verified working proxies
 POOL_MIN_THRESHOLD = 80 # Trigger auto-refill when pool drops below 80
@@ -288,8 +283,8 @@ class ProxyManager:
             "https": f"http://{proxy_str}"
         }
         for test_url in [
-            "https://api.dmfirst9api.com/api/webapi/Captcha",
-            TARGET_CHECK_URL
+            TARGET_CHECK_URL,
+            "https://api.dmfirst9api.com/api/webapi/Captcha"
         ]:
             try:
                 r = requests.post(
@@ -336,18 +331,18 @@ class ProxyManager:
                             if p and not p.startswith("#"):
                                 m = re.findall(r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}", p)
                                 candidates.update(m)
-                            if len(candidates) >= 3500:
+                            if len(candidates) >= 6000:
                                 break
                 except Exception:
                     pass
-            if len(candidates) >= 3500:
+            if len(candidates) >= 6000:
                 break
 
         fresh_candidates = {p for p in candidates if p not in self.dead_proxies}
         cand_list = list(fresh_candidates)
-        if len(cand_list) > 3500:
+        if len(cand_list) > 6000:
             random.shuffle(cand_list)
-            cand_list = cand_list[:3500]
+            cand_list = cand_list[:6000]
         logger.info(f"Gathered {len(cand_list)} fresh candidates for memory-safe validation.")
         return set(cand_list)
 
