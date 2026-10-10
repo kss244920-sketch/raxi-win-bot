@@ -114,6 +114,7 @@ def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming
     """
     Guarantees the bot edits the existing message instead of sending new ones!
     Deletes the user's incoming command/link message to keep chat completely clean.
+    Gracefully falls back to plain-text rendering if malformed HTML entities are encountered.
     """
     if del_incoming and hasattr(del_incoming, "message_id"):
         try:
@@ -137,6 +138,19 @@ def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming
             err_str = str(e).lower()
             if "message is not modified" in err_str:
                 return target_mid
+            if "can't parse entities" in err_str or "parse mode" in err_str:
+                try:
+                    bot.edit_message_text(
+                        text,
+                        chat_id=chat_id,
+                        message_id=target_mid,
+                        reply_markup=reply_markup,
+                        parse_mode=None
+                    )
+                    LAST_BOT_MSG[chat_id] = target_mid
+                    return target_mid
+                except Exception:
+                    pass
             # If message was deleted or can't be edited, fallback to send_message
 
     try:
@@ -149,25 +163,63 @@ def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming
         LAST_BOT_MSG[chat_id] = sent.message_id
         return sent.message_id
     except Exception as e:
+        err_str = str(e).lower()
+        if "can't parse entities" in err_str or "parse mode" in err_str:
+            try:
+                sent = bot.send_message(
+                    chat_id,
+                    text,
+                    reply_markup=reply_markup,
+                    parse_mode=None
+                )
+                LAST_BOT_MSG[chat_id] = sent.message_id
+                return sent.message_id
+            except Exception as e2:
+                log(f"[bot] send_or_edit fallback error: {e2}")
+                return None
         log(f"[bot] send_or_edit error: {e}")
         return None
 
-# Concurrency lock to prevent duplicate parallel registrations in same chat
-BUSY_CHATS = set()
+# Concurrency lock to prevent duplicate parallel registrations in same chat with auto-expiration
 BUSY_CHATS_LOCK = threading.Lock()
+BUSY_LOCK_TIMEOUT = 600.0  # 10 minutes max lock duration
+
+class ExpiringChatLock(dict):
+    """Dictionary-backed set supporting timeout expiration and lock safety."""
+    def __contains__(self, chat_id):
+        with BUSY_CHATS_LOCK:
+            if not super().__contains__(chat_id):
+                return False
+            ts = super().get(chat_id, 0)
+            if time.time() - ts > BUSY_LOCK_TIMEOUT:
+                super().pop(chat_id, None)
+                return False
+            return True
+
+    def add(self, chat_id):
+        with BUSY_CHATS_LOCK:
+            self[chat_id] = time.time()
+
+    def discard(self, chat_id):
+        with BUSY_CHATS_LOCK:
+            self.pop(chat_id, None)
+
+BUSY_CHATS = ExpiringChatLock()
 CUSTOM_REG_STATE = {}  # user_id -> {"step": "phone"|"password", "phone": str, "chat_id": int, "mid": int}
 CUSTOM_SPEED_STATE = {}  # user_id -> {"count": int, "chat_id": int, "mid": int, "time": float}
 
 def acquire_chat_lock(chat_id: int) -> bool:
     with BUSY_CHATS_LOCK:
+        now = time.time()
         if chat_id in BUSY_CHATS:
-            return False
-        BUSY_CHATS.add(chat_id)
+            if now - BUSY_CHATS.get(chat_id, 0) <= BUSY_LOCK_TIMEOUT:
+                return False
+        BUSY_CHATS[chat_id] = now
         return True
 
 def release_chat_lock(chat_id: int):
     with BUSY_CHATS_LOCK:
-        BUSY_CHATS.discard(chat_id)
+        BUSY_CHATS.pop(chat_id, None)
 
 MEMBERSHIP_CACHE = {}  # user_id -> (is_member, expire_ts)
 
@@ -228,8 +280,10 @@ def save_chat_configs():
         data = {str(k): v for k, v in CHAT_CONFIGS.items()}
         for dest in [CHAT_CONFIGS_FILE, os.path.join(BASE_DIR, "chat_configs.json")]:
             try:
-                with open(dest, "w", encoding="utf-8") as f:
+                tmp = dest + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2)
+                os.replace(tmp, dest)
             except Exception:
                 pass
     except Exception as e:
@@ -715,8 +769,10 @@ def generate_random_password():
     p_digits = "".join(random.choices(chars_digits, k=4))
     return f"{p_letters}{p_digits}"
 
+ACCOUNT_SAVE_LOCK = threading.Lock()
+
 def save_account_to_file(phone, password, uid, token, invite, site="https://www.raxi4.com", device=None, proxy=None, creator_id=None):
-    """Saves successfully created account to raxi_accounts.txt with creator isolation."""
+    """Saves successfully created account to raxi_accounts.txt with creator isolation and thread safety."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     dev = device or "Generic Android"
     ip = proxy or "Direct"
@@ -730,15 +786,16 @@ def save_account_to_file(phone, password, uid, token, invite, site="https://www.
         "/home/piyush/Downloads/Telegram Desktop/raxi_accounts.txt"
     ]
     seen_dests = set()
-    for dest in dests:
-        if dest in seen_dests:
-            continue
-        seen_dests.add(dest)
-        try:
-            with open(dest, "a", encoding="utf-8") as f:
-                f.write(entry)
-        except Exception:
-            pass
+    with ACCOUNT_SAVE_LOCK:
+        for dest in dests:
+            if dest in seen_dests:
+                continue
+            seen_dests.add(dest)
+            try:
+                with open(dest, "a", encoding="utf-8") as f:
+                    f.write(entry)
+            except Exception:
+                pass
 
 def get_accounts_file():
     """Finds the active accounts file from candidate paths."""
@@ -1037,8 +1094,13 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             continue
 
         # 2. Solve slider puzzle via native PIL + NumPy contour matching
-        container_x, score = solve_slider(bg_b64, sl_b64)
-        track = make_track(container_x)
+        try:
+            container_x, score = solve_slider(bg_b64, sl_b64)
+            track = make_track(container_x)
+        except Exception as exc:
+            log(f"[bot] Slider solver error: {exc}")
+            container_x = random.randint(110, 210)
+            track = make_track(container_x)
 
         # 3. Submit Register POST - Strict 2.2s connect, 3.2s read
         if is_arsaas:
@@ -1812,8 +1874,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         success_accounts = []
         failed_count = 0
         total_attempts = 0
-        max_total_attempts = count * 4 + 150
-        max_consecutive_fails = 50
+        max_total_attempts = count * 4 + 300
+        max_consecutive_fails = max(80, count // 2)
         consecutive_fails = 0
         lock = threading.Lock()
         last_edit_time = [time.time()]
@@ -1892,7 +1954,10 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                     if delay > 0 and len(success_accounts) < count:
                         time.sleep(delay)
                 else:
-                    time.sleep(0.3)
+                    if consecutive_fails > 10:
+                        time.sleep(0.8)
+                    else:
+                        time.sleep(0.2)
 
         if delay > 0:
             workers = 1
@@ -3423,7 +3488,17 @@ if __name__ == "__main__":
     try:
         bot.remove_webhook()
         time.sleep(1)
-        bot.infinity_polling(timeout=30, long_polling_timeout=20)
-    except KeyboardInterrupt:
-        log("Bot stopped by user.")
+    except Exception as e:
+        log(f"[bot] Warning removing webhook: {e}")
+
+    log("[bot] Starting telegram infinity_polling loop...")
+    while True:
+        try:
+            bot.infinity_polling(timeout=30, long_polling_timeout=20)
+        except KeyboardInterrupt:
+            log("Bot stopped by user.")
+            break
+        except Exception as e:
+            log(f"[bot] Polling network exception: {e}. Auto-reconnecting in 5s...")
+            time.sleep(5)
 

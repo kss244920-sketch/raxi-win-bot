@@ -211,9 +211,11 @@ class ProxyManager:
                 seen.add(p)
                 unique_proxies.append(p)
         try:
-            with open(PROXIES_FILE, "w", encoding="utf-8") as f:
+            tmp = PROXIES_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 for p in unique_proxies:
                     f.write(f"{p}\n")
+            os.replace(tmp, PROXIES_FILE)
         except Exception as e:
             logger.error(f"Error saving proxies: {e}")
         self.sync_files_to_alt_dirs()

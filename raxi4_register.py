@@ -84,56 +84,66 @@ def solve_slider(bg_b64, slider_b64, debug=False):
       correctly compensating for piece offset x0.
     Returns: (container_gap_x, score)
     """
-    bg_bytes = base64.b64decode(bg_b64.split(",")[-1])
-    sl_bytes = base64.b64decode(slider_b64.split(",")[-1])
+    try:
+        bg_bytes = base64.b64decode(bg_b64.split(",")[-1])
+        sl_bytes = base64.b64decode(slider_b64.split(",")[-1])
 
-    bg = Image.open(io.BytesIO(bg_bytes)).convert("L")
-    sl = Image.open(io.BytesIO(sl_bytes)).convert("RGBA")
+        bg = Image.open(io.BytesIO(bg_bytes)).convert("L")
+        sl = Image.open(io.BytesIO(sl_bytes)).convert("RGBA")
 
-    bg_w, bg_h = bg.size
-    sl_arr = np.array(sl)
+        bg_w, bg_h = bg.size
+        sl_arr = np.array(sl)
 
-    alpha = sl_arr[:, :, 3]
-    y_idx, x_idx = np.where(alpha > 100)
-    if len(y_idx) == 0 or len(x_idx) == 0:
-        y_idx, x_idx = np.where(alpha > 30)
+        if sl_arr.ndim != 3 or sl_arr.shape[2] < 4:
+            return random.randint(100, 220), 0
 
-    y0, y1 = int(y_idx.min()), int(y_idx.max())
-    x0, x1 = int(x_idx.min()), int(x_idx.max())
+        alpha = sl_arr[:, :, 3]
+        y_idx, x_idx = np.where(alpha > 100)
+        if len(y_idx) == 0 or len(x_idx) == 0:
+            y_idx, x_idx = np.where(alpha > 30)
+        if len(y_idx) == 0 or len(x_idx) == 0:
+            return random.randint(100, 220), 0
 
-    piece_mask = (alpha[y0:y1 + 1, x0:x1 + 1] > 50).astype(np.uint8)
-    pw = x1 - x0 + 1
+        y0, y1 = int(y_idx.min()), int(y_idx.max())
+        x0, x1 = int(x_idx.min()), int(x_idx.max())
 
-    # Extract sharp boundary contours using 3x3 edge filter
-    mask_edges = np.array(Image.fromarray(piece_mask * 255).filter(ImageFilter.FIND_EDGES)) > 100
-    bg_edges = np.array(bg.filter(ImageFilter.FIND_EDGES))[y0:y1 + 1, :]
+        piece_mask = (alpha[y0:y1 + 1, x0:x1 + 1] > 50).astype(np.uint8)
+        pw = x1 - x0 + 1
 
-    best_x, best_score = 0, -1
-    # Search positions (ignoring left spawn region < 50)
-    for x in range(50, bg_w - pw):
-        s = int((bg_edges[:, x:x + pw] * mask_edges).sum())
-        if s > best_score:
-            best_score = s
-            best_x = x
+        # Extract sharp boundary contours using 3x3 edge filter
+        mask_edges = np.array(Image.fromarray(piece_mask * 255).filter(ImageFilter.FIND_EDGES)) > 100
+        bg_edges = np.array(bg.filter(ImageFilter.FIND_EDGES))[y0:y1 + 1, :]
 
-    # Frontend container scale: 340px width container vs 552px natural background
-    scale = 340.0 / bg_w
-    container_x = round((best_x - x0) * scale)
+        best_x, best_score = 0, -1
+        # Search positions (ignoring left spawn region < 50)
+        for x in range(50, bg_w - pw):
+            s = int((bg_edges[:, x:x + pw] * mask_edges).sum())
+            if s > best_score:
+                best_score = s
+                best_x = x
 
-    if debug:
-        try:
-            vis = bg.copy().convert("RGB")
-            arr = np.array(vis)
-            arr[y0:y1 + 1, best_x:best_x + 2, 0] = 255
-            arr[y0:y1 + 1, best_x:best_x + 2, 1:] = 0
-            arr[y0:y1 + 1, best_x + pw - 2:best_x + pw, 0] = 255
-            arr[y0:y1 + 1, best_x + pw - 2:best_x + pw, 1:] = 0
-            Image.fromarray(arr).save("slider_debug.jpg")
-            log(f"  [captcha] debug image saved to slider_debug.jpg (natural_x={best_x}, container_x={container_x})")
-        except Exception:
-            pass
+        # Frontend container scale: 340px width container vs 552px natural background
+        scale = 340.0 / bg_w
+        container_x = round((best_x - x0) * scale)
+        container_x = max(25, min(container_x, 300))
 
-    return container_x, best_score
+        if debug:
+            try:
+                vis = bg.copy().convert("RGB")
+                arr = np.array(vis)
+                arr[y0:y1 + 1, best_x:best_x + 2, 0] = 255
+                arr[y0:y1 + 1, best_x:best_x + 2, 1:] = 0
+                arr[y0:y1 + 1, best_x + pw - 2:best_x + pw, 0] = 255
+                arr[y0:y1 + 1, best_x + pw - 2:best_x + pw, 1:] = 0
+                Image.fromarray(arr).save("slider_debug.jpg")
+                log(f"  [captcha] debug image saved to slider_debug.jpg (natural_x={best_x}, container_x={container_x})")
+            except Exception:
+                pass
+
+        return container_x, best_score
+    except Exception as exc:
+        log(f"  [captcha] solve_slider exception: {exc}")
+        return random.randint(100, 220), 0
 
 
 def make_track(gap_x, bg_w=340, bg_h=212, sl_w=68, sl_h=212):
