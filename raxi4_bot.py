@@ -1034,10 +1034,11 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         device_id = secrets.token_hex(16)
 
         active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain)
+        if not active_proxy and attempt == 1:
+            time.sleep(1.5)
+            active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain)
         if not active_proxy and "Direct" not in tried_proxies:
             active_proxy = None  # fallback to Direct only once if pool has no candidate
-        elif not active_proxy:
-            active_proxy = get_next_proxy(exclude=None, domain=domain)
 
         if active_proxy:
             tried_proxies.add(active_proxy)
@@ -1061,7 +1062,14 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             "sec-ch-ua-platform": dev_profile["platform"],
         })
         if active_proxy:
-            session.proxies = {"http": f"http://{active_proxy}", "https": f"http://{active_proxy}"}
+            if "@" in active_proxy:
+                px_url = f"http://{active_proxy}"
+            elif active_proxy.count(":") == 3:
+                parts = active_proxy.split(":")
+                px_url = f"http://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}"
+            else:
+                px_url = f"http://{active_proxy}"
+            session.proxies = {"http": px_url, "https": px_url}
 
         # 1. Fetch Captcha - Strict 2.0s connect, 2.8s read
         try:
