@@ -1812,11 +1812,21 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         success_accounts = []
         failed_count = 0
         total_attempts = 0
-        max_total_attempts = count * 4 + 60
-        max_consecutive_fails = 25
+        max_total_attempts = count * 4 + 150
+        max_consecutive_fails = 50
         consecutive_fails = 0
         lock = threading.Lock()
         last_edit_time = [time.time()]
+
+        # Proactively ensure proxy pool has enough fresh IPs for bulk order
+        dom_check = urllib.parse.urlparse(target_site).netloc
+        avail_proxies = proxy_manager.get_available_count(domain=dom_check)
+        if avail_proxies < count + 50:
+            threading.Thread(
+                target=proxy_manager.refill_proxies,
+                kwargs={"target_count": max(800, count + 200)},
+                daemon=True
+            ).start()
 
         def worker_loop():
             nonlocal failed_count, total_attempts, consecutive_fails
@@ -1846,11 +1856,11 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                         if "sms" in str(res.get("msg", "")).lower() and "required" in str(res.get("msg", "")).lower():
                             consecutive_fails = max_consecutive_fails
                         elif consecutive_fails % 6 == 0:
-                            threading.Thread(target=proxy_manager.refill_proxies, kwargs={"target_count": 250}, daemon=True).start()
+                            threading.Thread(target=proxy_manager.refill_proxies, kwargs={"target_count": max(800, count + 200)}, daemon=True).start()
 
                     now = time.time()
                     cur_succ = len(success_accounts)
-                    if cur_succ == count or (now - last_edit_time[0] >= 0.7):
+                    if cur_succ == count or (now - last_edit_time[0] >= 2.0):
                         last_edit_time[0] = now
                         bar_now = render_progress_bar(cur_succ, count, length=10)
                         retry_note = f"\n• 🔄 <b>Retries Handled:</b> <code>{failed_count}</code> <i>(Auto-recovering dropped IPs)</i>" if failed_count > 0 else ""
@@ -1882,9 +1892,15 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                     if delay > 0 and len(success_accounts) < count:
                         time.sleep(delay)
                 else:
-                    time.sleep(0.5)
+                    time.sleep(0.3)
 
-        workers = 1 if delay > 0 else min(count, 8)
+        if delay > 0:
+            workers = 1
+        elif count >= 100:
+            workers = min(count, 10)
+        else:
+            workers = min(count, 8)
+
         threads = []
         for _ in range(workers):
             t = threading.Thread(target=worker_loop, daemon=True)
@@ -1931,12 +1947,6 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         )
 
-        # Format each account in the EXACT requested order:
-        # 1. IP / Device
-        # 2. UID
-        # 3. Number
-        # 4. Password
-        # <gap>
         formatted_blocks = []
         for acc in success_accounts:
             ip_val = acc.get('proxy', 'Direct')
@@ -1953,24 +1963,50 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
             )
             formatted_blocks.append(block)
 
-        full_text = header + "\n\n".join(formatted_blocks)
-
-        if len(full_text) <= 3900:
-            send_or_edit(chat_id, full_text, reply_markup=markup, message_id=mid)
+        if len(formatted_blocks) <= 15:
+            full_text = header + "\n\n".join(formatted_blocks)
+            if len(full_text) <= 3900:
+                send_or_edit(chat_id, full_text, reply_markup=markup, message_id=mid)
+            else:
+                send_or_edit(chat_id, header + "\n\n".join(formatted_blocks[:6]), reply_markup=markup, message_id=mid)
         else:
-            try:
-                bot.edit_message_text(header + "<i>Accounts list niche send ki ja rahi hai:</i>", chat_id=chat_id, message_id=mid, parse_mode="HTML")
-            except Exception:
-                pass
+            # Auto-generate downloadable clean .txt file for 15+ accounts to avoid Telegram FloodWait / message limits
+            import io
+            doc_lines = [
+                f"# Raxi Auto-Register Bulk Accounts Export",
+                f"# Total Created: {len(success_accounts)} / {count}",
+                f"# Target Platform: {target_site}",
+                f"# Invite Code: {target_invite}",
+                f"# Generated At: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+                f"# Format: phone:password | UID | Device | IP",
+                "=" * 60,
+                ""
+            ]
+            for acc in success_accounts:
+                doc_lines.append(f"{acc['phone']}:{acc['password']} | UID: {acc.get('uid') or 'Registered'} | Device: {acc.get('device', 'Android')} | IP: {acc.get('proxy', 'Direct')}")
 
-            chunk_size = 4
-            for idx in range(0, len(formatted_blocks), chunk_size):
-                chunk = formatted_blocks[idx:idx + chunk_size]
-                chunk_msg = "\n\n".join(chunk)
-                is_last = (idx + chunk_size >= len(formatted_blocks))
-                sent = bot.send_message(chat_id, chunk_msg, reply_markup=markup if is_last else None, parse_mode="HTML")
-                if is_last and hasattr(sent, "message_id"):
-                    LAST_BOT_MSG[chat_id] = sent.message_id
+            doc_bytes = "\n".join(doc_lines).encode("utf-8")
+            doc_stream = io.BytesIO(doc_bytes)
+            doc_stream.name = f"raxi_bulk_{len(success_accounts)}_accounts.txt"
+
+            preview_text = (
+                header +
+                f"📁 <b>Accounts Export File (.txt) Niche Attach Kar Di Gayi Hai!</b>\n\n"
+                f"<b>🔍 First 3 Accounts Preview:</b>\n\n" +
+                "\n\n".join(formatted_blocks[:3]) +
+                f"\n\n⚡ <i>Baaki sabhi {len(formatted_blocks) - 3} accounts niche attached document file me save hain!</i>"
+            )
+
+            send_or_edit(chat_id, preview_text, reply_markup=markup, message_id=mid)
+            try:
+                bot.send_document(
+                    chat_id,
+                    doc_stream,
+                    caption=f"📋 <b>{len(success_accounts)} Accounts File</b>\n🌐 <code>{target_site}</code> | 🎟️ <code>{target_invite}</code>",
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                log(f"[bot] Error sending bulk document file: {e}")
     finally:
         release_chat_lock(chat_id)
 

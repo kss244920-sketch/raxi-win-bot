@@ -36,6 +36,7 @@ ALT_DIRS = ["/home/piyush/Desktop", "/home/piyush/Downloads/Telegram Desktop"]
 
 # Curated High-Speed HTTPS & HTTP Sources (Curated for low memory & high speed)
 SOURCES = [
+    "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/http.txt",
     "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt",
     "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
     "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
@@ -60,8 +61,8 @@ TARGET_CHECK_URL = PLATFORM_TEST_URLS[0]
 CONNECT_TIMEOUT = 2.0
 READ_TIMEOUT = 2.5
 
-POOL_TARGET = 300       # Target: 300 verified working proxies
-POOL_MIN_THRESHOLD = 80 # Trigger auto-refill when pool drops below 80
+POOL_TARGET = 800       # Target: 800 verified working proxies
+POOL_MIN_THRESHOLD = 200 # Trigger auto-refill when pool drops below 200
 HEALTH_CHECK_INTERVAL = 1800 # 30 minutes in seconds
 POLL_INTERVAL = 60      # Active poll interval in seconds
 
@@ -331,22 +332,22 @@ class ProxyManager:
                             if p and not p.startswith("#"):
                                 m = re.findall(r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}", p)
                                 candidates.update(m)
-                            if len(candidates) >= 6000:
+                            if len(candidates) >= 10000:
                                 break
                 except Exception:
                     pass
-            if len(candidates) >= 6000:
+            if len(candidates) >= 10000:
                 break
 
         fresh_candidates = {p for p in candidates if p not in self.dead_proxies}
         cand_list = list(fresh_candidates)
-        if len(cand_list) > 6000:
+        if len(cand_list) > 10000:
             random.shuffle(cand_list)
-            cand_list = cand_list[:6000]
+            cand_list = cand_list[:10000]
         logger.info(f"Gathered {len(cand_list)} fresh candidates for memory-safe validation.")
         return set(cand_list)
 
-    def refill_proxies(self, target_count=POOL_TARGET, max_workers=20):
+    def refill_proxies(self, target_count=POOL_TARGET, max_workers=25):
         """
         Scrapes candidates and validates them concurrently with 20 memory-safe workers.
         Keeps RAM strictly under 60MB.
