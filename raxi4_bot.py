@@ -149,9 +149,23 @@ def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming
                     )
                     LAST_BOT_MSG[chat_id] = target_mid
                     return target_mid
-                except Exception:
-                    pass
-            # If message was deleted or can't be edited, fallback to send_message
+                except Exception as e_plain:
+                    err_plain = str(e_plain).lower()
+                    if "message is not modified" in err_plain:
+                        return target_mid
+
+            # Telegram rate limit / FloodWait: Keep target message ID and skip tick. NEVER spam send_message!
+            if "too many requests" in err_str or "retry after" in err_str or "flood" in err_str:
+                log(f"[bot] edit_message_text rate limited ({err_str}), skipping tick without sending duplicate message.")
+                return target_mid
+
+            # Transient network timeouts or connection glitches: DO NOT send duplicate messages
+            if "timed out" in err_str or "timeout" in err_str or "connection" in err_str:
+                log(f"[bot] edit_message_text network glitch ({err_str}), keeping existing message.")
+                return target_mid
+
+            # Only fallback to send_message if the message was explicitly deleted or un-editable
+            log(f"[bot] edit_message_text cannot edit message {target_mid} ({e}), falling back to send_message.")
 
     try:
         sent = bot.send_message(
@@ -1870,6 +1884,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
             message_id=message_id
         )
 
+        current_mid = [mid]
         success_accounts = []
         failed_count = 0
         total_attempts = 0
@@ -1878,6 +1893,17 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         consecutive_fails = 0
         lock = threading.Lock()
         last_edit_time = [time.time()]
+        cooldown_wait_cycles = [0]
+        max_cooldown_cycles = 6
+
+        def safe_update_ui(text, reply_markup=None):
+            with lock:
+                target_id = current_mid[0]
+            new_id = send_or_edit(chat_id, text, reply_markup=reply_markup, message_id=target_id)
+            if new_id:
+                with lock:
+                    current_mid[0] = new_id
+            return new_id
 
         # Proactively ensure proxy pool has enough fresh IPs for bulk order (scales up for 500-1k orders)
         dom_check = urllib.parse.urlparse(target_site).netloc
@@ -1905,29 +1931,52 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                         if admin_manager.get_tokens(uid) <= 0:
                             break
 
-                # If all working proxies are temporarily in cooldown, wait for cooldown expiry
+                # If all working proxies are temporarily in cooldown, wait safely without spamming
                 avail_now = proxy_manager.get_available_count(domain=dom_check)
                 if avail_now == 0:
                     cd_wait = proxy_manager.get_earliest_cooldown_expiry(domain=dom_check)
-                    if cd_wait > 0:
-                        sleep_secs = min(cd_wait + 1.0, 15.0)
+                    # Trigger background proxy refill immediately if pool is empty/cooling down
+                    threading.Thread(
+                        target=proxy_manager.refill_proxies,
+                        kwargs={"target_count": 35, "force": True},
+                        daemon=True
+                    ).start()
+
+                    should_update = False
+                    with lock:
+                        cooldown_wait_cycles[0] += 1
+                        if cooldown_wait_cycles[0] > max_cooldown_cycles:
+                            log(f"[bot] Max cooldown wait reached for chat {chat_id}, stopping batch gracefully.")
+                            consecutive_fails = max_consecutive_fails
+                            break
+
                         now_ts = time.time()
-                        if now_ts - last_edit_time[0] >= 3.0:
+                        # Throttle cooldown UI updates to at least 12 seconds to prevent Telegram flood
+                        if now_ts - last_edit_time[0] >= 12.0:
                             last_edit_time[0] = now_ts
-                            cd_msg = (
-                                f"⏳ <b>Multi-Registration in Progress...</b>\n\n"
-                                f"{render_progress_bar(len(success_accounts), count, length=10)}\n\n"
-                                f"• ✅ Created: <code>{len(success_accounts)}/{count}</code>\n"
-                                f"• 🌐 Site: <code>{target_site}</code>\n"
-                                f"• ⏳ <b>IP Cooldown Active:</b> <i>Waiting ~{int(cd_wait)}s for proxy to unban...</i>\n"
-                                f"• 🔄 <i>Auto-resuming registration smoothly...</i>"
-                            )
-                            try:
-                                send_or_edit(chat_id, cd_msg, message_id=mid)
-                            except Exception:
-                                pass
-                        time.sleep(sleep_secs)
-                        continue
+                            should_update = True
+
+                    if should_update:
+                        cd_disp = int(cd_wait) if cd_wait > 0 else 30
+                        cd_msg = (
+                            f"⏳ <b>Multi-Registration in Progress...</b>\n\n"
+                            f"{render_progress_bar(len(success_accounts), count, length=10)}\n\n"
+                            f"• ✅ Created: <code>{len(success_accounts)}/{count}</code>\n"
+                            f"• 🌐 Site: <code>{target_site}</code>\n"
+                            f"• ⏳ <b>IP Cooldown Active:</b> <i>Waiting ~{cd_disp}s for proxy unban / scraping fresh IPs...</i>\n"
+                            f"• 🔄 <i>Auto-resuming registration smoothly...</i>"
+                        )
+                        try:
+                            safe_update_ui(cd_msg)
+                        except Exception:
+                            pass
+
+                    sleep_secs = min(max(cd_wait, 5.0), 15.0) if cd_wait > 0 else 8.0
+                    time.sleep(sleep_secs)
+                    continue
+
+                with lock:
+                    cooldown_wait_cycles[0] = 0
 
                 with lock:
                     total_attempts += 1
@@ -1943,12 +1992,16 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                     else:
                         failed_count += 1
                         consecutive_fails += 1
-                        if "sms" in str(res.get("msg", "")).lower() and "required" in str(res.get("msg", "")).lower():
+                        err_msg = str(res.get("msg", "")).lower()
+                        if "sms" in err_msg and "required" in err_msg:
+                            consecutive_fails = max_consecutive_fails
+                        elif "expired" in err_msg or "invitor not existed" in err_msg or "invitecode" in err_msg:
+                            log(f"[bot] Stopping bulk registration early: fatal invite error ({res.get('msg')})")
                             consecutive_fails = max_consecutive_fails
 
                     now = time.time()
                     cur_succ = len(success_accounts)
-                    if cur_succ == count or (now - last_edit_time[0] >= 2.5):
+                    if cur_succ == count or (now - last_edit_time[0] >= 3.0):
                         last_edit_time[0] = now
                         bar_now = render_progress_bar(cur_succ, count, length=10)
                         retry_note = f"\n• 🔄 <b>Retries Handled:</b> <code>{failed_count}</code> <i>(Auto-recovering dropped IPs)</i>" if failed_count > 0 else ""
@@ -1973,7 +2026,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
 
                 if update_text:
                     try:
-                        send_or_edit(chat_id, update_text, message_id=mid)
+                        safe_update_ui(update_text)
                     except Exception:
                         pass
 
@@ -2025,7 +2078,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                 f"Failed attempts: {failed_count}\n"
                 f"Kripya target platform aur referral link check karein."
             )
-            send_or_edit(chat_id, fail_text, reply_markup=markup, message_id=mid)
+            safe_update_ui(fail_text, reply_markup=markup)
             return
 
         # Header summary
@@ -2062,9 +2115,9 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         if len(formatted_blocks) <= 15:
             full_text = header + "\n\n".join(formatted_blocks)
             if len(full_text) <= 3900:
-                send_or_edit(chat_id, full_text, reply_markup=markup, message_id=mid)
+                safe_update_ui(full_text, reply_markup=markup)
             else:
-                send_or_edit(chat_id, header + "\n\n".join(formatted_blocks[:6]), reply_markup=markup, message_id=mid)
+                safe_update_ui(header + "\n\n".join(formatted_blocks[:6]), reply_markup=markup)
         else:
             # Auto-generate downloadable clean .txt file for 15+ accounts to avoid Telegram FloodWait / message limits
             import io
@@ -2093,7 +2146,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                 f"\n\n⚡ <i>Baaki sabhi {len(formatted_blocks) - 3} accounts niche attached document file me save hain!</i>"
             )
 
-            send_or_edit(chat_id, preview_text, reply_markup=markup, message_id=mid)
+            safe_update_ui(preview_text, reply_markup=markup)
             try:
                 bot.send_document(
                     chat_id,
