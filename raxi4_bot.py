@@ -25,6 +25,8 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import telebot
 from telebot import types
 
@@ -1054,6 +1056,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'AR-SAAS' if is_arsaas else 'WEBAPI'}): phone={target_phone} dev='{dev_model}' proxy={proxy_label}")
 
         session = requests.Session()
+        session.verify = False
         session.headers.update({
             "User-Agent": dev_ua,
             "Accept": "application/json, text/plain, */*",
