@@ -1,29 +1,41 @@
 {
-  "free_mode": false,
+  "free_mode": true,
   "master_log_channel": "-1003946923981",
   "master_storage_channel": "-1003907841421",
   "admin_user_ids": [
-    8327850869
+    8327850869,
+    6217522461
   ],
   "whitelisted_user_ids": [],
   "user_registry": {
     "8327850869": {
       "user_id": 8327850869,
       "username": "OwAtom",
-      "first_name": "\u115f",
+      "first_name": "ᅟ",
       "role": "👑 Super Admin",
       "joined_at": 1791360836.8728495,
-      "last_active": 1791365802.2890346,
+      "last_active": 1791654144.282584,
       "user_log_channel": null,
       "user_storage_channel": null,
-      "tokens": 0
+      "tokens": 999999
+    },
+    "6217522461": {
+      "user_id": 6217522461,
+      "username": "gurjar040",
+      "first_name": "Prince",
+      "role": "🛡️ Admin",
+      "tokens": 999999,
+      "joined_at": 1791437060.2165174,
+      "last_active": 1791654151.8162744,
+      "user_log_channel": null,
+      "user_storage_channel": null
     },
     "7812349806": {
       "user_id": 7812349806,
       "username": "GandaLund",
       "first_name": "GoLu",
       "role": "⚪ Free User",
-      "tokens": 0,
+      "tokens": 1000,
       "joined_at": 1791369390.3403897,
       "last_active": 1791369506.837519,
       "user_log_channel": null,
@@ -34,9 +46,31 @@
       "username": "",
       "first_name": "∞",
       "role": "⚪ Free User",
-      "tokens": 0,
+      "tokens": 1000,
       "joined_at": 1791368000.0,
       "last_active": 1791369000.0,
+      "user_log_channel": null,
+      "user_storage_channel": null
+    },
+    "7545282674": {
+      "user_id": 7545282674,
+      "username": "PAPA_PLAYER7",
+      "first_name": "ॐ 𝑷𝜜𝑷𝜜 𝑷𝑳𝜜𝒀𝑬𝑹",
+      "role": "⚪ Guest",
+      "tokens": 100,
+      "joined_at": 1791448601.9803462,
+      "last_active": 1791452183.3796988,
+      "user_log_channel": null,
+      "user_storage_channel": null
+    },
+    "8659204794": {
+      "user_id": 8659204794,
+      "username": "Prince0179",
+      "first_name": "Prince",
+      "role": "⚪ Guest",
+      "tokens": 100,
+      "joined_at": 1791469967.6214554,
+      "last_active": 1791469987.4452522,
       "user_log_channel": null,
       "user_storage_channel": null
     }

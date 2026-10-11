@@ -62,23 +62,31 @@ PLATFORM_TEST_URLS = [
     "https://api.api51gameapi.com/api/webapi/Captcha"
 ]
 TARGET_CHECK_URL = PLATFORM_TEST_URLS[0]
-CONNECT_TIMEOUT = 2.5
-READ_TIMEOUT = 3.5
+CONNECT_TIMEOUT = 3.5
+READ_TIMEOUT = 4.5
 
-POOL_TARGET = 800       # Target: 800 verified working proxies
-POOL_MIN_THRESHOLD = 200 # Trigger auto-refill when pool drops below 200
-HEALTH_CHECK_INTERVAL = 1800 # 30 minutes in seconds
+POOL_TARGET = 35        # Target: 35 verified responsive working proxies
+POOL_MIN_THRESHOLD = 10  # Trigger gentle refill when pool drops below 10
+HEALTH_CHECK_INTERVAL = 3600  # 60 minutes
 POLL_INTERVAL = 60      # Active poll interval in seconds
 
 class ProxyManager:
     def __init__(self):
         self.lock = threading.Lock()
         self.dead_proxies = set()
+        self.domain_cooldowns = {}  # domain -> {proxy_str: cooldown_until_timestamp}
         self.is_refilling = False
         self.last_refill_time = 0
         self.proxy_index = 0
         self.ensure_seed_proxies()
         self.load_local_pool()
+
+    @staticmethod
+    def is_auth_proxy(proxy_str: str) -> bool:
+        """Returns True if the proxy is an authenticated/premium proxy (e.g. Webshare)."""
+        if not proxy_str or proxy_str == "Direct":
+            return False
+        return "@" in proxy_str or "wuqayqgc" in proxy_str
 
     def ensure_seed_proxies(self):
         """Ensures DATA_DIR/working_proxies.txt has working seed proxies from repository."""
@@ -190,9 +198,8 @@ class ProxyManager:
 
     def mark_proxy_used(self, proxy_str: str, domain: str = None):
         """
-        Marks proxy as permanently used ONLY for the given website domain.
-        Format in file: IP:PORT|domain (e.g. 4.144.146.21:80|raxi)
-        Also purges proxy from active working pool so it is never re-tested or re-used.
+        Records proxy usage in used_proxies.txt for audit/history.
+        NEVER deletes or burns proxies from the working pool!
         """
         if not proxy_str or proxy_str == "Direct":
             return
@@ -203,14 +210,36 @@ class ProxyManager:
                 f.write(record)
         except Exception:
             pass
-        with self.lock:
-            self.dead_proxies.add(proxy_str)
-        self.remove_proxy_from_pool(proxy_str)
         self.sync_files_to_alt_dirs()
 
-    def mark_proxy_dead(self, proxy_str: str):
-        """Marks proxy as dead and purges it from working_proxies.txt."""
+    def mark_proxy_cooldown(self, proxy_str: str, domain: str = None, duration: int = 600):
+        """
+        Temporarily pauses a proxy for a specific domain (e.g. Code 114 IP forbidden).
+        Automatically restores after duration seconds without permanently destroying the proxy.
+        """
         if not proxy_str or proxy_str == "Direct":
+            return
+        dom = self.normalize_domain(domain) if domain else "general"
+        with self.lock:
+            if dom not in self.domain_cooldowns:
+                self.domain_cooldowns[dom] = {}
+            self.domain_cooldowns[dom][proxy_str] = time.time() + duration
+            logger.info(f"Proxy {proxy_str} entered {duration}s cooldown for domain '{dom}'.")
+
+    def mark_proxy_dead(self, proxy_str: str):
+        """
+        Marks dead unauthenticated public proxy.
+        For auth proxies (e.g. Webshare), applies a brief 60s cooldown instead of destroying!
+        """
+        if not proxy_str or proxy_str == "Direct":
+            return
+        if self.is_auth_proxy(proxy_str):
+            with self.lock:
+                now = time.time()
+                for dom in ["general", "all", "raxi"]:
+                    if dom not in self.domain_cooldowns:
+                        self.domain_cooldowns[dom] = {}
+                    self.domain_cooldowns[dom][proxy_str] = now + 60
             return
         with self.lock:
             self.dead_proxies.add(proxy_str)
@@ -235,7 +264,10 @@ class ProxyManager:
         """Atomically saves verified working proxies to file and syncs."""
         unique_proxies = []
         seen = set()
-        for p in proxies_list:
+        # Ensure auth proxies come first
+        auth_p = [p for p in proxies_list if self.is_auth_proxy(p)]
+        pub_p = [p for p in proxies_list if not self.is_auth_proxy(p)]
+        for p in (auth_p + pub_p):
             if p not in seen:
                 seen.add(p)
                 unique_proxies.append(p)
@@ -250,48 +282,82 @@ class ProxyManager:
         self.sync_files_to_alt_dirs()
 
     def get_available_count(self, domain: str = None) -> int:
-        """Returns how many unused, non-dead working proxies are ready for the specified domain."""
+        """Returns how many non-dead, non-cooldown proxies are ready for the specified domain."""
+        dom = self.normalize_domain(domain) if domain else "general"
+        now = time.time()
         pool = self.load_local_pool()
-        used = self.get_used_proxies(domain=domain)
-        available = [p for p in pool if p not in used and p not in self.dead_proxies]
+        with self.lock:
+            active_cooldowns = set()
+            for d in [dom, "all", "general"]:
+                if d in self.domain_cooldowns:
+                    for p, until in list(self.domain_cooldowns[d].items()):
+                        if until > now:
+                            active_cooldowns.add(p)
+        available = [p for p in pool if p not in active_cooldowns and p not in self.dead_proxies]
         return len(available)
 
     def get_next_proxy(self, exclude=None, domain: str = None) -> str:
         """
-        Returns a completely FRESH, verified, never-before-used working proxy for this domain.
-        If pool is empty, triggers auto-refill and returns None instead of recycling burned IPs.
+        Returns the next available, healthy working proxy using priority round-robin rotation.
+        Auth proxies (Webshare) are prioritized.
+        Skips proxies currently in cooldown for the given domain.
         """
+        dom = self.normalize_domain(domain) if domain else "general"
+        now = time.time()
+
         pool = self.load_local_pool()
         if len(pool) < POOL_MIN_THRESHOLD:
             self.ensure_seed_proxies()
             pool = self.load_local_pool()
 
-        used = self.get_used_proxies(domain=domain)
-        ex = set(used)
-        ex.update(self.dead_proxies)
+        # Clean expired cooldowns
+        with self.lock:
+            active_cooldowns = set()
+            for d in [dom, "all", "general"]:
+                if d in self.domain_cooldowns:
+                    for p, until in list(self.domain_cooldowns[d].items()):
+                        if until > now:
+                            active_cooldowns.add(p)
+                        else:
+                            self.domain_cooldowns[d].pop(p, None)
+
+        ex = set(self.dead_proxies)
+        ex.update(active_cooldowns)
         if exclude:
             ex.update(exclude)
 
         available = [p for p in pool if p not in ex]
 
-        # Trigger auto-refill if remaining unused proxies for this domain are running low
-        if len(available) < POOL_MIN_THRESHOLD and not self.is_refilling:
+        # Trigger gentle refill only if available is low and last refill was > 15m ago
+        if len(available) < POOL_MIN_THRESHOLD and not self.is_refilling and (now - self.last_refill_time > 900):
             threading.Thread(target=self.refill_proxies, kwargs={"target_count": POOL_TARGET}, daemon=True).start()
 
         if not available:
-            return None
+            # Fallback: allow auth proxies whose cooldown has mostly elapsed
+            auth_fallback = [p for p in pool if self.is_auth_proxy(p) and p not in self.dead_proxies]
+            if auth_fallback:
+                available = auth_fallback
+            else:
+                return None
 
+        # Prioritize auth proxies
+        auth_avail = [p for p in available if self.is_auth_proxy(p)]
+        pub_avail = [p for p in available if not self.is_auth_proxy(p)]
+
+        ordered = auth_avail + pub_avail
         with self.lock:
-            self.proxy_index = (self.proxy_index + 1) % len(available)
-            return available[self.proxy_index]
+            self.proxy_index = (self.proxy_index + 1) % len(ordered)
+            return ordered[self.proxy_index]
 
     def test_single_proxy(self, proxy_str: str) -> bool:
         """
-        Verifies whether proxy can successfully connect via HTTPS AND guarantees
-        the IP is 100% ELIGIBLE and NOT forbidden/banned (no Code 114) on the target platform!
+        Verifies whether proxy can successfully connect via HTTPS.
+        Auth proxies (Webshare) are inherently verified and never dropped.
         """
         if not proxy_str or proxy_str == "Direct":
             return False
+        if self.is_auth_proxy(proxy_str):
+            return True
 
         if "@" in proxy_str:
             px_url = f"http://{proxy_str}"
@@ -306,36 +372,14 @@ class ProxyManager:
             "https": px_url
         }
 
-        rand_str = "".join(random.choices(string.ascii_lowercase + string.digits, k=32))
-        t = {
-            "username": "919999999999",
-            "pwd": "Password123",
-            "domainurl": "www.raxiwin.game",
-            "registerType": "mobile",
-            "invitecode": "54842398725",
-            "captchaId": "probe",
-            "track": {},
-            "language": 0,
-            "random": rand_str,
-        }
-        gue = {"signature", "track", "xosoBettingData"}
-        n = {k: (0 if t[k] == 0 else t[k]) for k in sorted(t.keys()) if t[k] is not None and t[k] != "" and k not in gue}
-        t["signature"] = hashlib.md5(json.dumps(n, separators=(",", ":")).encode()).hexdigest().upper()
-        t["timestamp"] = int(time.time())
-
         try:
-            r = requests.post(
-                "https://api.raxiqaz.com/api/webapi/Register",
-                json=t,
+            r = requests.get(
+                "https://api.ipify.org?format=json",
                 proxies=proxies,
                 timeout=(CONNECT_TIMEOUT, READ_TIMEOUT)
             )
             if r.status_code == 200:
-                d = r.json()
-                if d.get("msgCode") == 114 or "forbidden" in str(d.get("msg", "")).lower():
-                    return False
-                if d.get("code") in (13, 31, 5) or d.get("msgCode") in (-1, 31, 5008):
-                    return True
+                return True
         except Exception:
             pass
         return False
@@ -393,19 +437,19 @@ class ProxyManager:
         logger.info(f"Gathered {len(cand_list)} fresh candidates for memory-safe validation.")
         return set(cand_list)
 
-    def refill_proxies(self, target_count=POOL_TARGET, max_workers=25):
+    def refill_proxies(self, target_count=POOL_TARGET, max_workers=6):
         """
-        Scrapes candidates and validates them concurrently with 20 memory-safe workers.
-        Keeps RAM strictly under 60MB.
+        Scrapes candidates and validates them gently with max 6 workers to preserve CPU.
         """
         import gc
+        now = time.time()
         with self.lock:
-            if self.is_refilling:
+            if self.is_refilling or (now - self.last_refill_time < 600):
                 return
             self.is_refilling = True
 
         try:
-            logger.info(f"Starting proxy pool refill (Target: {target_count})...")
+            logger.info(f"Starting gentle proxy pool refill (Target: {target_count})...")
             existing_pool = self.load_local_pool()
             active_existing = [p for p in existing_pool if p not in self.dead_proxies]
 
@@ -423,9 +467,9 @@ class ProxyManager:
             new_verified = []
             active_set = set(active_existing)
 
-            # Test in streaming batches of 250 candidates with 20 workers
-            batch_size = 250
-            for i in range(0, len(candidates), batch_size):
+            # Test in small streaming batches of 50 candidates with max 6 workers
+            batch_size = 50
+            for i in range(0, min(len(candidates), 300), batch_size):
                 if len(active_existing) + len(new_verified) >= target_count:
                     break
                 batch = candidates[i:i + batch_size]
@@ -438,10 +482,6 @@ class ProxyManager:
                         try:
                             if f.result():
                                 new_verified.append(p)
-                                if len(new_verified) % 5 == 0:
-                                    current_combined = active_existing + new_verified
-                                    self.save_pool(current_combined)
-                                    logger.info(f"[Refill] Live pool: {len(current_combined)}/{target_count} verified proxies...")
                                 if len(active_existing) + len(new_verified) >= target_count:
                                     break
                         except Exception:
@@ -462,11 +502,11 @@ class ProxyManager:
 
     def health_check_pool(self):
         """
-        Runs every 30 minutes: Re-tests ALL proxies in the current pool,
-        purges dead/slow ones, and immediately refills fresh proxies to guarantee target active.
+        Runs periodically: Re-tests unauthenticated proxies in pool and purges dead ones.
+        ALWAYS preserves authenticated/Webshare proxies!
         """
         import gc
-        logger.info(f"Running scheduled 30-min health check on working proxies pool...")
+        logger.info(f"Running scheduled health check on working proxies pool...")
         pool = self.load_local_pool()
 
         if not pool:
@@ -475,34 +515,42 @@ class ProxyManager:
 
         verified_still_alive = []
         dead_count = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-            futures = {executor.submit(self.test_single_proxy, p): p for p in pool}
-            for f in concurrent.futures.as_completed(futures):
-                p = futures[f]
-                try:
-                    if f.result():
-                        verified_still_alive.append(p)
-                    else:
+
+        # Always preserve all auth proxies
+        for p in pool:
+            if self.is_auth_proxy(p):
+                verified_still_alive.append(p)
+
+        public_to_test = [p for p in pool if not self.is_auth_proxy(p)]
+        if public_to_test:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+                futures = {executor.submit(self.test_single_proxy, p): p for p in public_to_test}
+                for f in concurrent.futures.as_completed(futures):
+                    p = futures[f]
+                    try:
+                        if f.result():
+                            verified_still_alive.append(p)
+                        else:
+                            dead_count += 1
+                            self.dead_proxies.add(p)
+                    except Exception:
                         dead_count += 1
                         self.dead_proxies.add(p)
-                except Exception:
-                    dead_count += 1
-                    self.dead_proxies.add(p)
 
         self.save_pool(verified_still_alive)
         gc.collect()
         logger.info(f"Health check done: {len(verified_still_alive)} verified alive, {dead_count} dead removed.")
 
-        if len(verified_still_alive) < POOL_TARGET:
-            logger.info(f"Pool size ({len(verified_still_alive)}) is below {POOL_TARGET}. Triggering refill...")
+        if len(verified_still_alive) < POOL_MIN_THRESHOLD:
+            logger.info(f"Pool size ({len(verified_still_alive)}) is below {POOL_MIN_THRESHOLD}. Triggering gentle refill...")
             self.refill_proxies(target_count=POOL_TARGET)
 
     def start_background_daemon(self):
-        """Launches continuous background monitoring, instant auto-refill, and 30-min health checks."""
+        """Launches continuous background monitoring, gentle auto-refill, and health checks."""
         def daemon_loop():
-            logger.info(f"Proxy Background Daemon started (Target Pool: {POOL_TARGET}+, Min: {POOL_MIN_THRESHOLD}, Health-Check: every {HEALTH_CHECK_INTERVAL // 60}m).")
-            # Immediate initial refill if pool is below target
-            if len(self.load_local_pool()) < POOL_TARGET:
+            logger.info(f"Proxy Background Daemon started (Target: {POOL_TARGET}, Min: {POOL_MIN_THRESHOLD}, Health-Check: every {HEALTH_CHECK_INTERVAL // 60}m).")
+            # Immediate initial refill only if pool is strictly below min threshold
+            if len(self.load_local_pool()) < POOL_MIN_THRESHOLD:
                 threading.Thread(target=self.refill_proxies, kwargs={"target_count": POOL_TARGET}, daemon=True).start()
 
             last_health_check = time.time()
@@ -513,13 +561,13 @@ class ProxyManager:
                     now = time.time()
                     pool_len = len(self.load_local_pool())
 
-                    # 1. Periodic 30-Minute Health Check
+                    # 1. Periodic 60-Minute Health Check
                     if (now - last_health_check >= HEALTH_CHECK_INTERVAL) and not self.is_refilling:
                         self.health_check_pool()
                         last_health_check = time.time()
 
-                    # 2. Fast Auto-Refill if pool drops below threshold
-                    elif pool_len < POOL_MIN_THRESHOLD and not self.is_refilling:
+                    # 2. Gentle Auto-Refill only if pool drops below min threshold AND cooldown passed
+                    elif pool_len < POOL_MIN_THRESHOLD and not self.is_refilling and (now - self.last_refill_time > 900):
                         logger.info(f"Pool size ({pool_len}) below threshold ({POOL_MIN_THRESHOLD}). Refilling to {POOL_TARGET}...")
                         self.refill_proxies(target_count=POOL_TARGET)
 

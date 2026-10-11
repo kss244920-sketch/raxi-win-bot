@@ -1,0 +1,22 @@
+{
+  "8327850869": {
+    "site": "https://www.dmfirst17.com",
+    "api": "https://api.dmfirst9api.com",
+    "api_type": "webapi",
+    "invite": "265762124632",
+    "domain": "www.dmfirst17.com",
+    "sms_required": false,
+    "switched_mirror": false,
+    "mirrors_scanned": 0
+  },
+  "6217522461": {
+    "site": "https://www.dmfirst17.com",
+    "api": "https://api.dmfirst9api.com",
+    "api_type": "webapi",
+    "invite": "265762124632",
+    "domain": "www.dmfirst17.com",
+    "sms_required": false,
+    "switched_mirror": false,
+    "mirrors_scanned": 0
+  }
+}

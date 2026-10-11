@@ -181,38 +181,18 @@ def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming
         return None
 
 # Concurrency lock to prevent duplicate parallel registrations in same chat with auto-expiration
-BUSY_CHATS_LOCK = threading.Lock()
+BUSY_CHATS_LOCK = threading.RLock()
 BUSY_LOCK_TIMEOUT = 600.0  # 10 minutes max lock duration
-
-class ExpiringChatLock(dict):
-    """Dictionary-backed set supporting timeout expiration and lock safety."""
-    def __contains__(self, chat_id):
-        with BUSY_CHATS_LOCK:
-            if not super().__contains__(chat_id):
-                return False
-            ts = super().get(chat_id, 0)
-            if time.time() - ts > BUSY_LOCK_TIMEOUT:
-                super().pop(chat_id, None)
-                return False
-            return True
-
-    def add(self, chat_id):
-        with BUSY_CHATS_LOCK:
-            self[chat_id] = time.time()
-
-    def discard(self, chat_id):
-        with BUSY_CHATS_LOCK:
-            self.pop(chat_id, None)
-
-BUSY_CHATS = ExpiringChatLock()
+BUSY_CHATS = {}  # chat_id -> timestamp
 CUSTOM_REG_STATE = {}  # user_id -> {"step": "phone"|"password", "phone": str, "chat_id": int, "mid": int}
 CUSTOM_SPEED_STATE = {}  # user_id -> {"count": int, "chat_id": int, "mid": int, "time": float}
 
 def acquire_chat_lock(chat_id: int) -> bool:
     with BUSY_CHATS_LOCK:
         now = time.time()
-        if chat_id in BUSY_CHATS:
-            if now - BUSY_CHATS.get(chat_id, 0) <= BUSY_LOCK_TIMEOUT:
+        last_time = BUSY_CHATS.get(chat_id)
+        if last_time is not None:
+            if now - last_time <= BUSY_LOCK_TIMEOUT:
                 return False
         BUSY_CHATS[chat_id] = now
         return True
@@ -1080,7 +1060,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 cap_url = f"{target_api}/api/webapi/Captcha"
                 cap_payload = signed_body({})
 
-            r_cap = session.post(cap_url, json=cap_payload, timeout=(1.8, 2.5))
+            r_cap = session.post(cap_url, json=cap_payload, timeout=(4.0, 6.0))
             cdata = r_cap.json().get("data", {})
             cid = cdata.get("captchaId")
             bg_b64 = cdata.get("backgroundImage")
@@ -1090,7 +1070,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             if active_proxy:
                 mark_proxy_dead(active_proxy)
             last_error = f"Captcha connection error via {proxy_label}: {str(e)[:80]}"
-            time.sleep(0.1)
+            time.sleep(0.2)
             continue
 
         if not cid or not bg_b64 or not sl_b64:
@@ -1098,7 +1078,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             if active_proxy:
                 mark_proxy_dead(active_proxy)
             last_error = f"Captcha returned empty data via {proxy_label}"
-            time.sleep(0.1)
+            time.sleep(0.2)
             continue
 
         # 2. Solve slider puzzle via native PIL + NumPy contour matching
@@ -1110,7 +1090,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             container_x = random.randint(110, 210)
             track = make_track(container_x)
 
-        # 3. Submit Register POST - Strict 2.2s connect, 3.2s read
+        # 3. Submit Register POST - Reliable 4.5s connect, 7.0s read
         if is_arsaas:
             reg_url = f"{target_site}/api/Home/Register"
             reg_dict = {
@@ -1141,14 +1121,14 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             reg_payload = signed_body(reg_dict)
 
         try:
-            r = session.post(reg_url, json=reg_payload, timeout=(2.0, 2.8))
+            r = session.post(reg_url, json=reg_payload, timeout=(4.5, 7.0))
             j = r.json()
         except Exception as e:
             log(f"[bot] Proxy {proxy_label} Register POST error: {e}")
             if active_proxy:
                 mark_proxy_dead(active_proxy)
             last_error = f"Register POST error via {proxy_label}: {str(e)[:80]}"
-            time.sleep(0.1)
+            time.sleep(0.2)
             continue
 
         code = j.get("code")
@@ -1213,12 +1193,11 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             or "ip blocked" in str(msg).lower()
             or "limit" in str(msg).lower()
         ):
-            log(f"[bot] Proxy {proxy_label} flagged by server ({msg}), rotating to next IP...")
+            log(f"[bot] Proxy {proxy_label} flagged by server ({msg}), placing on domain cooldown...")
             if active_proxy:
-                mark_proxy_used(active_proxy, domain=domain)
-                mark_proxy_dead(active_proxy)
+                proxy_manager.mark_proxy_cooldown(active_proxy, domain=domain, duration=600)
             last_error = f"{msg} (code {msg_code})"
-            time.sleep(0.2)
+            time.sleep(0.3)
             continue
 
         # If site strictly requires SMS OTP (e.g. 51game)
@@ -1891,10 +1870,10 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         # Proactively ensure proxy pool has enough fresh IPs for bulk order
         dom_check = urllib.parse.urlparse(target_site).netloc
         avail_proxies = proxy_manager.get_available_count(domain=dom_check)
-        if avail_proxies < count + 50:
+        if avail_proxies < 5:
             threading.Thread(
                 target=proxy_manager.refill_proxies,
-                kwargs={"target_count": max(800, count + 200)},
+                kwargs={"target_count": 35},
                 daemon=True
             ).start()
 
@@ -1915,6 +1894,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
 
                 res = auto_register_account(site=target_site, api=target_api, invite=target_invite, creator_id=uid, api_type=cfg.get("api_type"))
 
+                update_text = None
                 with lock:
                     if res.get("ok"):
                         admin_manager.deduct_tokens(uid, 1)
@@ -1925,12 +1905,10 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                         consecutive_fails += 1
                         if "sms" in str(res.get("msg", "")).lower() and "required" in str(res.get("msg", "")).lower():
                             consecutive_fails = max_consecutive_fails
-                        elif consecutive_fails % 6 == 0:
-                            threading.Thread(target=proxy_manager.refill_proxies, kwargs={"target_count": max(800, count + 200)}, daemon=True).start()
 
                     now = time.time()
                     cur_succ = len(success_accounts)
-                    if cur_succ == count or (now - last_edit_time[0] >= 2.0):
+                    if cur_succ == count or (now - last_edit_time[0] >= 2.5):
                         last_edit_time[0] = now
                         bar_now = render_progress_bar(cur_succ, count, length=10)
                         retry_note = f"\n• 🔄 <b>Retries Handled:</b> <code>{failed_count}</code> <i>(Auto-recovering dropped IPs)</i>" if failed_count > 0 else ""
@@ -1943,42 +1921,47 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                         else:
                             eta_line = ""
 
-                        try:
-                            send_or_edit(
-                                chat_id,
-                                f"⏳ <b>Multi-Registration in Progress...</b>\n\n"
-                                f"{bar_now}\n\n"
-                                f"• ✅ Created: <code>{cur_succ}/{count}</code>\n"
-                                f"• 🌐 Site: <code>{target_site}</code>\n"
-                                f"• 🎟️ Invite: <code>{target_invite}</code>\n"
-                                f"• ⚡ Mode: <code>{speed_label}</code>"
-                                f"{eta_line}{retry_note}",
-                                message_id=mid
-                            )
-                        except Exception:
-                            pass
+                        update_text = (
+                            f"⏳ <b>Multi-Registration in Progress...</b>\n\n"
+                            f"{bar_now}\n\n"
+                            f"• ✅ Created: <code>{cur_succ}/{count}</code>\n"
+                            f"• 🌐 Site: <code>{target_site}</code>\n"
+                            f"• 🎟️ Invite: <code>{target_invite}</code>\n"
+                            f"• ⚡ Mode: <code>{speed_label}</code>"
+                            f"{eta_line}{retry_note}"
+                        )
+
+                if update_text:
+                    try:
+                        send_or_edit(chat_id, update_text, message_id=mid)
+                    except Exception:
+                        pass
 
                 if res.get("ok"):
                     if delay > 0 and len(success_accounts) < count:
                         time.sleep(delay)
+                    else:
+                        time.sleep(0.35)  # Safe spacing between successful accounts
                 else:
                     if consecutive_fails > 10:
-                        time.sleep(0.8)
+                        time.sleep(1.5)
                     else:
-                        time.sleep(0.2)
+                        time.sleep(0.5)
 
         if delay > 0:
             workers = 1
-        elif count >= 100:
-            workers = min(count, 10)
+        elif count >= 50:
+            workers = 3
         else:
-            workers = min(count, 8)
+            workers = min(count, 3)
 
         threads = []
         for _ in range(workers):
             t = threading.Thread(target=worker_loop, daemon=True)
             t.start()
             threads.append(t)
+            if workers > 1:
+                time.sleep(0.35)
 
         for t in threads:
             t.join()
