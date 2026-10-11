@@ -2955,13 +2955,12 @@ def handle_proxies_cmd(message):
 #  CALLBACK QUERY DISPATCHER
 # ═══════════════════════════════════════════════════════════════════════════
 
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callback_clicks(call):
+def _handle_callback_clicks_inner(call):
     user = call.from_user
     user_id = user.id
     data = call.data
-    chat_id = call.message.chat.id
-    msg_id = call.message.message_id
+    chat_id = call.message.chat.id if (call.message and getattr(call.message, 'chat', None)) else user_id
+    msg_id = call.message.message_id if call.message else None
 
     admin_manager.record_user(user_id, user.username or "", user.first_name or "")
     log(f"[bot] Callback: user={user_id} ({user.first_name or 'User'}) action='{data}'")
@@ -3415,6 +3414,17 @@ def handle_callback_clicks(call):
     else:
         try:
             bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback_clicks(call):
+    try:
+        _handle_callback_clicks_inner(call)
+    except Exception as e:
+        log(f"[bot] Unhandled error in callback handler: {e}")
+        try:
+            bot.answer_callback_query(call.id, "⚠️ Error handling action. Please retry.")
         except Exception:
             pass
 
