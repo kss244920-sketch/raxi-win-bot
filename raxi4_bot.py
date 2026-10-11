@@ -1010,7 +1010,7 @@ def count_saved_accounts():
 #  CORE REGISTRATION WORKER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=8, creator_id=None, smsvcode="", api_type=None):
+def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=15, creator_id=None, smsvcode="", api_type=None):
     """
     Registers a new account with dynamic phone, password, device profile, and proxy rotation.
     Automatically supports both AR-SAAS (MaanWin, GoaGames, etc.) and VITE/WEBAPI (51game, Raxi).
@@ -1218,9 +1218,20 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             or "ip blocked" in str(msg).lower()
             or "limit" in str(msg).lower()
         ):
-            log(f"[bot] Proxy {proxy_label} flagged by server ({msg}), placing on domain cooldown...")
-            if active_proxy:
-                proxy_manager.mark_proxy_cooldown(active_proxy, domain=domain, duration=600)
+            is_forbidden = (
+                msg_code == 114
+                or "the ip has been" in str(msg).lower()
+                or "forbidden" in str(msg).lower()
+            )
+            if is_forbidden:
+                log(f"[bot] Proxy {proxy_label} permanently forbidden on {domain} ({msg}), marking burned for domain...")
+                if active_proxy:
+                    proxy_manager.mark_proxy_used(active_proxy, domain=domain)
+                    proxy_manager.mark_proxy_cooldown(active_proxy, domain=domain, duration=86400)
+            else:
+                log(f"[bot] Proxy {proxy_label} flagged by server ({msg}), placing on domain cooldown...")
+                if active_proxy:
+                    proxy_manager.mark_proxy_cooldown(active_proxy, domain=domain, duration=600)
             last_error = f"{msg} (code {msg_code})"
             time.sleep(0.3)
             continue
@@ -1910,7 +1921,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         lock = threading.Lock()
         last_edit_time = [time.time()]
         cooldown_wait_cycles = [0]
-        max_cooldown_cycles = 6
+        max_cooldown_cycles = 30
         last_fail_reason = [""]
 
         def safe_update_ui(text, reply_markup=None):
@@ -1955,7 +1966,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                     # Trigger background proxy refill immediately if pool is empty/cooling down
                     threading.Thread(
                         target=proxy_manager.refill_proxies,
-                        kwargs={"target_count": 35, "force": True},
+                        kwargs={"target_count": 50, "force": True},
                         daemon=True
                     ).start()
 

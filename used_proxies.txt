@@ -13,3 +13,5 @@ wuqayqgc:g092ukrotff8@198.23.243.226:6361|dmfirst17.com
 wuqayqgc:g092ukrotff8@38.154.185.97:6370|dmfirst17.com
 wuqayqgc:g092ukrotff8@84.247.60.125:6095|dmfirst17.com
 wuqayqgc:g092ukrotff8@142.111.67.146:5611|goagamea.com
+203.252.142.217:80|dmfirst
+103.39.75.123:8080|dmfirst

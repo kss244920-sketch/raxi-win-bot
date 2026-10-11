@@ -264,7 +264,7 @@ class ProxyManager:
             self.save_pool(list(existing))
 
     def normalize_domain(self, domain_or_url: str) -> str:
-        """Normalizes any domain or URL to a clean lowercase identifier (e.g. raxi4.com, bigmumbai.com)."""
+        """Normalizes any domain or URL to a clean lowercase identifier (e.g. raxi, dmfirst, 51game, bigmumbai)."""
         if not domain_or_url:
             return "general"
         d = domain_or_url.strip().lower()
@@ -275,8 +275,9 @@ class ProxyManager:
                 pass
         d = re.sub(r"^www\.", "", d)
         d = d.split(":")[0]  # remove port if any
-        if "raxi" in d:
-            return "raxi"
+        for fam in ["raxi", "dmfirst", "51game", "goagame", "maanwin", "bigmumbai", "tiranga", "bdg", "daman"]:
+            if fam in d:
+                return fam
         return d or "general"
 
     def sync_files_to_alt_dirs(self):
@@ -424,7 +425,7 @@ class ProxyManager:
         self.sync_files_to_alt_dirs()
 
     def get_available_count(self, domain: str = None) -> int:
-        """Returns how many non-dead, non-cooldown proxies are ready for the specified domain."""
+        """Returns how many non-dead, non-cooldown, non-used proxies are ready for the specified domain."""
         dom = self.normalize_domain(domain) if domain else "general"
         now = time.time()
         pool = self.load_local_pool()
@@ -435,7 +436,10 @@ class ProxyManager:
                     for p, until in list(self.domain_cooldowns[d].items()):
                         if until > now:
                             active_cooldowns.add(p)
-        available = [p for p in pool if p not in active_cooldowns and p not in self.dead_proxies]
+                        else:
+                            self.domain_cooldowns[d].pop(p, None)
+        used_for_domain = self.get_used_proxies(domain)
+        available = [p for p in pool if p not in active_cooldowns and p not in self.dead_proxies and p not in used_for_domain]
         return len(available)
 
     def get_earliest_cooldown_expiry(self, domain: str = None) -> float:
@@ -455,9 +459,9 @@ class ProxyManager:
 
     def get_next_proxy(self, exclude=None, domain: str = None) -> str:
         """
-        Returns the next available, healthy working proxy using priority round-robin rotation.
-        Auth proxies (Webshare) are prioritized.
-        Skips proxies currently in cooldown for the given domain.
+        Returns the next available, healthy working proxy using balanced round-robin rotation.
+        Auth proxies and verified public proxies are interleaved for optimal reliability.
+        Skips proxies currently in cooldown or already used for the given domain.
         """
         dom = self.normalize_domain(domain) if domain else "general"
         now = time.time()
@@ -478,8 +482,11 @@ class ProxyManager:
                         else:
                             self.domain_cooldowns[d].pop(p, None)
 
+        used_for_domain = self.get_used_proxies(domain)
+
         ex = set(self.dead_proxies)
         ex.update(active_cooldowns)
+        ex.update(used_for_domain)
         if exclude:
             ex.update(exclude)
 
@@ -490,18 +497,25 @@ class ProxyManager:
             threading.Thread(target=self.refill_proxies, kwargs={"target_count": POOL_TARGET}, daemon=True).start()
 
         if not available:
-            # Fallback: allow auth proxies whose cooldown has mostly elapsed
-            auth_fallback = [p for p in pool if self.is_auth_proxy(p) and p not in self.dead_proxies]
-            if auth_fallback:
-                available = auth_fallback
-            else:
-                return None
+            # If no proxies available, trigger fast refill and do NOT return burned proxies
+            if not self.is_refilling:
+                threading.Thread(target=self.refill_proxies, kwargs={"target_count": POOL_TARGET, "force": True}, daemon=True).start()
+            return None
 
-        # Prioritize auth proxies
+        # Interleave auth and verified public proxies for balanced rotation
         auth_avail = [p for p in available if self.is_auth_proxy(p)]
         pub_avail = [p for p in available if not self.is_auth_proxy(p)]
 
-        ordered = auth_avail + pub_avail
+        ordered = []
+        ai, pi = 0, 0
+        while ai < len(auth_avail) or pi < len(pub_avail):
+            if ai < len(auth_avail):
+                ordered.append(auth_avail[ai])
+                ai += 1
+            if pi < len(pub_avail):
+                ordered.append(pub_avail[pi])
+                pi += 1
+
         with self.lock:
             self.proxy_index = (self.proxy_index + 1) % len(ordered)
             return ordered[self.proxy_index]
