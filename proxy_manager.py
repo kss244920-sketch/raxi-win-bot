@@ -443,7 +443,7 @@ class ProxyManager:
         return len(available)
 
     def get_earliest_cooldown_expiry(self, domain: str = None) -> float:
-        """Returns seconds until the earliest proxy cooldown expires for the domain."""
+        """Returns seconds until the earliest proxy cooldown expires for the domain (capped at 30s)."""
         dom = self.normalize_domain(domain) if domain else "general"
         now = time.time()
         earliest = float("inf")
@@ -451,11 +451,12 @@ class ProxyManager:
             for d in [dom, "all", "general"]:
                 if d in self.domain_cooldowns:
                     for p, until in self.domain_cooldowns[d].items():
-                        if until > now and until < earliest:
+                        rem = until - now
+                        if 0 < rem <= 300 and until < earliest:
                             earliest = until
         if earliest == float("inf"):
-            return 0.0
-        return max(0.0, earliest - now)
+            return 15.0
+        return max(5.0, min(30.0, earliest - now))
 
     def get_next_proxy(self, exclude=None, domain: str = None) -> str:
         """
@@ -633,16 +634,16 @@ class ProxyManager:
             logger.info(f"Added {added} custom proxies into pool. Total: {len(existing)}")
         return added
 
-    def refill_proxies(self, target_count=POOL_TARGET, max_workers=3, force=False):
+    def refill_proxies(self, target_count=POOL_TARGET, max_workers=20, force=False):
         """
-        Scrapes candidates and validates them gently with bounded concurrency to preserve RAM in 150MB container.
+        Scrapes candidates and validates them fast with 20 workers (well within 150MB RAM limit).
         """
         import gc
         now = time.time()
         with self.lock:
             if self.is_refilling:
                 return
-            if not force and (now - self.last_refill_time < 600):
+            if not force and (now - self.last_refill_time < 300):
                 return
             self.is_refilling = True
 
@@ -665,9 +666,9 @@ class ProxyManager:
             new_verified = []
             active_set = set(active_existing)
 
-            # Test in streaming batches of 15 candidates
-            batch_size = 15
-            max_test_candidates = min(len(candidates), 300)
+            # Test in streaming batches of 35 candidates
+            batch_size = 35
+            max_test_candidates = min(len(candidates), 600)
             for i in range(0, max_test_candidates, batch_size):
                 if len(active_existing) + len(new_verified) >= target_count:
                     break

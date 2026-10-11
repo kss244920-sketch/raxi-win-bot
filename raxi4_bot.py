@@ -1227,11 +1227,11 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 log(f"[bot] Proxy {proxy_label} permanently forbidden on {domain} ({msg}), marking burned for domain...")
                 if active_proxy:
                     proxy_manager.mark_proxy_used(active_proxy, domain=domain)
-                    proxy_manager.mark_proxy_cooldown(active_proxy, domain=domain, duration=86400)
+                    proxy_manager.mark_proxy_cooldown(active_proxy, domain=domain, duration=300)
             else:
                 log(f"[bot] Proxy {proxy_label} flagged by server ({msg}), placing on domain cooldown...")
                 if active_proxy:
-                    proxy_manager.mark_proxy_cooldown(active_proxy, domain=domain, duration=600)
+                    proxy_manager.mark_proxy_cooldown(active_proxy, domain=domain, duration=300)
             last_error = f"{msg} (code {msg_code})"
             time.sleep(0.3)
             continue
@@ -1959,16 +1959,17 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                         if admin_manager.get_tokens(uid) <= 0:
                             break
 
-                # If all working proxies are temporarily in cooldown, wait safely without spamming
+                # Proactively refill proxies if pool is running low (< 5)
                 avail_now = proxy_manager.get_available_count(domain=dom_check)
-                if avail_now == 0:
-                    cd_wait = proxy_manager.get_earliest_cooldown_expiry(domain=dom_check)
-                    # Trigger background proxy refill immediately if pool is empty/cooling down
+                if avail_now < 5:
                     threading.Thread(
                         target=proxy_manager.refill_proxies,
-                        kwargs={"target_count": 50, "force": True},
+                        kwargs={"target_count": 60, "max_workers": 20, "force": True},
                         daemon=True
                     ).start()
+
+                if avail_now == 0:
+                    cd_wait = proxy_manager.get_earliest_cooldown_expiry(domain=dom_check)
 
                     should_update = False
                     with lock:
@@ -1985,13 +1986,13 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                             should_update = True
 
                     if should_update:
-                        cd_disp = int(cd_wait) if cd_wait > 0 else 30
+                        cd_disp = min(20, int(cd_wait)) if (0 < cd_wait < 300) else 15
                         cd_msg = (
                             f"⏳ <b>Multi-Registration in Progress...</b>\n\n"
                             f"{render_progress_bar(len(success_accounts), count, length=10)}\n\n"
                             f"• ✅ Created: <code>{len(success_accounts)}/{count}</code>\n"
                             f"• 🌐 Site: <code>{target_site}</code>\n"
-                            f"• ⏳ <b>IP Cooldown Active:</b> <i>Waiting ~{cd_disp}s for proxy unban / scraping fresh IPs...</i>\n"
+                            f"• ⏳ <b>Scraping Fresh IPs:</b> <i>Scraping & validating live proxies (~{cd_disp}s)...</i>\n"
                             f"• 🔄 <i>Auto-resuming registration smoothly...</i>"
                         )
                         try:
@@ -1999,7 +2000,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                         except Exception:
                             pass
 
-                    sleep_secs = min(max(cd_wait, 5.0), 15.0) if cd_wait > 0 else 8.0
+                    sleep_secs = 10.0
                     time.sleep(sleep_secs)
                     continue
 
