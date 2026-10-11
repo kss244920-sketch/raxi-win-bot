@@ -53,7 +53,17 @@ SOURCES = [
     "https://api.proxyscrape.com/v3/free-proxy-list/get?request=displayproxies&protocol=http&proxy_format=ipport&format=text",
     "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=2500&country=all&ssl=yes&anonymity=all",
     "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt",
+    "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/https.txt",
     "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/https.txt",
+    "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+    "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+    "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/http.txt",
+    "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt",
+    "https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt",
+    "https://raw.githubusercontent.com/saisuiu/Lion-proxy/main/http.txt",
+    "https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_files/http_proxies.txt",
+    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http.txt",
+    "https://raw.githubusercontent.com/tuanminpay/live-proxy/master/http.txt",
 ]
 
 PLATFORM_TEST_URLS = [
@@ -454,24 +464,45 @@ class ProxyManager:
         logger.info(f"Gathered {len(cand_list)} fresh candidates for memory-safe validation.")
         return set(cand_list)
 
-    def refill_proxies(self, target_count=POOL_TARGET, max_workers=6):
+    def add_custom_proxies(self, raw_proxies: list) -> int:
+        """Adds custom user-provided proxies (e.g. from file upload or /addproxy command) directly into pool."""
+        existing = set(self.load_local_pool())
+        added = 0
+        for item in raw_proxies:
+            p = item.strip()
+            if not p or p.startswith("#"):
+                continue
+            if p.count(":") == 3:
+                parts = p.split(":")
+                p = f"{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}"
+            if p not in existing:
+                existing.add(p)
+                added += 1
+        if added > 0:
+            self.save_pool(list(existing))
+            logger.info(f"Added {added} custom proxies into pool. Total: {len(existing)}")
+        return added
+
+    def refill_proxies(self, target_count=POOL_TARGET, max_workers=6, force=False):
         """
-        Scrapes candidates and validates them gently with max 6 workers to preserve CPU.
+        Scrapes candidates and validates them gently with max workers to preserve CPU.
         """
         import gc
         now = time.time()
         with self.lock:
-            if self.is_refilling or (now - self.last_refill_time < 600):
+            if self.is_refilling:
+                return
+            if not force and (now - self.last_refill_time < 600):
                 return
             self.is_refilling = True
 
         try:
-            logger.info(f"Starting gentle proxy pool refill (Target: {target_count})...")
+            logger.info(f"Starting proxy pool refill (Target: {target_count}, Force={force})...")
             existing_pool = self.load_local_pool()
             active_existing = [p for p in existing_pool if p not in self.dead_proxies]
 
             needed = target_count - len(active_existing)
-            if needed <= 0:
+            if needed <= 0 and not force:
                 logger.info(f"Pool already full and healthy ({len(active_existing)} >= {target_count}). No refill needed.")
                 return
 
@@ -484,9 +515,10 @@ class ProxyManager:
             new_verified = []
             active_set = set(active_existing)
 
-            # Test in small streaming batches of 50 candidates with max 6 workers
+            # Test in streaming batches of 50 candidates, dynamically scaled for target_count
             batch_size = 50
-            for i in range(0, min(len(candidates), 300), batch_size):
+            max_test_candidates = min(len(candidates), max(500, target_count * 15))
+            for i in range(0, max_test_candidates, batch_size):
                 if len(active_existing) + len(new_verified) >= target_count:
                     break
                 batch = candidates[i:i + batch_size]

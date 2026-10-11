@@ -1878,13 +1878,15 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         lock = threading.Lock()
         last_edit_time = [time.time()]
 
-        # Proactively ensure proxy pool has enough fresh IPs for bulk order
+        # Proactively ensure proxy pool has enough fresh IPs for bulk order (scales up for 500-1k orders)
         dom_check = urllib.parse.urlparse(target_site).netloc
         avail_proxies = proxy_manager.get_available_count(domain=dom_check)
-        if avail_proxies < 5:
+        needed_target = min(250, max(35, count // 2))
+        min_threshold = min(20, max(8, count // 6))
+        if avail_proxies < min_threshold:
             threading.Thread(
                 target=proxy_manager.refill_proxies,
-                kwargs={"target_count": 35},
+                kwargs={"target_count": needed_target, "force": True},
                 daemon=True
             ).start()
 
@@ -2949,6 +2951,86 @@ def handle_proxies_cmd(message):
     b_refill = types.InlineKeyboardButton("🔄 Trigger Fresh Scrape Now", callback_data="admin_refill_proxies")
     markup.add(b_refill)
     bot.reply_to(message, text, reply_markup=markup, parse_mode="HTML")
+
+
+@bot.message_handler(commands=["addproxy", "addproxies"])
+def handle_addproxy_cmd(message):
+    user = message.from_user
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if not admin_manager.is_admin(user.id):
+        bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
+        return
+
+    text = message.text or ""
+    parts = text.split()[1:]
+    if not parts:
+        bot.reply_to(
+            message,
+            "ℹ️ <b>Custom Proxy Import Guide</b>\n\n"
+            "Format:\n"
+            "<code>/addproxy 1.2.3.4:8080 5.6.7.8:3128 user:pass@ip:port</code>\n\n"
+            "💡 <i>Tip: Aap directly proxy wali <b>.txt document file</b> bhi bot ko send kar sakte hain! Bot automatically saari proxies import kar lega.</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    raw_candidates = []
+    for item in parts:
+        raw_candidates.extend(item.replace(",", " ").split())
+    added = proxy_manager.add_custom_proxies(raw_candidates)
+    stats = proxy_manager.get_stats()
+    bot.reply_to(
+        message,
+        f"✅ <b>Custom Proxies Imported!</b>\n\n"
+        f"• <b>Added:</b> <code>{added}</code> fresh proxies\n"
+        f"• <b>Total Pool:</b> <code>{stats['total_pool']}</code> proxies\n"
+        f"• <b>Available Active:</b> <code>{stats['available']}</code> IPs",
+        parse_mode="HTML"
+    )
+
+
+@bot.message_handler(content_types=['document'])
+def handle_document_upload(message):
+    user = message.from_user
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if not admin_manager.is_admin(user.id):
+        return
+
+    doc = message.document
+    if not doc or not doc.file_name or not (doc.file_name.endswith(".txt") or doc.file_name.endswith(".csv")):
+        return
+
+    try:
+        file_info = bot.get_file(doc.file_id)
+        downloaded = bot.download_file(file_info.file_path)
+        content_str = downloaded.decode("utf-8", errors="ignore")
+        lines = [l.strip() for l in content_str.splitlines() if l.strip()]
+
+        found = []
+        for l in lines:
+            if l.startswith("#"):
+                continue
+            if "@" in l or l.count(":") == 3 or re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}", l):
+                found.append(l)
+
+        if not found:
+            bot.reply_to(message, "⚠️ File me koi valid proxies (IP:Port ya user:pass@ip:port) nahi mile.", parse_mode="HTML")
+            return
+
+        added = proxy_manager.add_custom_proxies(found)
+        stats = proxy_manager.get_stats()
+        bot.reply_to(
+            message,
+            f"🎉 <b>Bulk Proxy File Imported Successfully!</b>\n\n"
+            f"• 📄 <b>File:</b> <code>{doc.file_name}</code>\n"
+            f"• 📥 <b>Parsed:</b> <code>{len(found)}</code> proxies\n"
+            f"• 🟢 <b>Newly Added:</b> <code>{added}</code> proxies\n"
+            f"• 🌐 <b>Current Pool:</b> <code>{stats['total_pool']}</code> proxies ({stats['available']} active)",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        log(f"[bot] Error reading uploaded proxy file: {e}")
+        bot.reply_to(message, f"❌ File import error: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
