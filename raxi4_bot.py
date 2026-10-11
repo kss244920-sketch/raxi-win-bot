@@ -1225,11 +1225,27 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             time.sleep(0.3)
             continue
 
+        # If invite code is expired or does not exist (Code 1002, 110)
+        if (
+            msg_code in (110, 1002)
+            or "expired" in str(msg).lower()
+            or "invitor not existed" in str(msg).lower()
+            or "invitecode" in str(msg).lower()
+            or "invite code" in str(msg).lower()
+        ):
+            log(f"[bot] Target site rejected invite code: {msg} (code={code}, msgCode={msg_code})")
+            return {
+                "ok": False,
+                "fatal": True,
+                "msg": f"Invite Code Expired / Invalid ({msg})"
+            }
+
         # If site strictly requires SMS OTP (e.g. 51game)
         if msg_code == 106 or "sms" in str(msg).lower():
             log(f"[bot] Target site requires mandatory SMS OTP: {msg}")
             return {
                 "ok": False,
+                "fatal": True,
                 "msg": f"SMS Verification Required: This platform enforces SMS OTP ({msg}). Registration cannot proceed without real SMS OTP."
             }
 
@@ -1895,6 +1911,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         last_edit_time = [time.time()]
         cooldown_wait_cycles = [0]
         max_cooldown_cycles = 6
+        last_fail_reason = [""]
 
         def safe_update_ui(text, reply_markup=None):
             with lock:
@@ -1992,8 +2009,10 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                     else:
                         failed_count += 1
                         consecutive_fails += 1
+                        last_fail_reason[0] = res.get("msg", "")
                         err_msg = str(res.get("msg", "")).lower()
-                        if "sms" in err_msg and "required" in err_msg:
+                        if res.get("fatal") or ("sms" in err_msg and "required" in err_msg):
+                            log(f"[bot] Stopping bulk registration early: fatal error ({res.get('msg')})")
                             consecutive_fails = max_consecutive_fails
                         elif "expired" in err_msg or "invitor not existed" in err_msg or "invitecode" in err_msg:
                             log(f"[bot] Stopping bulk registration early: fatal invite error ({res.get('msg')})")
@@ -2073,10 +2092,12 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         markup.add(b3, b4)
 
         if not success_accounts:
+            reason_line = f"\n⚠️ <b>Karan:</b> <code>{html.escape(last_fail_reason[0])}</code>\n" if last_fail_reason[0] else ""
             fail_text = (
                 "❌ <b>Multi-Registration Completed with 0 Hits</b>\n"
-                f"Failed attempts: {failed_count}\n"
-                f"Kripya target platform aur referral link check karein."
+                f"{reason_line}\n"
+                f"• Failed attempts: <code>{failed_count}</code>\n\n"
+                f"💡 <i>Kripya target platform aur referral link check karein. Agar invite code expire ho gaya hai, toh /link command se naya referral link bhejein.</i>"
             )
             safe_update_ui(fail_text, reply_markup=markup)
             return
