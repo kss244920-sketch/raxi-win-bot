@@ -182,10 +182,21 @@ def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming
 
 # Concurrency lock to prevent duplicate parallel registrations in same chat with auto-expiration
 BUSY_CHATS_LOCK = threading.RLock()
-BUSY_LOCK_TIMEOUT = 600.0  # 10 minutes max lock duration
+BUSY_LOCK_TIMEOUT = 180.0  # 3 minutes max lock duration
 BUSY_CHATS = {}  # chat_id -> timestamp
 CUSTOM_REG_STATE = {}  # user_id -> {"step": "phone"|"password", "phone": str, "chat_id": int, "mid": int}
 CUSTOM_SPEED_STATE = {}  # user_id -> {"count": int, "chat_id": int, "mid": int, "time": float}
+
+def is_chat_busy(chat_id: int) -> bool:
+    with BUSY_CHATS_LOCK:
+        now = time.time()
+        last_time = BUSY_CHATS.get(chat_id)
+        if last_time is None:
+            return False
+        if now - last_time > BUSY_LOCK_TIMEOUT:
+            BUSY_CHATS.pop(chat_id, None)
+            return False
+        return True
 
 def acquire_chat_lock(chat_id: int) -> bool:
     with BUSY_CHATS_LOCK:
@@ -3055,7 +3066,7 @@ def handle_callback_clicks(call):
                 pass
             return
 
-        if chat_id in BUSY_CHATS:
+        if is_chat_busy(chat_id):
             try:
                 bot.answer_callback_query(call.id, "⏳ Registration in progress! Please wait a moment.", show_alert=True)
             except Exception:
@@ -3080,7 +3091,7 @@ def handle_callback_clicks(call):
         threading.Thread(target=run_registration_and_send_ss, args=(chat_id, user_id, None, None, None, msg_id), daemon=True).start()
 
     elif data == "single_custom":
-        if chat_id in BUSY_CHATS:
+        if is_chat_busy(chat_id):
             try:
                 bot.answer_callback_query(call.id, "⏳ Registration in progress! Please wait a moment.", show_alert=True)
             except Exception:
@@ -3178,7 +3189,7 @@ def handle_callback_clicks(call):
                 pass
             return
 
-        if chat_id in BUSY_CHATS:
+        if is_chat_busy(chat_id):
             try:
                 bot.answer_callback_query(call.id, "⏳ Multi-Registration in progress! Please wait a moment.", show_alert=True)
             except Exception:

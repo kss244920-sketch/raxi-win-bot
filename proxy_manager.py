@@ -88,6 +88,17 @@ class ProxyManager:
             return False
         return "@" in proxy_str or "wuqayqgc" in proxy_str
 
+    SEED_AUTH_PROXIES = [
+        "wuqayqgc:g092ukrotff8@31.59.20.176:6754",
+        "wuqayqgc:g092ukrotff8@45.38.107.97:6014",
+        "wuqayqgc:g092ukrotff8@64.137.96.74:6641",
+        "wuqayqgc:g092ukrotff8@198.23.243.226:6361",
+        "wuqayqgc:g092ukrotff8@38.154.185.97:6370",
+        "wuqayqgc:g092ukrotff8@84.247.60.125:6095",
+        "wuqayqgc:g092ukrotff8@142.111.67.146:5611",
+        "wuqayqgc:g092ukrotff8@191.96.254.138:6185",
+    ]
+
     def ensure_seed_proxies(self):
         """Ensures DATA_DIR/working_proxies.txt has working seed proxies from repository."""
         repo_files = [
@@ -106,6 +117,12 @@ class ProxyManager:
                 pass
 
         added = 0
+        # Always seed high-speed auth proxies
+        for sp in self.SEED_AUTH_PROXIES:
+            if sp not in existing:
+                existing.add(sp)
+                added += 1
+
         for rf in repo_files:
             if os.path.exists(rf) and os.path.abspath(rf) != os.path.abspath(PROXIES_FILE):
                 try:
