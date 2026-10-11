@@ -10,6 +10,10 @@ import time
 import shutil
 import logging
 import threading
+try:
+    threading.stack_size(262144)  # 256 KB thread stack size (preserves low RAM in 150MB cgroup)
+except Exception:
+    pass
 import urllib.parse
 import requests
 import concurrent.futures
@@ -186,8 +190,8 @@ TARGET_CHECK_URL = PLATFORM_TEST_URLS[0]
 CONNECT_TIMEOUT = 2.5
 READ_TIMEOUT = 3.5
 
-POOL_TARGET = 150        # Target: 150 verified responsive working proxies
-POOL_MIN_THRESHOLD = 30  # Trigger gentle refill when pool drops below 30
+POOL_TARGET = 60        # Target: 60 verified responsive working proxies (memory-safe for 150MB RAM)
+POOL_MIN_THRESHOLD = 15  # Trigger gentle refill when pool drops below 15
 HEALTH_CHECK_INTERVAL = 3600  # 60 minutes
 POLL_INTERVAL = 60      # Active poll interval in seconds
 
@@ -538,20 +542,26 @@ class ProxyManager:
         return False
 
     def scrape_candidates(self) -> set:
-        """Scrapes fresh candidate proxies from all public sources and local candidate files in parallel."""
+        """Scrapes fresh candidate proxies gently with bounded concurrency to fit safely in 150MB RAM."""
         candidates = set()
 
-        # 1. Scrape from 35+ online public sources concurrently
         def fetch_url(url):
             try:
-                r = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+                r = requests.get(url, timeout=3.5, headers={"User-Agent": "Mozilla/5.0"})
                 return set(re.findall(r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}", r.text))
             except Exception:
                 return set()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(SOURCES), 25)) as executor:
-            for found in executor.map(fetch_url, SOURCES):
+        # Shuffle sources and take only 15 sources per cycle to avoid high memory spikes
+        src_subset = list(SOURCES)
+        random.shuffle(src_subset)
+        src_subset = src_subset[:15]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            for found in executor.map(fetch_url, src_subset):
                 candidates.update(found)
+                if len(candidates) >= 1500:
+                    break
 
         # 2. Also incorporate local candidate sources and custom proxies
         local_candidate_files = [
@@ -575,18 +585,18 @@ class ProxyManager:
                                 else:
                                     m = re.findall(r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}", p)
                                     candidates.update(m)
-                            if len(candidates) >= 12000:
+                            if len(candidates) >= 2000:
                                 break
                 except Exception:
                     pass
-            if len(candidates) >= 12000:
+            if len(candidates) >= 2000:
                 break
 
         fresh_candidates = {p for p in candidates if p not in self.dead_proxies}
         cand_list = list(fresh_candidates)
-        if len(cand_list) > 10000:
+        if len(cand_list) > 1500:
             random.shuffle(cand_list)
-            cand_list = cand_list[:10000]
+            cand_list = cand_list[:1500]
         logger.info(f"Gathered {len(cand_list)} fresh candidates for memory-safe validation.")
         return set(cand_list)
 
@@ -609,9 +619,9 @@ class ProxyManager:
             logger.info(f"Added {added} custom proxies into pool. Total: {len(existing)}")
         return added
 
-    def refill_proxies(self, target_count=POOL_TARGET, max_workers=12, force=False):
+    def refill_proxies(self, target_count=POOL_TARGET, max_workers=3, force=False):
         """
-        Scrapes candidates and validates them gently with max workers to preserve CPU.
+        Scrapes candidates and validates them gently with bounded concurrency to preserve RAM in 150MB container.
         """
         import gc
         now = time.time()
@@ -641,9 +651,9 @@ class ProxyManager:
             new_verified = []
             active_set = set(active_existing)
 
-            # Test in streaming batches of 50 candidates, dynamically scaled for target_count
-            batch_size = 50
-            max_test_candidates = min(len(candidates), max(500, target_count * 15))
+            # Test in streaming batches of 15 candidates
+            batch_size = 15
+            max_test_candidates = min(len(candidates), 300)
             for i in range(0, max_test_candidates, batch_size):
                 if len(active_existing) + len(new_verified) >= target_count:
                     break
@@ -657,6 +667,7 @@ class ProxyManager:
                         try:
                             if f.result():
                                 new_verified.append(p)
+                                self.save_pool(active_existing + new_verified)
                                 if len(active_existing) + len(new_verified) >= target_count:
                                     break
                         except Exception:
@@ -724,9 +735,8 @@ class ProxyManager:
         """Launches continuous background monitoring, gentle auto-refill, and health checks."""
         def daemon_loop():
             logger.info(f"Proxy Background Daemon started (Target: {POOL_TARGET}, Min: {POOL_MIN_THRESHOLD}, Health-Check: every {HEALTH_CHECK_INTERVAL // 60}m).")
-            # Immediate initial refill only if pool is strictly below min threshold
-            if len(self.load_local_pool()) < POOL_MIN_THRESHOLD:
-                threading.Thread(target=self.refill_proxies, kwargs={"target_count": POOL_TARGET}, daemon=True).start()
+            # Wait 60s after startup so container boots cleanly and Telegram polling begins without memory pressure
+            time.sleep(60)
 
             last_health_check = time.time()
 
