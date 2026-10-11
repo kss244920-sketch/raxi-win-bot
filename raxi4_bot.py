@@ -1431,16 +1431,17 @@ def show_multi_menu(chat_id, user, message_id=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ 3 Accounts (3 🎫)", callback_data="multi_run_3")
-    b2 = types.InlineKeyboardButton("⚡ 5 Accounts (5 🎫)", callback_data="multi_run_5")
-    b3 = types.InlineKeyboardButton("⚡ 10 Accounts (10 🎫)", callback_data="multi_run_10")
-    b4 = types.InlineKeyboardButton("⚡ 20 Accounts (20 🎫)", callback_data="multi_run_20")
-    b_custom = types.InlineKeyboardButton("✍️ Custom Amount", callback_data="multi_custom")
+    b1 = types.InlineKeyboardButton("⚡ 5 Accounts (5 🎫)", callback_data="multi_run_5")
+    b2 = types.InlineKeyboardButton("⚡ 10 Accounts (10 🎫)", callback_data="multi_run_10")
+    b3 = types.InlineKeyboardButton("⚡ 50 Accounts (50 🎫)", callback_data="multi_run_50")
+    b4 = types.InlineKeyboardButton("⚡ 100 Accounts (100 🎫)", callback_data="multi_run_100")
+    b5 = types.InlineKeyboardButton("⚡ 500 Accounts (500 🎫)", callback_data="multi_run_500")
+    b_custom = types.InlineKeyboardButton("✍️ Custom (1-1000)", callback_data="multi_custom")
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
     b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
     markup.add(b1, b2)
     markup.add(b3, b4)
-    markup.add(b_custom)
+    markup.add(b5, b_custom)
     markup.add(b_back, b_home)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
@@ -1458,7 +1459,7 @@ def show_custom_amount_prompt(chat_id, user, message_id=None):
         f"🎫 <b>Your Balance:</b> <b>{tokens_disp}</b>\n"
         f"💰 <b>Rate:</b> <code>1 Token</code> = <code>1 Account</code>\n\n"
         f"✍️ <b>Kitne accounts ek sath register karne hain?</b>\n"
-        f"Niche chat me koi bhi number likh kar send karein <i>(e.g. 7, 15, 25, 50)</i>:\n\n"
+        f"Niche chat me koi bhi number likh kar send karein <i>(1 se 1000 tak, e.g. 25, 50, 100, 500)</i>:\n\n"
         f"💡 <i>Ya fir direct command use karein:</i> <code>/bulk &lt;number&gt;</code>"
     )
     markup = types.InlineKeyboardMarkup(row_width=1)
@@ -1872,8 +1873,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         success_accounts = []
         failed_count = 0
         total_attempts = 0
-        max_total_attempts = count * 4 + 300
-        max_consecutive_fails = max(80, count // 2)
+        max_total_attempts = count * 6 + 500
+        max_consecutive_fails = max(150, count)
         consecutive_fails = 0
         lock = threading.Lock()
         last_edit_time = [time.time()]
@@ -1903,6 +1904,32 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                     if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
                         if admin_manager.get_tokens(uid) <= 0:
                             break
+
+                # If all working proxies are temporarily in cooldown, wait for cooldown expiry
+                avail_now = proxy_manager.get_available_count(domain=dom_check)
+                if avail_now == 0:
+                    cd_wait = proxy_manager.get_earliest_cooldown_expiry(domain=dom_check)
+                    if cd_wait > 0:
+                        sleep_secs = min(cd_wait + 1.0, 15.0)
+                        now_ts = time.time()
+                        if now_ts - last_edit_time[0] >= 3.0:
+                            last_edit_time[0] = now_ts
+                            cd_msg = (
+                                f"⏳ <b>Multi-Registration in Progress...</b>\n\n"
+                                f"{render_progress_bar(len(success_accounts), count, length=10)}\n\n"
+                                f"• ✅ Created: <code>{len(success_accounts)}/{count}</code>\n"
+                                f"• 🌐 Site: <code>{target_site}</code>\n"
+                                f"• ⏳ <b>IP Cooldown Active:</b> <i>Waiting ~{int(cd_wait)}s for proxy to unban...</i>\n"
+                                f"• 🔄 <i>Auto-resuming registration smoothly...</i>"
+                            )
+                            try:
+                                send_or_edit(chat_id, cd_msg, message_id=mid)
+                            except Exception:
+                                pass
+                        time.sleep(sleep_secs)
+                        continue
+
+                with lock:
                     total_attempts += 1
 
                 res = auto_register_account(site=target_site, api=target_api, invite=target_invite, creator_id=uid, api_type=cfg.get("api_type"))
@@ -2204,7 +2231,7 @@ def handle_multi_cmd(message):
     parts = message.text.strip().split()
     count = 5
     if len(parts) >= 2 and parts[1].isdigit():
-        count = min(int(parts[1]), 50)
+        count = min(int(parts[1]), 1000)
     try:
         bot.delete_message(chat_id, message.message_id)
     except Exception:
@@ -2566,7 +2593,7 @@ def handle_custom_speed_msg(message):
     ).start()
 
 
-@bot.message_handler(func=lambda msg: msg.text and msg.text.strip().isdigit() and 1 <= int(msg.text.strip()) <= 100)
+@bot.message_handler(func=lambda msg: msg.text and msg.text.strip().isdigit() and 1 <= int(msg.text.strip()) <= 1000)
 def handle_custom_bulk_number_msg(message):
     """Shows speed selection menu when user sends a custom number (1-100)."""
     user = message.from_user

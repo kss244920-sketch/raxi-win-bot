@@ -323,6 +323,21 @@ class ProxyManager:
         available = [p for p in pool if p not in active_cooldowns and p not in self.dead_proxies]
         return len(available)
 
+    def get_earliest_cooldown_expiry(self, domain: str = None) -> float:
+        """Returns seconds until the earliest proxy cooldown expires for the domain."""
+        dom = self.normalize_domain(domain) if domain else "general"
+        now = time.time()
+        earliest = float("inf")
+        with self.lock:
+            for d in [dom, "all", "general"]:
+                if d in self.domain_cooldowns:
+                    for p, until in self.domain_cooldowns[d].items():
+                        if until > now and until < earliest:
+                            earliest = until
+        if earliest == float("inf"):
+            return 0.0
+        return max(0.0, earliest - now)
+
     def get_next_proxy(self, exclude=None, domain: str = None) -> str:
         """
         Returns the next available, healthy working proxy using priority round-robin rotation.
