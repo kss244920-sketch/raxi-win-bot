@@ -210,17 +210,30 @@ class ProxyManager:
         self.load_local_pool()
 
     def load_sx_config(self) -> dict:
-        """Loads SX.ORG rotating residential configuration."""
-        for target_dir in [DATA_DIR, BASE_DIR]:
+        """Loads and merges SX.ORG rotating residential configuration from persistent and base dirs."""
+        merged_accounts = {}
+        is_active = False
+        for target_dir in [BASE_DIR, DATA_DIR]:
             sx_file = os.path.join(target_dir, "sx_config.json")
             if os.path.exists(sx_file):
                 try:
                     with open(sx_file, "r", encoding="utf-8") as f:
                         cfg = json.load(f)
                         if cfg.get("active"):
-                            return cfg
+                            is_active = True
+                        if "accounts" in cfg and isinstance(cfg["accounts"], list):
+                            for a in cfg["accounts"]:
+                                k = a.get("api_key")
+                                if k:
+                                    merged_accounts[k] = a
+                        elif cfg.get("api_key"):
+                            merged_accounts[cfg["api_key"]] = cfg
                 except Exception:
                     pass
+        if merged_accounts:
+            cfg = {"active": is_active, "accounts": list(merged_accounts.values())}
+            self.save_sx_config(cfg)
+            return cfg
         return None
 
     def save_sx_config(self, cfg: dict):

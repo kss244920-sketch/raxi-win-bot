@@ -102,6 +102,9 @@ def seed_persistent_file(filename: str):
 seed_persistent_file("raxi_accounts.txt")
 seed_persistent_file("working_proxies.txt")
 seed_persistent_file("used_proxies.txt")
+seed_persistent_file("sx_config.json")
+seed_persistent_file("chat_configs.json")
+seed_persistent_file("admin_settings.json")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
