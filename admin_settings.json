@@ -3,7 +3,6 @@
   "master_log_channel": "-1003946923981",
   "master_storage_channel": "-1003907841421",
   "admin_user_ids": [
-    8659204794,
     6217522461,
     8327850869
   ],
@@ -68,8 +67,8 @@
       "user_id": 8659204794,
       "username": "Prince0179",
       "first_name": "Prince",
-      "role": "\ud83d\udee1\ufe0f Admin",
-      "tokens": 999999,
+      "role": "\u26aa Free User",
+      "tokens": 1000,
       "joined_at": 1791469967.6214554,
       "last_active": 1791469987.4452522,
       "user_log_channel": null,

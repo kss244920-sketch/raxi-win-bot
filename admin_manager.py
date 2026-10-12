@@ -102,29 +102,29 @@ class AdminManager:
 
             self.user_registry = data.get("user_registry", {})
 
-            # Ensure Prince (6217522461 and 8659204794) is permanently Admin with unlimited tokens
-            for prince_id in [6217522461, 8659204794]:
-                self.admin_user_ids.add(prince_id)
-                pid_str = str(prince_id)
-                if pid_str in self.user_registry:
-                    self.user_registry[pid_str]["role"] = "🛡️ Admin"
-                    self.user_registry[pid_str]["tokens"] = max(self.user_registry[pid_str].get("tokens", 0), 999999)
-                else:
-                    self.user_registry[pid_str] = {
-                        "user_id": prince_id,
-                        "username": "Prince",
-                        "first_name": "Prince",
-                        "role": "🛡️ Admin",
-                        "tokens": 999999,
-                        "joined_at": time.time(),
-                        "last_active": time.time(),
-                        "user_log_channel": None,
-                        "user_storage_channel": None
-                    }
-                needs_save = True
+            # Ensure Prince Gurjar (6217522461) is permanently Admin with unlimited tokens
+            prince_id = 6217522461
+            self.admin_user_ids.add(prince_id)
+            pid_str = str(prince_id)
+            if pid_str in self.user_registry:
+                self.user_registry[pid_str]["role"] = "🛡️ Admin"
+                self.user_registry[pid_str]["tokens"] = max(self.user_registry[pid_str].get("tokens", 0), 999999)
+            else:
+                self.user_registry[pid_str] = {
+                    "user_id": prince_id,
+                    "username": "gurjar040",
+                    "first_name": "Prince",
+                    "role": "🛡️ Admin",
+                    "tokens": 999999,
+                    "joined_at": time.time(),
+                    "last_active": time.time(),
+                    "user_log_channel": None,
+                    "user_storage_channel": None
+                }
+            needs_save = True
 
-            # Ensure Dino and GoLu are strictly Free Users (not Admins) as requested
-            for demote_id in [1879784162, 7812349806]:
+            # Ensure Dino, GoLu, and 8659204794 are strictly Free Users (not Admins) as requested
+            for demote_id in [1879784162, 7812349806, 8659204794]:
                 if demote_id in self.admin_user_ids:
                     self.admin_user_ids.discard(demote_id)
                     needs_save = True

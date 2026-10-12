@@ -1603,6 +1603,7 @@ def show_admin_menu(chat_id, user, message_id=None):
         f"• <code>/settoken &lt;id&gt; &lt;amt&gt;</code> — Set user token balance\n"
         f"• <code>/deltoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens from user\n\n"
         f"<b>👑 Admin Suite Commands:</b>\n"
+        f"• <code>/stats</code> or <code>/statics</code> — Super Admin Users, Tokens &amp; History Audit\n"
         f"• <code>/sxstatus</code> — Live SX multi-proxy pool &amp; balance\n"
         f"• <code>/sxkey &lt;key&gt;</code> — Add/stack new SX.ORG 1 GB trial key\n"
         f"• <code>/users</code> — View registered users &amp; tokens\n"
@@ -3198,6 +3199,186 @@ def handle_sxstatus_cmd(message):
     bot.reply_to(message, status_text, parse_mode="HTML")
 
 
+def send_super_audit_file(chat_id, user_id):
+    """Sends complete structured text file containing all users, tokens, and registration records."""
+    if user_id != 8327850869:
+        return
+    import io
+    acc_file = get_accounts_file()
+    all_recs = []
+    if acc_file and os.path.exists(acc_file):
+        try:
+            with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
+                all_recs = parse_account_records(f.readlines())
+        except Exception:
+            pass
+
+    reg = admin_manager.user_registry
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    buf = io.StringIO()
+    buf.write("=" * 90 + "\n")
+    buf.write(f"👑 MASTER SUPER ADMIN COMPLETE AUDIT & ACTIVITY REPORT · {now_str}\n")
+    buf.write("=" * 90 + "\n\n")
+
+    buf.write("--- 1. REGISTERED USERS & TOKEN BALANCES ---\n")
+    buf.write(f"{'User ID':<15} | {'Role':<15} | {'Tokens':<12} | {'Username/Name':<25} | {'Last Active':<20}\n")
+    buf.write("-" * 90 + "\n")
+    for uid, u in reg.items():
+        role = u.get("role", "Free User")
+        toks = u.get("tokens", 0)
+        uname = f"@{u['username']}" if u.get('username') else (u.get('first_name') or "User")
+        la = u.get("last_active", 0)
+        la_s = datetime.fromtimestamp(la).strftime("%Y-%m-%d %H:%M:%S") if la else "N/A"
+        buf.write(f"{str(uid):<15} | {str(role):<15} | {str(toks):<12} | {str(uname):<25} | {la_s:<20}\n")
+
+    buf.write("\n\n--- 2. ALL REGISTRATION HISTORY CHRONOLOGICAL LOG ---\n")
+    buf.write(f"Total Accounts Registered: {len(all_recs)}\n")
+    buf.write("-" * 90 + "\n")
+    for idx, r in enumerate(all_recs, 1):
+        t = r.get("time", "N/A")
+        ph = r.get("phone", "N/A")
+        pw = r.get("password", "N/A")
+        uid_val = r.get("uid", "N/A")
+        creator = r.get("user", "System/Direct")
+        st = r.get("site", "N/A")
+        inv = r.get("invite", "N/A")
+        ip = r.get("ip", "N/A")
+        buf.write(f"#{idx:03d} [{t}] Phone: {ph} | Pass: {pw} | UID: {uid_val} | Creator: {creator} | Site: {st} | Invite: {inv} | IP: {ip}\n")
+
+    buf.seek(0)
+    bio = io.BytesIO(buf.getvalue().encode("utf-8"))
+    bio.name = f"super_audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    caption = (
+        f"👑 <b>Master Super Admin Complete Audit Log</b>\n"
+        f"• 👥 Users Registered: <code>{len(reg)}</code>\n"
+        f"• 📋 Total Accounts Logged: <code>{len(all_recs)}</code>\n"
+        f"• 🕒 Generated: <code>{now_str}</code>"
+    )
+    bot.send_document(chat_id, bio, caption=caption, parse_mode="HTML")
+
+
+def show_super_statistics(chat_id, user, message_id=None):
+    """Exclusive Super Admin Dashboard for 8327850869 showing users, token counts, and full registration history."""
+    user_id = user.id if user else 0
+    if user_id != 8327850869:
+        bot.send_message(chat_id, "⛔ <b>Super Admin Access Required</b>\n<i>Ye command sirf Master Super Admin ke liye exclusive hai.</i>", parse_mode="HTML")
+        return
+
+    reg = admin_manager.user_registry
+    total_users = len(reg)
+    total_tokens = admin_manager.get_total_distributed_tokens()
+
+    # User & Token records list
+    user_lines = []
+    sorted_users = sorted(
+        reg.values(),
+        key=lambda u: (
+            0 if u.get("user_id") == 8327850869 else (1 if str(u.get("role", "")).startswith("🛡️") else 2),
+            -int(u.get("tokens", 0) if isinstance(u.get("tokens"), (int, float)) else 0)
+        )
+    )
+
+    for u in sorted_users:
+        uid = u.get("user_id")
+        u_name = f"@{u['username']}" if u.get('username') else (u.get('first_name') or f"User_{uid}")
+        role = u.get("role", "⚪ Free User")
+        toks = u.get("tokens", 0)
+        tok_str = f"{toks:,}" if isinstance(toks, int) else str(toks)
+        last_act = u.get("last_active", 0)
+        la_str = datetime.fromtimestamp(last_act).strftime("%d-%m %H:%M") if last_act else "N/A"
+        user_lines.append(f"• <code>{uid}</code> | <b>{html.escape(u_name)}</b>\n  └ {role} | 🎫 <b>{tok_str} Tokens</b> | 🕒 <code>{la_str}</code>")
+
+    # Read all accounts history
+    acc_file = get_accounts_file()
+    all_recs = []
+    if acc_file and os.path.exists(acc_file):
+        try:
+            with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
+                all_recs = parse_account_records(f.readlines())
+        except Exception:
+            pass
+
+    total_accs = len(all_recs)
+
+    # Count registrations per user
+    user_acc_counts = {}
+    for r in all_recs:
+        u_creator = r.get("user") or "System/Direct"
+        user_acc_counts[u_creator] = user_acc_counts.get(u_creator, 0) + 1
+
+    user_reg_breakdown = []
+    for u_creator, cnt in sorted(user_acc_counts.items(), key=lambda x: -x[1]):
+        u_meta = reg.get(str(u_creator), {})
+        u_display = f"@{u_meta['username']}" if u_meta.get('username') else f"ID: {u_creator}"
+        user_reg_breakdown.append(f"  • {u_display}: <b>{cnt} accounts</b>")
+
+    # Recent registration events (last 6)
+    recent_events = []
+    for r in reversed(all_recs[-6:]):
+        t_str = r.get("time", "N/A")
+        u_creator = r.get("user") or "N/A"
+        u_meta = reg.get(str(u_creator), {})
+        u_tag = f"@{u_meta['username']}" if u_meta.get('username') else (f"ID: {u_creator}" if u_creator != "N/A" else "System")
+        s = r.get("site", "N/A")
+        s_clean = urllib.parse.urlparse(s).netloc or s
+        ph = r.get("phone", "N/A")
+        uid_val = r.get("uid", "N/A")
+        recent_events.append(f"  • <code>[{t_str}]</code> {u_tag}\n    └ 📱 <code>{ph}</code> | UID: <code>{uid_val}</code> | 🌐 {s_clean}")
+
+    # Proxy quota info
+    sx_accounts = proxy_manager.get_active_sx_accounts()
+    sx_total_data = sum(a.get("balance_traffic", 0) for a in sx_accounts)
+    sx_mb = round(sx_total_data / (1024 * 1024), 2)
+    sx_gb = round(sx_total_data / (1024 * 1024 * 1024), 2)
+
+    text = (
+        f"👑 <b>MASTER SUPER ADMIN AUDIT &amp; STATISTICS</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>Summary Overview:</b>\n"
+        f"• 👥 <b>Total Users:</b> <code>{total_users} users</code>\n"
+        f"• 🎫 <b>Total Tokens Circulating:</b> <code>{total_tokens:,} Tokens</code>\n"
+        f"• 📦 <b>Total Accounts Registered:</b> <code>{total_accs} accounts</code>\n"
+        f"• 🌐 <b>SX.ORG Proxy Quota:</b> <code>{len(sx_accounts)} keys ({sx_mb} MB / ~{sx_gb} GB)</code>\n\n"
+        f"👥 <b>User Tokens Inventory:</b>\n"
+        + "\n".join(user_lines[:8]) + ("\n<i>...and more in audit file</i>" if len(user_lines) > 8 else "") + "\n\n"
+        f"📈 <b>Registrations Per User:</b>\n"
+        + ("\n".join(user_reg_breakdown[:5]) if user_reg_breakdown else "  <i>No user registrations recorded yet.</i>") + "\n\n"
+        f"🕒 <b>Recent Registration History:</b>\n"
+        + ("\n".join(recent_events) if recent_events else "  <i>No history logs yet.</i>") + "\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💡 <i>Full detailed audit file download karne ke liye niche button dabayein.</i>"
+    )
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    b_file = types.InlineKeyboardButton("📥 Download Full Audit Log (.txt)", callback_data="super_export_audit")
+    b_refresh = types.InlineKeyboardButton("🔄 Refresh Stats", callback_data="super_stats_refresh")
+    markup.add(b_file)
+    markup.add(b_refresh)
+
+    if message_id:
+        try:
+            bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+    bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+
+
+@bot.message_handler(commands=["statics", "stats", "superstats", "statistics", "audit"])
+def handle_super_statistics_cmd(message):
+    user = message.from_user
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if user.id != 8327850869:
+        bot.reply_to(
+            message,
+            "⛔ <b>Super Admin Access Required</b>\n<i>Ye command sirf Super Admin (@OwAtom) ke liye exclusive hai.</i>",
+            parse_mode="HTML"
+        )
+        return
+    show_super_statistics(message.chat.id, user)
+
+
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
     user = message.from_user
@@ -3701,6 +3882,32 @@ def _handle_callback_clicks_inner(call):
                 bot.answer_callback_query(call.id, "⚡ Proxy Auto-Scraper started! Fresh verified IPs will be added.", show_alert=True)
             except Exception:
                 pass
+
+    elif data == "super_export_audit":
+        if user_id != 8327850869:
+            try:
+                bot.answer_callback_query(call.id, "⛔ Super Admin Only", show_alert=True)
+            except Exception:
+                pass
+            return
+        try:
+            bot.answer_callback_query(call.id, "Generating Master Audit File...")
+        except Exception:
+            pass
+        threading.Thread(target=send_super_audit_file, args=(chat_id, user_id), daemon=True).start()
+
+    elif data == "super_stats_refresh":
+        if user_id != 8327850869:
+            try:
+                bot.answer_callback_query(call.id, "⛔ Super Admin Only", show_alert=True)
+            except Exception:
+                pass
+            return
+        try:
+            bot.answer_callback_query(call.id, "Refreshing Statistics...")
+        except Exception:
+            pass
+        show_super_statistics(chat_id, user, message_id=msg_id)
 
     else:
         try:
