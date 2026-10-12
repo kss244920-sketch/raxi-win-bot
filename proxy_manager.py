@@ -203,15 +203,118 @@ class ProxyManager:
         self.is_refilling = False
         self.last_refill_time = 0
         self.proxy_index = 0
+        self.sx_config = self.load_sx_config()
         self.ensure_seed_proxies()
         self.load_local_pool()
 
+    def load_sx_config(self) -> dict:
+        """Loads SX.ORG rotating residential configuration."""
+        for target_dir in [DATA_DIR, BASE_DIR]:
+            sx_file = os.path.join(target_dir, "sx_config.json")
+            if os.path.exists(sx_file):
+                try:
+                    with open(sx_file, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                        if cfg.get("active"):
+                            return cfg
+                except Exception:
+                    pass
+        return None
+
+    def save_sx_config(self, cfg: dict):
+        """Saves SX.ORG rotating residential configuration to persistent and local storage."""
+        for target_dir in [DATA_DIR, BASE_DIR]:
+            try:
+                sx_file = os.path.join(target_dir, "sx_config.json")
+                with open(sx_file, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2)
+            except Exception:
+                pass
+        self.sx_config = cfg
+
+    def is_sx_active(self) -> bool:
+        """Returns True if SX.ORG rotating residential pool is enabled and configured."""
+        return bool(self.sx_config and self.sx_config.get("active") and self.sx_config.get("proxy_host"))
+
+    def setup_sx_from_key(self, api_key: str) -> dict:
+        """Fetches active proxy port and balance from SX.ORG and saves configuration."""
+        api_key = api_key.strip()
+        try:
+            bal_url = f"https://api.sx.org/v2/user/balance?apiKey={api_key}"
+            r_bal = requests.get(bal_url, timeout=12)
+            bal_data = r_bal.json()
+            if not bal_data.get("success"):
+                return {"ok": False, "error": bal_data.get("message", "Invalid API key or balance request failed")}
+
+            ports_url = f"https://api.sx.org/v2/proxy/ports?apiKey={api_key}"
+            r_ports = requests.get(ports_url, timeout=12)
+            ports_data = r_ports.json()
+            if not ports_data.get("success"):
+                return {"ok": False, "error": ports_data.get("message", "Could not fetch proxy ports")}
+
+            proxies_list = ports_data.get("message", {}).get("proxies", [])
+            if not proxies_list:
+                return {"ok": False, "error": "No active proxy ports found on SX.ORG. Please create or activate a port on dashboard."}
+
+            p_info = proxies_list[0]
+            raw_login = p_info.get("login", "")
+            if "session-" in raw_login:
+                base_login = re.sub(r"session-[a-zA-Z0-9]+", "session-{session_id}", raw_login)
+            else:
+                base_login = f"{raw_login}-session-{{session_id}}"
+
+            cfg = {
+                "api_key": api_key,
+                "active": True,
+                "port_id": p_info.get("id"),
+                "proxy_host": p_info.get("proxy", "62.112.8.26:9999"),
+                "login_template": base_login,
+                "password": p_info.get("password", ""),
+                "country": p_info.get("countryCode", "IN"),
+                "balance_traffic": bal_data.get("all_available_traffic", 0),
+                "updated_at": int(time.time())
+            }
+            self.save_sx_config(cfg)
+            logger.info(f"SX.ORG Rotating Proxy configured successfully with port {cfg['proxy_host']}.")
+            return {"ok": True, "config": cfg}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def get_sx_status(self) -> str:
+        """Returns formatted status of current SX.ORG connection."""
+        if not self.is_sx_active():
+            return "❌ <b>SX.ORG Proxy:</b> Not active (using local pool)."
+        cfg = self.sx_config
+        key_disp = cfg.get("api_key", "")
+        if key_disp:
+            key_disp = f"{key_disp[:6]}...{key_disp[-4:]}"
+        else:
+            key_disp = "None"
+        bal_bytes = cfg.get("balance_traffic", 0)
+        try:
+            r = requests.get(f"https://api.sx.org/v2/user/balance?apiKey={cfg.get('api_key')}", timeout=5)
+            if r.status_code == 200 and r.json().get("success"):
+                bal_bytes = r.json().get("all_available_traffic", bal_bytes)
+                cfg["balance_traffic"] = bal_bytes
+        except Exception:
+            pass
+        mb = round(bal_bytes / (1024 * 1024), 2)
+        gb = round(bal_bytes / (1024 * 1024 * 1024), 2)
+        return (
+            f"🌐 <b>SX.ORG Rotating Residential Proxy:</b> ACTIVE ✅\n\n"
+            f"• 🔑 <b>API Key:</b> <code>{key_disp}</code>\n"
+            f"• 🖥 <b>Gateway:</b> <code>{cfg.get('proxy_host')}</code>\n"
+            f"• 🇮🇳 <b>Country:</b> <code>{cfg.get('country', 'IN')} (Residential & Mobile)</code>\n"
+            f"• 📊 <b>Traffic Left:</b> <code>{mb} MB (~{gb} GB)</code>\n"
+            f"• 🔄 <b>Mode:</b> Sticky-per-account rotation (487k+ Indian IPs)"
+        )
+
     @staticmethod
     def is_auth_proxy(proxy_str: str) -> bool:
-        """Returns True if the proxy is an authenticated/premium proxy (e.g. Webshare)."""
+        """Returns True if the proxy is an authenticated/premium proxy (e.g. Webshare or SX.ORG)."""
         if not proxy_str or proxy_str == "Direct":
             return False
-        return "@" in proxy_str or "wuqayqgc" in proxy_str
+        return "@" in proxy_str or "wuqayqgc" in proxy_str or "pool-res" in proxy_str or "62.112.8.26" in proxy_str
 
     SEED_AUTH_PROXIES = [
         "wuqayqgc:g092ukrotff8@31.59.20.176:6754",
@@ -344,7 +447,7 @@ class ProxyManager:
         Records proxy usage in used_proxies.txt for audit/history.
         NEVER deletes or burns proxies from the working pool!
         """
-        if not proxy_str or proxy_str == "Direct":
+        if not proxy_str or proxy_str == "Direct" or "pool-res" in proxy_str or "62.112.8.26" in proxy_str:
             return
         dom = self.normalize_domain(domain) if domain else "general"
         record = f"{proxy_str}|{dom}\n"
@@ -360,7 +463,7 @@ class ProxyManager:
         Temporarily pauses a proxy for a specific domain (e.g. Code 114 IP forbidden).
         Automatically restores after duration seconds without permanently destroying the proxy.
         """
-        if not proxy_str or proxy_str == "Direct":
+        if not proxy_str or proxy_str == "Direct" or "pool-res" in proxy_str or "62.112.8.26" in proxy_str:
             return
         dom = self.normalize_domain(domain) if domain else "general"
         with self.lock:
@@ -372,9 +475,9 @@ class ProxyManager:
     def mark_proxy_dead(self, proxy_str: str):
         """
         Marks dead unauthenticated public proxy.
-        For auth proxies (e.g. Webshare), applies a brief 60s cooldown instead of destroying!
+        For auth proxies (e.g. Webshare, SX.ORG), applies a brief 60s cooldown instead of destroying!
         """
-        if not proxy_str or proxy_str == "Direct":
+        if not proxy_str or proxy_str == "Direct" or "pool-res" in proxy_str or "62.112.8.26" in proxy_str:
             return
         if self.is_auth_proxy(proxy_str):
             with self.lock:
@@ -426,6 +529,8 @@ class ProxyManager:
 
     def get_available_count(self, domain: str = None) -> int:
         """Returns how many non-dead, non-cooldown, non-used proxies are ready for the specified domain."""
+        if self.is_sx_active():
+            return 999  # Unlimited rotating residential pool!
         dom = self.normalize_domain(domain) if domain else "general"
         now = time.time()
         pool = self.load_local_pool()
@@ -444,6 +549,8 @@ class ProxyManager:
 
     def get_earliest_cooldown_expiry(self, domain: str = None) -> float:
         """Returns seconds until the earliest proxy cooldown expires for the domain (capped at 30s)."""
+        if self.is_sx_active():
+            return 0.0
         dom = self.normalize_domain(domain) if domain else "general"
         now = time.time()
         earliest = float("inf")
@@ -458,12 +565,23 @@ class ProxyManager:
             return 15.0
         return max(5.0, min(30.0, earliest - now))
 
-    def get_next_proxy(self, exclude=None, domain: str = None) -> str:
+    def get_next_proxy(self, exclude=None, domain: str = None, session_id: str = None) -> str:
         """
-        Returns the next available, healthy working proxy using balanced round-robin rotation.
-        Auth proxies and verified public proxies are interleaved for optimal reliability.
-        Skips proxies currently in cooldown or already used for the given domain.
+        Returns the next available, healthy working proxy.
+        If SX.ORG rotating residential is active, returns dynamic session-based proxy with fresh Indian IP.
+        Otherwise falls back to balanced round-robin rotation.
         """
+        if self.is_sx_active():
+            sess = session_id or secrets.token_hex(6)
+            template = self.sx_config.get("login_template", "")
+            if "{session_id}" in template:
+                login = template.replace("{session_id}", sess)
+            else:
+                login = f"{template}-session-{sess}"
+            pwd = self.sx_config.get("password", "")
+            host = self.sx_config.get("proxy_host", "62.112.8.26:9999")
+            return f"{login}:{pwd}@{host}"
+
         dom = self.normalize_domain(domain) if domain else "general"
         now = time.time()
 

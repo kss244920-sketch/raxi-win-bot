@@ -394,9 +394,9 @@ def mark_proxy_used(proxy_str, domain=None):
     """Marks proxy as permanently used for the specified website domain."""
     proxy_manager.mark_proxy_used(proxy_str, domain=domain)
 
-def get_next_proxy(exclude=None, domain=None):
+def get_next_proxy(exclude=None, domain=None, session_id=None):
     """Returns a completely FRESH, verified working proxy on-demand for this website."""
-    return proxy_manager.get_next_proxy(exclude=exclude, domain=domain)
+    return proxy_manager.get_next_proxy(exclude=exclude, domain=domain, session_id=session_id)
 
 def count_working_proxies(domain=None):
     """Returns total available working proxies ready in the pool for this website."""
@@ -1012,7 +1012,7 @@ def count_saved_accounts():
 #  CORE REGISTRATION WORKER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=15, creator_id=None, smsvcode="", api_type=None):
+def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=15, creator_id=None, smsvcode="", api_type=None, session_id=None):
     """
     Registers a new account with dynamic phone, password, device profile, and proxy rotation.
     Automatically supports both AR-SAAS (MaanWin, GoaGames, etc.) and VITE/WEBAPI (51game, Raxi).
@@ -1029,7 +1029,10 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
     last_error = "Unknown error"
 
     tried_proxies = set()
+    account_session_id = session_id or secrets.token_hex(6)
     for attempt in range(1, max_search_attempts + 1):
+        if attempt > 1 and proxy_manager.is_sx_active():
+            account_session_id = secrets.token_hex(6)
         target_phone = phone if not is_auto else generate_random_phone()
         target_pwd = password if password else generate_random_password()
         if is_arsaas and len(target_pwd) < 8:
@@ -1040,10 +1043,10 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         dev_ua = dev_profile["ua"]
         device_id = secrets.token_hex(16)
 
-        active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain)
+        active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain, session_id=account_session_id)
         if not active_proxy and attempt == 1:
             time.sleep(1.5)
-            active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain)
+            active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain, session_id=account_session_id)
         if not active_proxy and "Direct" not in tried_proxies:
             active_proxy = None  # fallback to Direct only once if pool has no candidate
 
@@ -3103,6 +3106,83 @@ def handle_addproxy_cmd(message):
         f"• <b>Available Active:</b> <code>{stats['available']}</code> IPs",
         parse_mode="HTML"
     )
+
+
+@bot.message_handler(commands=["sxkey", "setkey", "proxykey"])
+def handle_sxkey_cmd(message):
+    user = message.from_user
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if user.id != 8327850869 and not admin_manager.is_super_admin(user.id):
+        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+        return
+
+    text = (message.text or "").strip()
+    parts = text.split()
+    if len(parts) < 2:
+        bot.reply_to(
+            message,
+            "ℹ️ <b>SX.ORG Proxy Key Guide</b>\n\n"
+            "Format:\n"
+            "<code>/sxkey &lt;YOUR_API_KEY&gt;</code>\n\n"
+            "<i>Example:</i>\n"
+            "<code>/sxkey EOSZL7qhg8wQvrU47jPWCSjgwNeky7Cc</code>\n\n"
+            "💡 <i>Tip: Aap direct key daal sakte hain ya URL bhi paste kar sakte hain. Bot khud connect karke naya 1 GB Indian Rotating Proxy load kar lega!</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    raw_arg = parts[1].strip()
+    if "apiKey=" in raw_arg:
+        m = re.search(r"apiKey=([a-zA-Z0-9_-]+)", raw_arg)
+        api_key = m.group(1) if m else raw_arg
+    elif "http" in raw_arg:
+        api_key = raw_arg.rstrip("/").split("/")[-1]
+    else:
+        api_key = raw_arg
+
+    msg_wait = bot.reply_to(message, "🔄 <i>Connecting to SX.ORG API and verifying proxy ports...</i>", parse_mode="HTML")
+
+    res = proxy_manager.setup_sx_from_key(api_key)
+    if not res.get("ok"):
+        bot.edit_message_text(
+            f"❌ <b>SX.ORG Setup Failed:</b>\n\n<code>{res.get('error')}</code>",
+            chat_id=message.chat.id,
+            message_id=msg_wait.message_id,
+            parse_mode="HTML"
+        )
+        return
+
+    cfg = res["config"]
+    bal_bytes = cfg.get("balance_traffic", 0)
+    mb = round(bal_bytes / (1024 * 1024), 2)
+    gb = round(bal_bytes / (1024 * 1024 * 1024), 2)
+
+    success_msg = (
+        f"✅ <b>SX.ORG Rotating Proxy Activated!</b> 🚀\n\n"
+        f"• 🔑 <b>API Key:</b> <code>{api_key[:8]}...{api_key[-6:]}</code>\n"
+        f"• 🖥 <b>Gateway:</b> <code>{cfg.get('proxy_host')}</code>\n"
+        f"• 🇮🇳 <b>Target:</b> <code>India (IN) Residential & Mobile</code>\n"
+        f"• 📊 <b>Available Traffic:</b> <code>{mb} MB (~{gb} GB)</code>\n"
+        f"• 🔄 <b>Rotation Mode:</b> <i>Automatic fresh Indian IP on every account!</i>\n\n"
+        f"🎉 <i>All bulk orders will now auto-rotate seamlessly without any IP cooldown!</i>"
+    )
+    bot.edit_message_text(
+        success_msg,
+        chat_id=message.chat.id,
+        message_id=msg_wait.message_id,
+        parse_mode="HTML"
+    )
+
+
+@bot.message_handler(commands=["sxstatus", "proxystatus"])
+def handle_sxstatus_cmd(message):
+    user = message.from_user
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if not admin_manager.is_admin(user.id):
+        return
+
+    status_text = proxy_manager.get_sx_status()
+    bot.reply_to(message, status_text, parse_mode="HTML")
 
 
 @bot.message_handler(content_types=['document'])

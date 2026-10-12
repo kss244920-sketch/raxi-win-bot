@@ -1,0 +1,11 @@
+{
+  "api_key": "EOSZL7qhg8wQvrU47jPWCSjgwNeky7Cc",
+  "active": true,
+  "port_id": 241638422,
+  "proxy_host": "62.112.8.26:9999",
+  "login_template": "mm0gdfyvu8-pool-res.mobile.corp-country-IN-mode-hold-session-{session_id}",
+  "password": "WddhcB8DpFfayi66",
+  "country": "IN",
+  "balance_traffic": 999985703,
+  "updated_at": 1791738000
+}
