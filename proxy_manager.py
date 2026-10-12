@@ -254,7 +254,26 @@ class ProxyManager:
 
             proxies_list = ports_data.get("message", {}).get("proxies", [])
             if not proxies_list:
-                return {"ok": False, "error": "No active proxy ports found on SX.ORG. Please create or activate a port on dashboard."}
+                # Automatically create an Indian residential/mobile port via SX.ORG API
+                create_url = f"https://api.sx.org/v2/proxy/create-port?apiKey={api_key}"
+                try:
+                    r_create = requests.post(create_url, json={"country_code": "IN", "type_id": 2, "proxy_type_id": 2}, timeout=15)
+                    c_data = r_create.json()
+                    if c_data.get("success") and c_data.get("data"):
+                        proxies_list = [c_data["data"]]
+                except Exception:
+                    pass
+
+                if not proxies_list:
+                    # Retry fetching ports once
+                    try:
+                        r_ports2 = requests.get(ports_url, timeout=12)
+                        proxies_list = r_ports2.json().get("message", {}).get("proxies", [])
+                    except Exception:
+                        pass
+
+                if not proxies_list:
+                    return {"ok": False, "error": "No active proxy ports found on SX.ORG. Auto-port creation failed."}
 
             p_info = proxies_list[0]
             raw_login = p_info.get("login", "")
