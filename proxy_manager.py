@@ -243,7 +243,8 @@ class ProxyManager:
             accs = [a for a in self.sx_config["accounts"] if a.get("active") and a.get("proxy_host")]
         elif self.sx_config.get("active") and self.sx_config.get("proxy_host"):
             accs = [self.sx_config]
-        return accs
+        valid_with_data = [a for a in accs if a.get("balance_traffic", 1) > 10240]
+        return valid_with_data if valid_with_data else accs
 
     def is_sx_active(self) -> bool:
         """Returns True if at least one SX.ORG rotating residential account is enabled."""

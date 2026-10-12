@@ -481,13 +481,13 @@ class AdminManager:
             self.save()
             return new_val
 
-    def deduct_tokens(self, user_id: Any, amount: int = 1) -> int:
+    def deduct_tokens(self, user_id: Any, amount: int = 1, force: bool = False) -> int:
         uid = self._to_int(user_id)
         if not uid:
             return 0
-        if self.is_admin(uid):
+        if self.is_admin(uid) and not force:
             return 999999
-        if self.is_free_mode():
+        if self.is_free_mode() and not force:
             return self.get_tokens(uid)
         with self._lock:
             uid_str = str(uid)

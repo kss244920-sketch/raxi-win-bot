@@ -1673,11 +1673,20 @@ def show_users_list(chat_id, user, message_id=None):
     bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
 
 
-def show_help_menu(chat_id, user, message_id=None):
+def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
+    if del_incoming:
+        try:
+            bot.delete_message(chat_id, del_incoming.message_id)
+        except Exception:
+            pass
     user_id = user.id if user else 0
-    is_adm = admin_manager.is_admin(user_id)
+    is_super = (user_id == 8327850869)
+    is_adm = is_super or admin_manager.is_admin(user_id)
+
+    header = "👑 <b>Super Admin Commands Hub</b>" if is_super else ("🛡️ <b>Admin Commands Hub</b>" if is_adm else "📌 <b>Multi-Site Register Bot — Commands Guide</b>")
+
     text = (
-        "📌 <b>Multi-Site Register Bot — Commands Guide</b>\n\n"
+        f"{header}\n\n"
         "<b>🚀 Core Controls:</b>\n"
         "• <code>/start</code> — Start bot &amp; configure referral link\n"
         "• <code>/single</code> or <code>/gen</code> — Single account registration (1 🎫)\n"
@@ -1689,16 +1698,29 @@ def show_help_menu(chat_id, user, message_id=None):
         "• <code>/export</code> — Download saved accounts list (.txt)\n"
         "• <code>/id</code> or <code>/myid</code> — Check your Telegram ID &amp; role"
     )
+
+    if is_super:
+        text += (
+            "\n\n<b>👑 Exclusive Super Admin Suite (Only for You):</b>\n"
+            "• <code>/stats</code> or <code>/statics</code> — Master User Registry, Tokens &amp; History Audit\n"
+            "• <code>/silentaddtoken &lt;id&gt; &lt;amt&gt;</code> — Add tokens secretly (no alert to user)\n"
+            "• <code>/silentdeducttoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens secretly (no alert to user)\n"
+            "• <code>/sxkey &lt;key&gt;</code> — Add &amp; stack new SX.ORG 1 GB trial API key\n"
+            "• <code>/sxstatus</code> — Live SX multi-proxy pool &amp; combined quota\n"
+            "• <code>/freemode</code> — Toggle Free Mode on/off"
+        )
+
     if is_adm:
         text += (
-            "\n\n<b>🎫 Token Management (Admin Only):</b>\n"
-            "• <code>/addtoken &lt;id&gt; &lt;amt&gt;</code> — Credit tokens to user\n"
+            "\n\n<b>🎫 Token Management (Admin Suite):</b>\n"
+            "• <code>/addtoken &lt;id&gt; &lt;amt&gt;</code> — Credit tokens to user (with alert)\n"
             "• <code>/settoken &lt;id&gt; &lt;amt&gt;</code> — Set user token balance\n"
             "• <code>/deltoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens from user\n\n"
-            "<b>👑 Admin Suite Commands:</b>\n"
+            "<b>🛡️ General Admin Commands:</b>\n"
             "• <code>/admin</code> — Admin Control Hub\n"
             "• <code>/users</code> — List registered users &amp; tokens\n"
-            "• <code>/addadmin &lt;id&gt;</code> — Add new Admin\n"
+            "• <code>/proxies</code> — Live proxy stats &amp; auto-refill\n"
+            "• <code>/addadmin &lt;id&gt;</code> — Promote user to Admin\n"
             "• <code>/deladmin &lt;id&gt;</code> — Demote Admin\n"
             "• <code>/broadcast &lt;msg&gt;</code> — Broadcast announcement"
         )
@@ -2883,13 +2905,85 @@ def handle_deltoken_cmd(message):
 
     target_id = int(args[1])
     amount = int(args[2])
-    new_bal = admin_manager.deduct_tokens(target_id, amount)
+    new_bal = admin_manager.deduct_tokens(target_id, amount, force=True)
     bot.reply_to(
         message,
         f"⚪ <b>Tokens Deducted!</b>\n\n"
         f"• <b>User ID:</b> <code>{target_id}</code>\n"
         f"• <b>Deducted:</b> <code>-{amount} Tokens</code>\n"
         f"• <b>New Balance:</b> <b>{new_bal} Tokens</b>",
+        parse_mode="HTML"
+    )
+
+
+@bot.message_handler(commands=["silentaddtoken", "silentaddtokens", "saddtoken", "saddtokens"])
+def handle_silentaddtoken_cmd(message):
+    user = message.from_user
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if user.id != 8327850869:
+        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+        return
+
+    args = message.text.strip().split()
+    if len(args) < 3 or not args[1].lstrip("-").isdigit() or not args[2].isdigit():
+        bot.reply_to(
+            message,
+            "⚠️ <b>Usage:</b> <code>/silentaddtoken &lt;telegram_user_id&gt; &lt;amount&gt;</code>\n"
+            "<i>Example:</i> <code>/silentaddtoken 7812349806 50</code>\n\n"
+            "🤫 <i>Target user ko koi bhi alert ya notification message nahi jayega.</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    target_id = int(args[1])
+    amount = int(args[2])
+    if amount <= 0:
+        bot.reply_to(message, "❌ Amount must be greater than 0.", parse_mode="HTML")
+        return
+
+    new_bal = admin_manager.add_tokens(target_id, amount)
+    bot.reply_to(
+        message,
+        f"🤫 <b>Silent Token Credit Applied!</b> <i>(No user notification)</i>\n\n"
+        f"• <b>User ID:</b> <code>{target_id}</code>\n"
+        f"• <b>Added:</b> <code>+{amount} Tokens</code>\n"
+        f"• <b>New Balance:</b> <b>{new_bal:,} Tokens</b>",
+        parse_mode="HTML"
+    )
+
+
+@bot.message_handler(commands=["silentdeducttoken", "silentdeltoken", "sdeducttoken", "sdeltoken"])
+def handle_silentdeducttoken_cmd(message):
+    user = message.from_user
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if user.id != 8327850869:
+        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+        return
+
+    args = message.text.strip().split()
+    if len(args) < 3 or not args[1].lstrip("-").isdigit() or not args[2].isdigit():
+        bot.reply_to(
+            message,
+            "⚠️ <b>Usage:</b> <code>/silentdeducttoken &lt;telegram_user_id&gt; &lt;amount&gt;</code>\n"
+            "<i>Example:</i> <code>/silentdeducttoken 7812349806 20</code>\n\n"
+            "🤫 <i>Target user ko koi bhi alert ya notification message nahi jayega.</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    target_id = int(args[1])
+    amount = int(args[2])
+    if amount <= 0:
+        bot.reply_to(message, "❌ Amount must be greater than 0.", parse_mode="HTML")
+        return
+
+    new_bal = admin_manager.deduct_tokens(target_id, amount, force=True)
+    bot.reply_to(
+        message,
+        f"🤫 <b>Silent Token Deduction Applied!</b> <i>(No user notification)</i>\n\n"
+        f"• <b>User ID:</b> <code>{target_id}</code>\n"
+        f"• <b>Deducted:</b> <code>-{amount} Tokens</code>\n"
+        f"• <b>New Balance:</b> <b>{new_bal:,} Tokens</b>",
         parse_mode="HTML"
     )
 
