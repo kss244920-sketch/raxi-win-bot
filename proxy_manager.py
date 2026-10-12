@@ -21,6 +21,7 @@ import random
 import json
 import hashlib
 import string
+import secrets
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [ProxyEngine] %(message)s")
 logger = logging.getLogger("ProxyEngine")
@@ -203,6 +204,7 @@ class ProxyManager:
         self.is_refilling = False
         self.last_refill_time = 0
         self.proxy_index = 0
+        self.sx_account_index = 0
         self.sx_config = self.load_sx_config()
         self.ensure_seed_proxies()
         self.load_local_pool()
@@ -232,12 +234,23 @@ class ProxyManager:
                 pass
         self.sx_config = cfg
 
+    def get_active_sx_accounts(self) -> list:
+        """Returns list of active SX.ORG accounts."""
+        if not self.sx_config:
+            return []
+        accs = []
+        if "accounts" in self.sx_config and isinstance(self.sx_config["accounts"], list):
+            accs = [a for a in self.sx_config["accounts"] if a.get("active") and a.get("proxy_host")]
+        elif self.sx_config.get("active") and self.sx_config.get("proxy_host"):
+            accs = [self.sx_config]
+        return accs
+
     def is_sx_active(self) -> bool:
-        """Returns True if SX.ORG rotating residential pool is enabled and configured."""
-        return bool(self.sx_config and self.sx_config.get("active") and self.sx_config.get("proxy_host"))
+        """Returns True if at least one SX.ORG rotating residential account is enabled."""
+        return len(self.get_active_sx_accounts()) > 0
 
     def setup_sx_from_key(self, api_key: str) -> dict:
-        """Fetches active proxy port and balance from SX.ORG and saves configuration."""
+        """Fetches active proxy port and balance from SX.ORG and saves/appends to multi-account pool."""
         api_key = api_key.strip()
         try:
             bal_url = f"https://api.sx.org/v2/user/balance?apiKey={api_key}"
@@ -265,7 +278,6 @@ class ProxyManager:
                     pass
 
                 if not proxies_list:
-                    # Retry fetching ports once
                     try:
                         r_ports2 = requests.get(ports_url, timeout=12)
                         proxies_list = r_ports2.json().get("message", {}).get("proxies", [])
@@ -282,7 +294,7 @@ class ProxyManager:
             else:
                 base_login = f"{raw_login}-session-{{session_id}}"
 
-            cfg = {
+            new_acc = {
                 "api_key": api_key,
                 "active": True,
                 "port_id": p_info.get("id"),
@@ -293,40 +305,75 @@ class ProxyManager:
                 "balance_traffic": bal_data.get("all_available_traffic", 0),
                 "updated_at": int(time.time())
             }
-            self.save_sx_config(cfg)
-            logger.info(f"SX.ORG Rotating Proxy configured successfully with port {cfg['proxy_host']}.")
-            return {"ok": True, "config": cfg}
+
+            if not self.sx_config or not isinstance(self.sx_config, dict):
+                self.sx_config = {"active": True, "accounts": []}
+            if "accounts" not in self.sx_config or not isinstance(self.sx_config["accounts"], list):
+                existing = []
+                if self.sx_config.get("api_key"):
+                    existing.append(dict(self.sx_config))
+                self.sx_config = {"active": True, "accounts": existing}
+
+            existing_idx = -1
+            for idx, a in enumerate(self.sx_config["accounts"]):
+                if a.get("api_key") == api_key:
+                    existing_idx = idx
+                    break
+
+            if existing_idx >= 0:
+                self.sx_config["accounts"][existing_idx] = new_acc
+            else:
+                self.sx_config["accounts"].append(new_acc)
+
+            self.sx_config["active"] = True
+            self.save_sx_config(self.sx_config)
+
+            total_traffic = sum(a.get("balance_traffic", 0) for a in self.sx_config["accounts"])
+            logger.info(f"SX.ORG Account {api_key[:6]}... added/updated. Total accounts: {len(self.sx_config['accounts'])}, total data: {total_traffic} bytes.")
+            return {
+                "ok": True,
+                "account": new_acc,
+                "total_accounts": len(self.sx_config["accounts"]),
+                "total_traffic": total_traffic
+            }
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
     def get_sx_status(self) -> str:
-        """Returns formatted status of current SX.ORG connection."""
-        if not self.is_sx_active():
-            return "❌ <b>SX.ORG Proxy:</b> Not active (using local pool)."
-        cfg = self.sx_config
-        key_disp = cfg.get("api_key", "")
-        if key_disp:
-            key_disp = f"{key_disp[:6]}...{key_disp[-4:]}"
-        else:
-            key_disp = "None"
-        bal_bytes = cfg.get("balance_traffic", 0)
-        try:
-            r = requests.get(f"https://api.sx.org/v2/user/balance?apiKey={cfg.get('api_key')}", timeout=5)
-            if r.status_code == 200 and r.json().get("success"):
-                bal_bytes = r.json().get("all_available_traffic", bal_bytes)
-                cfg["balance_traffic"] = bal_bytes
-        except Exception:
-            pass
-        mb = round(bal_bytes / (1024 * 1024), 2)
-        gb = round(bal_bytes / (1024 * 1024 * 1024), 2)
-        return (
-            f"🌐 <b>SX.ORG Rotating Residential Proxy:</b> ACTIVE ✅\n\n"
-            f"• 🔑 <b>API Key:</b> <code>{key_disp}</code>\n"
-            f"• 🖥 <b>Gateway:</b> <code>{cfg.get('proxy_host')}</code>\n"
-            f"• 🇮🇳 <b>Country:</b> <code>{cfg.get('country', 'IN')} (Residential & Mobile)</code>\n"
-            f"• 📊 <b>Traffic Left:</b> <code>{mb} MB (~{gb} GB)</code>\n"
-            f"• 🔄 <b>Mode:</b> Sticky-per-account rotation (487k+ Indian IPs)"
-        )
+        """Returns formatted status of all active SX.ORG connections with combined traffic total."""
+        accounts = self.get_active_sx_accounts()
+        if not accounts:
+            return "❌ <b>SX.ORG Proxy Pool:</b> Not active (using local pool)."
+
+        lines = [f"🌐 <b>SX.ORG Multi-Account Proxy Pool:</b> ACTIVE ✅\n"]
+        total_bytes = 0
+
+        for i, a in enumerate(accounts, 1):
+            key = a.get("api_key", "")
+            key_disp = f"{key[:6]}...{key[-4:]}" if len(key) >= 10 else key
+            bal = a.get("balance_traffic", 0)
+            try:
+                r = requests.get(f"https://api.sx.org/v2/user/balance?apiKey={key}", timeout=5)
+                if r.status_code == 200 and r.json().get("success"):
+                    bal = r.json().get("all_available_traffic", bal)
+                    a["balance_traffic"] = bal
+            except Exception:
+                pass
+            total_bytes += bal
+            a_mb = round(bal / (1024 * 1024), 2)
+            lines.append(f"• <b>Account #{i}:</b> <code>{key_disp}</code> ➔ <b>{a_mb} MB</b>")
+
+        self.save_sx_config(self.sx_config)
+        tot_mb = round(total_bytes / (1024 * 1024), 2)
+        tot_gb = round(total_bytes / (1024 * 1024 * 1024), 2)
+        approx_accounts = int(total_bytes / (25 * 1024))
+
+        lines.append(f"\n📊 <b>Total Combined Data:</b> <code>{tot_mb} MB (~{tot_gb} GB)</code>")
+        lines.append(f"👥 <b>Active Accounts Linked:</b> <code>{len(accounts)}</code>")
+        lines.append(f"⚡ <b>Estimated Capacity:</b> <code>~{approx_accounts:,} accounts</code>")
+        lines.append(f"🔄 <b>Rotation Mode:</b> <i>Round-robin across all accounts with Indian IP stickiness!</i>")
+
+        return "\n".join(lines)
 
     @staticmethod
     def is_auth_proxy(proxy_str: str) -> bool:
@@ -590,15 +637,19 @@ class ProxyManager:
         If SX.ORG rotating residential is active, returns dynamic session-based proxy with fresh Indian IP.
         Otherwise falls back to balanced round-robin rotation.
         """
-        if self.is_sx_active():
+        accounts = self.get_active_sx_accounts()
+        if accounts:
+            with self.lock:
+                acc = accounts[self.sx_account_index % len(accounts)]
+                self.sx_account_index = (self.sx_account_index + 1) % len(accounts)
             sess = session_id or secrets.token_hex(6)
-            template = self.sx_config.get("login_template", "")
+            template = acc.get("login_template", "")
             if "{session_id}" in template:
                 login = template.replace("{session_id}", sess)
             else:
                 login = f"{template}-session-{sess}"
-            pwd = self.sx_config.get("password", "")
-            host = self.sx_config.get("proxy_host", "62.112.8.26:9999")
+            pwd = acc.get("password", "")
+            host = acc.get("proxy_host", "62.112.8.26:9999")
             return f"{login}:{pwd}@{host}"
 
         dom = self.normalize_domain(domain) if domain else "general"

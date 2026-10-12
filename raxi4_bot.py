@@ -1603,6 +1603,8 @@ def show_admin_menu(chat_id, user, message_id=None):
         f"• <code>/settoken &lt;id&gt; &lt;amt&gt;</code> — Set user token balance\n"
         f"• <code>/deltoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens from user\n\n"
         f"<b>👑 Admin Suite Commands:</b>\n"
+        f"• <code>/sxstatus</code> — Live SX multi-proxy pool &amp; balance\n"
+        f"• <code>/sxkey &lt;key&gt;</code> — Add/stack new SX.ORG 1 GB trial key\n"
         f"• <code>/users</code> — View registered users &amp; tokens\n"
         f"• <code>/proxies</code> — Live proxy stats &amp; instant refill\n"
         f"• <code>/addadmin &lt;id&gt;</code> — Promote user to Admin\n"
@@ -3152,19 +3154,30 @@ def handle_sxkey_cmd(message):
         )
         return
 
-    cfg = res["config"]
-    bal_bytes = cfg.get("balance_traffic", 0)
+    acc = res.get("account", {})
+    bal_bytes = acc.get("balance_traffic", 0)
     mb = round(bal_bytes / (1024 * 1024), 2)
     gb = round(bal_bytes / (1024 * 1024 * 1024), 2)
 
+    total_traffic = res.get("total_traffic", bal_bytes)
+    tot_mb = round(total_traffic / (1024 * 1024), 2)
+    tot_gb = round(total_traffic / (1024 * 1024 * 1024), 2)
+    tot_accs = res.get("total_accounts", 1)
+    approx_accs = int(total_traffic / (25 * 1024))
+
     success_msg = (
-        f"✅ <b>SX.ORG Rotating Proxy Activated!</b> 🚀\n\n"
-        f"• 🔑 <b>API Key:</b> <code>{api_key[:8]}...{api_key[-6:]}</code>\n"
-        f"• 🖥 <b>Gateway:</b> <code>{cfg.get('proxy_host')}</code>\n"
-        f"• 🇮🇳 <b>Target:</b> <code>India (IN) Residential & Mobile</code>\n"
-        f"• 📊 <b>Available Traffic:</b> <code>{mb} MB (~{gb} GB)</code>\n"
-        f"• 🔄 <b>Rotation Mode:</b> <i>Automatic fresh Indian IP on every account!</i>\n\n"
-        f"🎉 <i>All bulk orders will now auto-rotate seamlessly without any IP cooldown!</i>"
+        f"✅ <b>SX.ORG Proxy Account Linked!</b> 🚀\n\n"
+        f"• 🔑 <b>Key Added:</b> <code>{api_key[:8]}...{api_key[-6:]}</code>\n"
+        f"• 📊 <b>This Account Quota:</b> <code>{mb} MB (~{gb} GB)</code>\n"
+        f"• 🖥 <b>Gateway:</b> <code>{acc.get('proxy_host')}</code>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📈 <b>TOTAL COMBINED POOL:</b>\n"
+        f"• 👥 <b>Active Accounts Linked:</b> <code>{tot_accs}</code>\n"
+        f"• 🌐 <b>Total Combined Data:</b> <code>{tot_mb} MB (~{tot_gb} GB)</code>\n"
+        f"• ⚡ <b>Estimated Total Capacity:</b> <code>~{approx_accs:,} accounts</code>\n"
+        f"• 🔄 <b>Rotation Mode:</b> <i>Round-Robin across all accounts with Indian IP stickiness!</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🎉 <i>All bulk orders will automatically balance and rotate across all {tot_accs} accounts!</i>"
     )
     bot.edit_message_text(
         success_msg,
