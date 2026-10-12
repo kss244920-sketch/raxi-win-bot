@@ -231,6 +231,65 @@ def release_chat_lock(chat_id: int):
     with BUSY_CHATS_LOCK:
         BUSY_CHATS.pop(chat_id, None)
 
+ACTIVE_SESSIONS = {}  # chat_id -> dict
+ACTIVE_SESSIONS_LOCK = threading.RLock()
+
+def register_active_session(chat_id: int, user_id: int, count: int, site: str, invite: str, mid: int = None, username: str = ""):
+    with ACTIVE_SESSIONS_LOCK:
+        ACTIVE_SESSIONS[chat_id] = {
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "username": username or str(user_id),
+            "count": count,
+            "completed": 0,
+            "failed": 0,
+            "site": site,
+            "invite": invite,
+            "start_time": time.time(),
+            "message_id": mid,
+            "stop_requested": False
+        }
+
+def update_active_session(chat_id: int, completed: int = None, failed: int = None, mid: int = None):
+    with ACTIVE_SESSIONS_LOCK:
+        sess = ACTIVE_SESSIONS.get(chat_id)
+        if sess:
+            if completed is not None:
+                sess["completed"] = completed
+            if failed is not None:
+                sess["failed"] = failed
+            if mid is not None:
+                sess["message_id"] = mid
+
+def is_session_stop_requested(chat_id: int) -> bool:
+    with ACTIVE_SESSIONS_LOCK:
+        sess = ACTIVE_SESSIONS.get(chat_id)
+        return bool(sess and sess.get("stop_requested"))
+
+def request_stop_session(chat_id: int) -> bool:
+    with ACTIVE_SESSIONS_LOCK:
+        sess = ACTIVE_SESSIONS.get(chat_id)
+        if sess:
+            sess["stop_requested"] = True
+            return True
+        return False
+
+def request_stop_all_sessions() -> int:
+    with ACTIVE_SESSIONS_LOCK:
+        cnt = 0
+        for sess in ACTIVE_SESSIONS.values():
+            sess["stop_requested"] = True
+            cnt += 1
+        return cnt
+
+def unregister_active_session(chat_id: int):
+    with ACTIVE_SESSIONS_LOCK:
+        return ACTIVE_SESSIONS.pop(chat_id, None)
+
+def get_all_active_sessions() -> list:
+    with ACTIVE_SESSIONS_LOCK:
+        return [dict(s) for s in ACTIVE_SESSIONS.values()]
+
 MEMBERSHIP_CACHE = {}  # user_id -> (is_member, expire_ts)
 
 def check_user_membership(user_id: int):
@@ -1607,6 +1666,8 @@ def show_admin_menu(chat_id, user, message_id=None):
         f"• <code>/deltoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens from user\n\n"
         f"<b>👑 Admin Suite Commands:</b>\n"
         f"• <code>/stats</code> or <code>/statics</code> — Super Admin Users, Tokens &amp; History Audit\n"
+        f"• <code>/sessions</code> — Live active registration sessions monitor\n"
+        f"• <code>/stopall</code> — Emergency stop all registrations across all chats\n"
         f"• <code>/sxstatus</code> — Live SX multi-proxy pool &amp; balance\n"
         f"• <code>/sxkey &lt;key&gt;</code> — Add/stack new SX.ORG 1 GB trial key\n"
         f"• <code>/users</code> — View registered users &amp; tokens\n"
@@ -1621,12 +1682,13 @@ def show_admin_menu(chat_id, user, message_id=None):
     b_tok = types.InlineKeyboardButton("🎫 Manage Tokens", callback_data="admin_token_help")
     markup.add(b_users, b_tok)
 
+    b_sess = types.InlineKeyboardButton("📊 Active Sessions", callback_data="admin_sessions")
+    b_refill = types.InlineKeyboardButton("🔄 Refill Proxy Pool", callback_data="admin_refill_proxies")
+    markup.add(b_sess, b_refill)
+
     b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt")
     b_bcast = types.InlineKeyboardButton("📢 Broadcast Announcement", callback_data="admin_broadcast_info")
     markup.add(b_export, b_bcast)
-
-    b_refill = types.InlineKeyboardButton("🔄 Refill Proxy Pool", callback_data="admin_refill_proxies")
-    markup.add(b_refill)
 
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
     markup.add(b_back)
@@ -1676,6 +1738,92 @@ def show_users_list(chat_id, user, message_id=None):
     bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
 
 
+def show_active_sessions_dashboard(chat_id, user, message_id=None):
+    """
+    Renders live active registration sessions monitor dashboard.
+    Shows real-time progress bar, site, invite, elapsed time, retries,
+    and provides inline buttons to stop individual sessions or all sessions.
+    """
+    user_id = user.id if user else chat_id
+    is_super = (user_id == 8327850869)
+    is_adm = is_super or admin_manager.is_admin(user_id)
+
+    sessions = get_all_active_sessions()
+    now = time.time()
+
+    if not is_adm:
+        # Filter only user's own session
+        sessions = [s for s in sessions if s.get("chat_id") == chat_id or s.get("user_id") == user_id]
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    b_refresh = types.InlineKeyboardButton("🔄 Refresh", callback_data="sessions_refresh")
+
+    if not sessions:
+        text = (
+            "📊 <b>Active Registration Sessions Monitor</b>\n\n"
+            "🟢 <b>Status: IDLE</b>\n\n"
+            "Is samay koi bhi active multi-registration session running nahi hai.\n\n"
+            "💡 <i>Nayi bulk registration run karne ke liye <code>/bulk &lt;count&gt;</code> ya menu use karein.</i>"
+        )
+        markup.add(b_refresh)
+        if message_id:
+            try:
+                bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="HTML")
+                return
+            except Exception:
+                pass
+        bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+        return
+
+    text_lines = [
+        f"📊 <b>Active Registration Sessions ({len(sessions)} Running)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    ]
+
+    stop_buttons = []
+    for idx, s in enumerate(sessions, 1):
+        s_chat = s.get("chat_id")
+        s_user = s.get("user_id")
+        s_uname = s.get("username") or str(s_user)
+        s_count = s.get("count", 0)
+        s_comp = s.get("completed", 0)
+        s_fail = s.get("failed", 0)
+        s_site = s.get("site", "N/A")
+        s_elapsed = int(now - s.get("start_time", now))
+        s_elapsed_str = f"{s_elapsed}s" if s_elapsed < 60 else f"{s_elapsed // 60}m {s_elapsed % 60}s"
+        bar = render_progress_bar(s_comp, s_count, length=8)
+
+        sess_block = (
+            f"<b>#{idx} • User:</b> <code>{html.escape(str(s_uname))}</code> (<code>{s_user}</code>)\n"
+            f"• 🌐 Site: <code>{s_site}</code>\n"
+            f"• ⏳ Progress: {bar} <code>{s_comp}/{s_count}</code>\n"
+            f"• ⏱️ Elapsed: <code>{s_elapsed_str}</code> | Retries: <code>{s_fail}</code>"
+        )
+        text_lines.append(sess_block)
+        text_lines.append("────────────────────────────")
+
+        stop_buttons.append(
+            types.InlineKeyboardButton(f"🛑 Stop #{idx} ({s_comp}/{s_count})", callback_data=f"stop_reg_{s_chat}")
+        )
+
+    for btn in stop_buttons:
+        markup.add(btn)
+
+    action_row = [b_refresh]
+    if is_super and len(sessions) > 1:
+        action_row.append(types.InlineKeyboardButton("🛑 STOP ALL SESSIONS", callback_data="sessions_stop_all"))
+    markup.add(*action_row)
+
+    full_text = "\n".join(text_lines)
+    if message_id:
+        try:
+            bot.edit_message_text(full_text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+    bot.send_message(chat_id, full_text, reply_markup=markup, parse_mode="HTML")
+
+
 def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
     if del_incoming:
         try:
@@ -1694,6 +1842,7 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
         "• <code>/start</code> — Start bot &amp; configure referral link\n"
         "• <code>/single</code> or <code>/gen</code> — Single account registration (1 🎫)\n"
         "• <code>/bulk &lt;count&gt;</code> or <code>/multi &lt;count&gt;</code> — Multi-registration\n"
+        "• <code>/stop</code> — Stop current running registration in this chat\n"
         "• <code>/link &lt;url&gt;</code> — Set referral link\n"
         "• <i>Direct Link Paste</i> — Paste link in chat to configure instantly\n"
         "• <code>/tokens</code> or <code>/balance</code> — Check your Token balance\n"
@@ -1706,6 +1855,8 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
         text += (
             "\n\n<b>👑 Exclusive Super Admin Suite (Only for You):</b>\n"
             "• <code>/stats</code> or <code>/statics</code> — Master User Registry, Tokens &amp; History Audit\n"
+            "• <code>/sessions</code> — Live active registration sessions monitor\n"
+            "• <code>/stopall</code> — Emergency halt all registrations across all chats\n"
             "• <code>/silentaddtoken &lt;id&gt; &lt;amt&gt;</code> — Add tokens secretly (no alert to user)\n"
             "• <code>/silentdeducttoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens secretly (no alert to user)\n"
             "• <code>/sxkey &lt;key&gt;</code> — Add &amp; stack new SX.ORG 1 GB trial API key\n"
@@ -1721,6 +1872,7 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
             "• <code>/deltoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens from user\n\n"
             "<b>🛡️ General Admin Commands:</b>\n"
             "• <code>/admin</code> — Admin Control Hub\n"
+            "• <code>/sessions</code> — Active sessions monitor\n"
             "• <code>/users</code> — List registered users &amp; tokens\n"
             "• <code>/proxies</code> — Live proxy stats &amp; auto-refill\n"
             "• <code>/addadmin &lt;id&gt;</code> — Promote user to Admin\n"
@@ -1933,6 +2085,9 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
             est_str = f"~{est_total}s" if est_total < 60 else f"~{est_total // 60}m {est_total % 60}s"
             delay_note += f"• ⏳ Est. Total Duration: <code>{est_str}</code>\n"
 
+        stop_markup = types.InlineKeyboardMarkup()
+        stop_markup.add(types.InlineKeyboardButton("🛑 Stop Registration", callback_data=f"stop_reg_{chat_id}"))
+
         mid = send_or_edit(
             chat_id,
             f"⏳ <b>Multi-Registration Started...</b>\n\n"
@@ -1942,8 +2097,17 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
             f"{delay_note}"
             f"• 💰 Rate: 1 Token deducted per account\n\n"
             f"<i>Live accounts creating in progress...</i>",
+            reply_markup=stop_markup,
             message_id=message_id
         )
+
+        u_reg = admin_manager.user_registry.get(str(uid), {})
+        u_name = u_reg.get("username") or u_reg.get("first_name") or str(uid)
+        register_active_session(chat_id, uid, count, target_site, target_invite, mid=mid, username=u_name)
+        try:
+            bot.pin_chat_message(chat_id, mid, disable_notification=True)
+        except Exception:
+            pass
 
         current_mid = [mid]
         success_accounts = []
@@ -1961,7 +2125,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         def safe_update_ui(text, reply_markup=None):
             with lock:
                 target_id = current_mid[0]
-            new_id = send_or_edit(chat_id, text, reply_markup=reply_markup, message_id=target_id)
+            rm = reply_markup if reply_markup is not None else stop_markup
+            new_id = send_or_edit(chat_id, text, reply_markup=rm, message_id=target_id)
             if new_id:
                 with lock:
                     current_mid[0] = new_id
@@ -1982,6 +2147,9 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         def worker_loop():
             nonlocal failed_count, total_attempts, consecutive_fails
             while True:
+                if is_session_stop_requested(chat_id):
+                    log(f"[bot] Session in chat {chat_id} received STOP signal, halting worker.")
+                    break
                 with lock:
                     if len(success_accounts) >= count:
                         break
@@ -2066,6 +2234,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
 
                     now = time.time()
                     cur_succ = len(success_accounts)
+                    update_active_session(chat_id, completed=cur_succ, failed=failed_count, mid=current_mid[0])
                     if cur_succ == count or (now - last_edit_time[0] >= 3.0):
                         last_edit_time[0] = now
                         bar_now = render_progress_bar(cur_succ, count, length=10)
@@ -2136,6 +2305,91 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         b4 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
         markup.add(b1, b2)
         markup.add(b3, b4)
+
+        was_stopped = is_session_stop_requested(chat_id)
+        if was_stopped:
+            log(f"[bot] Bulk registration in chat {chat_id} stopped gracefully. Success: {len(success_accounts)}/{count}")
+            try:
+                bot.unpin_chat_message(chat_id, current_mid[0])
+            except Exception:
+                pass
+
+            stopped_header = (
+                "🛑 <b>MULTI-REGISTRATION STOPPED!</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏹️ <b>Status:</b> Batch stopped by user / admin\n"
+                f"✅ <b>Successfully Created:</b> <code>{len(success_accounts)}/{count}</code>\n"
+                f"⚡ <b>Speed Mode:</b> <code>{speed_label}</code>\n"
+                f"🎫 <b>Tokens Deducted:</b> <code>{len(success_accounts)} Tokens</code>\n"
+                f"🎫 <b>Remaining Balance:</b> <b>{rem_tokens}</b>\n"
+                f"🌐 <b>Target Site:</b> <code>{target_site}</code>\n"
+                f"🎟️ <b>Invite Code:</b> <code>{target_invite}</code>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            )
+
+            if not success_accounts:
+                stopped_text = stopped_header + "<i>Registration was stopped before any accounts were created. No tokens were deducted.</i>"
+                safe_update_ui(stopped_text, reply_markup=markup)
+                return
+
+            formatted_blocks = []
+            for acc in success_accounts:
+                ip_val = acc.get('proxy', 'Direct')
+                dev_val = acc.get('device', 'Android')
+                uid_val = acc.get('uid') or 'Registered'
+                phone_val = acc['phone']
+                pwd_val = acc['password']
+                block = (
+                    f"🌐 <b>IP / Device:</b> <code>{ip_val}</code> | <code>{dev_val}</code>\n"
+                    f"🆔 <b>UID:</b> <code>{uid_val}</code>\n"
+                    f"📱 <b>Number:</b> <code>{phone_val}</code>\n"
+                    f"🔑 <b>Password:</b> <code>{pwd_val}</code>"
+                )
+                formatted_blocks.append(block)
+
+            if len(formatted_blocks) <= 15:
+                full_text = stopped_header + "\n\n".join(formatted_blocks)
+                if len(full_text) <= 3900:
+                    safe_update_ui(full_text, reply_markup=markup)
+                else:
+                    safe_update_ui(stopped_header + "\n\n".join(formatted_blocks[:6]), reply_markup=markup)
+            else:
+                import io
+                doc_lines = [
+                    f"# Raxi Auto-Register Bulk Accounts Export (Stopped Early)",
+                    f"# Total Created: {len(success_accounts)} / {count}",
+                    f"# Target Platform: {target_site}",
+                    f"# Invite Code: {target_invite}",
+                    f"# Generated At: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+                    f"# Format: phone:password | UID | Device | IP",
+                    "=" * 60,
+                    ""
+                ]
+                for acc in success_accounts:
+                    doc_lines.append(f"{acc['phone']}:{acc['password']} | UID: {acc.get('uid') or 'Registered'} | Device: {acc.get('device', 'Android')} | IP: {acc.get('proxy', 'Direct')}")
+
+                doc_bytes = "\n".join(doc_lines).encode("utf-8")
+                doc_stream = io.BytesIO(doc_bytes)
+                doc_stream.name = f"raxi_bulk_stopped_{len(success_accounts)}_accounts.txt"
+
+                preview_text = (
+                    stopped_header +
+                    f"📁 <b>Accounts Export File (.txt) Attached Below:</b>\n\n"
+                    f"<b>🔍 First 3 Accounts Preview:</b>\n\n" +
+                    "\n\n".join(formatted_blocks[:3]) +
+                    f"\n\n⚡ <i>Baaki sabhi {len(formatted_blocks) - 3} accounts niche attached document file me save hain!</i>"
+                )
+                safe_update_ui(preview_text, reply_markup=markup)
+                try:
+                    bot.send_document(
+                        chat_id,
+                        doc_stream,
+                        caption=f"📋 <b>{len(success_accounts)} Accounts File (Stopped Early)</b>\n🌐 <code>{target_site}</code> | 🎟️ <code>{target_invite}</code>",
+                        parse_mode="HTML"
+                    )
+                except Exception as e:
+                    log(f"[bot] Error sending stopped bulk document file: {e}")
+            return
 
         if not success_accounts:
             reason_line = f"\n⚠️ <b>Karan:</b> <code>{html.escape(last_fail_reason[0])}</code>\n" if last_fail_reason[0] else ""
@@ -2223,7 +2477,16 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                 )
             except Exception as e:
                 log(f"[bot] Error sending bulk document file: {e}")
+        try:
+            bot.unpin_chat_message(chat_id, current_mid[0])
+        except Exception:
+            pass
     finally:
+        unregister_active_session(chat_id)
+        try:
+            bot.unpin_chat_message(chat_id, current_mid[0])
+        except Exception:
+            pass
         release_chat_lock(chat_id)
 
 
@@ -2357,6 +2620,73 @@ def handle_multi_cmd(message):
     except Exception:
         pass
     show_speed_selection_menu(chat_id, user, count, message_id=LAST_BOT_MSG.get(chat_id))
+
+
+@bot.message_handler(commands=["stop", "cancelreg", "stopreg"])
+def handle_stop_registration_cmd(message):
+    user = message.from_user
+    chat_id = message.chat.id
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+
+    args = message.text.strip().split()
+    target_chat = chat_id
+    if len(args) >= 2 and args[1].lstrip("-").isdigit():
+        if admin_manager.is_admin(user.id):
+            target_chat = int(args[1])
+        else:
+            bot.reply_to(message, "⛔ <b>Admin Access Required</b> to stop sessions for other chats.", parse_mode="HTML")
+            return
+
+    if request_stop_session(target_chat):
+        bot.reply_to(
+            message,
+            f"🛑 <b>Stop Signal Sent!</b>\n\n"
+            f"Chat <code>{target_chat}</code> ke active registration batch ko stop signal bhej diya gaya hai.\n"
+            f"Current running account attempt complete hote hi process ruk jayegi aur unpin ho jayegi.",
+            parse_mode="HTML"
+        )
+    else:
+        bot.reply_to(
+            message,
+            "ℹ️ <b>No Active Registration</b>\n\n"
+            "Is chat me koi bhi active bulk registration nahi chal rahi hai.\n"
+            "Active sessions dekhne ke liye <code>/sessions</code> use karein.",
+            parse_mode="HTML"
+        )
+
+
+@bot.message_handler(commands=["stopall", "cancelall"])
+def handle_stopall_cmd(message):
+    user = message.from_user
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if user.id != 8327850869:
+        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+        return
+
+    cnt = request_stop_all_sessions()
+    if cnt > 0:
+        bot.reply_to(
+            message,
+            f"🛑 <b>EMERGENCY STOP EXECUTED!</b>\n\n"
+            f"Super Admin ne sabhi <b>{cnt} active registration sessions</b> ko emergency stop kar diya hai.\n"
+            f"Sabhi background workers safely halt ho rahe hain aur proxy connections terminate ho rahe hain.",
+            parse_mode="HTML"
+        )
+    else:
+        bot.reply_to(
+            message,
+            "ℹ️ <b>No Active Sessions</b>\n\n"
+            "Is samay bot me koi bhi bulk registration session running nahi hai.",
+            parse_mode="HTML"
+        )
+
+
+@bot.message_handler(commands=["sessions", "activesessions", "tasks"])
+def handle_sessions_cmd(message):
+    user = message.from_user
+    chat_id = message.chat.id
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    show_active_sessions_dashboard(chat_id, user)
 
 
 @bot.message_handler(commands=["reg", "register"])
@@ -4006,6 +4336,68 @@ def _handle_callback_clicks_inner(call):
             pass
         show_super_statistics(chat_id, user, message_id=msg_id)
 
+    elif data.startswith("stop_reg_"):
+        try:
+            target_cid = int(data.split("_")[2])
+        except Exception:
+            target_cid = chat_id
+
+        is_super = (user_id == 8327850869)
+        is_adm = is_super or admin_manager.is_admin(user_id)
+        if target_cid != chat_id and target_cid != user_id and not is_adm:
+            try:
+                bot.answer_callback_query(call.id, "⛔ You cannot stop another user's session.", show_alert=True)
+            except Exception:
+                pass
+            return
+
+        ok = request_stop_session(target_cid)
+        if ok:
+            try:
+                bot.answer_callback_query(call.id, "🛑 Stopping registration... Batch will halt safely!", show_alert=True)
+            except Exception:
+                pass
+        else:
+            try:
+                bot.answer_callback_query(call.id, "ℹ️ Session already finished or not active.", show_alert=True)
+            except Exception:
+                pass
+        show_active_sessions_dashboard(chat_id, user, message_id=msg_id)
+
+    elif data == "sessions_refresh":
+        try:
+            bot.answer_callback_query(call.id, "Refreshing sessions...")
+        except Exception:
+            pass
+        show_active_sessions_dashboard(chat_id, user, message_id=msg_id)
+
+    elif data == "sessions_stop_all":
+        if user_id != 8327850869:
+            try:
+                bot.answer_callback_query(call.id, "⛔ Super Admin Only", show_alert=True)
+            except Exception:
+                pass
+            return
+        cnt = request_stop_all_sessions()
+        try:
+            bot.answer_callback_query(call.id, f"🛑 Stopped all {cnt} active sessions!", show_alert=True)
+        except Exception:
+            pass
+        show_active_sessions_dashboard(chat_id, user, message_id=msg_id)
+
+    elif data == "admin_sessions":
+        if not admin_manager.is_admin(user_id):
+            try:
+                bot.answer_callback_query(call.id, "⛔ Admin Access Required", show_alert=True)
+            except Exception:
+                pass
+            return
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        show_active_sessions_dashboard(chat_id, user, message_id=msg_id)
+
     else:
         try:
             bot.answer_callback_query(call.id)
@@ -4082,6 +4474,8 @@ if __name__ == "__main__":
             types.BotCommand("start", "🚀 Main Menu & Setup"),
             types.BotCommand("single", "⚡ Single Registration"),
             types.BotCommand("multi", "🔢 Multi Registration"),
+            types.BotCommand("stop", "🛑 Stop Running Registration"),
+            types.BotCommand("sessions", "📊 Active Registration Tasks"),
             types.BotCommand("tokens", "🎫 Check Token Balance"),
             types.BotCommand("link", "🔗 Set / Change Referral Link"),
             types.BotCommand("export", "📋 Export Saved Accounts"),
