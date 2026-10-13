@@ -207,14 +207,22 @@ def mask_proxy(proxy_str: str) -> str:
     """
     if not proxy_str or proxy_str == "Direct":
         return "Direct"
-    if "@" in proxy_str:
-        user_pass, host = proxy_str.split("@", 1)
+    s = proxy_str.strip()
+    for proto in ("http://", "https://", "socks5://", "socks4://"):
+        if s.startswith(proto):
+            s = s[len(proto):]
+            break
+    if "@" in s:
+        user_pass, host = s.split("@", 1)
         if "country-IN" in user_pass or "mobile" in user_pass:
             return f"{host} (IN Mobile)"
         if "pool-res" in user_pass or "wuqayqgc" in user_pass:
             return f"{host} (Residential)"
         return host
-    return proxy_str
+    if s.count(":") == 3:
+        parts = s.split(":")
+        return f"{parts[0]}:{parts[1]}"
+    return s
 
 # Concurrency lock to prevent duplicate parallel registrations in same chat with auto-expiration
 BUSY_CHATS_LOCK = threading.RLock()
@@ -244,6 +252,11 @@ def acquire_chat_lock(chat_id: int) -> bool:
         BUSY_CHATS[chat_id] = now
         return True
 
+def refresh_chat_lock(chat_id: int):
+    with BUSY_CHATS_LOCK:
+        if chat_id in BUSY_CHATS:
+            BUSY_CHATS[chat_id] = time.time()
+
 def release_chat_lock(chat_id: int):
     with BUSY_CHATS_LOCK:
         BUSY_CHATS.pop(chat_id, None)
@@ -268,6 +281,7 @@ def register_active_session(chat_id: int, user_id: int, count: int, site: str, i
         }
 
 def update_active_session(chat_id: int, completed: int = None, failed: int = None, mid: int = None):
+    refresh_chat_lock(chat_id)
     with ACTIVE_SESSIONS_LOCK:
         sess = ACTIVE_SESSIONS.get(chat_id)
         if sess:
@@ -946,7 +960,7 @@ def get_user_account_records(user_id, chat_id=None):
             r for r in all_recs
             if r.get("user") == str(user_id) or (curr_invite and r.get("invite") == curr_invite)
         ]
-        return filtered if filtered else all_recs
+        return filtered
     except Exception as e:
         log(f"[bot] Error reading user account records: {e}")
         return []
@@ -2290,8 +2304,9 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
             if workers > 1:
                 time.sleep(0.35)
 
-        for t in threads:
-            t.join()
+        while any(t.is_alive() for t in threads):
+            refresh_chat_lock(chat_id)
+            time.sleep(1.0)
 
         gc.collect()
 

@@ -106,12 +106,18 @@ class AdminManager:
             self.user_registry = data.get("user_registry", {})
             self.admin_daily_usage = data.get("admin_daily_usage", {})
 
+            needs_save = False
+
             # Ensure Prince Gurjar (6217522461) is Admin with 1k daily quota
             prince_id = 6217522461
-            self.admin_user_ids.add(prince_id)
+            if prince_id not in self.admin_user_ids:
+                self.admin_user_ids.add(prince_id)
+                needs_save = True
             pid_str = str(prince_id)
             if pid_str in self.user_registry:
-                self.user_registry[pid_str]["role"] = "🛡️ Admin"
+                if self.user_registry[pid_str].get("role") != "🛡️ Admin":
+                    self.user_registry[pid_str]["role"] = "🛡️ Admin"
+                    needs_save = True
             else:
                 self.user_registry[pid_str] = {
                     "user_id": prince_id,
@@ -124,7 +130,7 @@ class AdminManager:
                     "user_log_channel": None,
                     "user_storage_channel": None
                 }
-            needs_save = True
+                needs_save = True
 
             # Ensure Dino, GoLu, and 8659204794 are strictly Free Users (not Admins) as requested
             for demote_id in [1879784162, 7812349806, 8659204794]:
