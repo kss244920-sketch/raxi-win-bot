@@ -202,6 +202,22 @@ def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming
         log(f"[bot] send_or_edit error: {e}")
         return None
 
+def mask_proxy(proxy_str: str) -> str:
+    """
+    Cleans and masks raw proxy strings to remove private credentials, session IDs, and hashes.
+    Displays a clean, professional IP:Port string.
+    """
+    if not proxy_str or proxy_str == "Direct":
+        return "Direct"
+    if "@" in proxy_str:
+        user_pass, host = proxy_str.split("@", 1)
+        if "country-IN" in user_pass or "mobile" in user_pass:
+            return f"{host} (IN Mobile)"
+        if "pool-res" in user_pass or "wuqayqgc" in user_pass:
+            return f"{host} (Residential)"
+        return host
+    return proxy_str
+
 # Concurrency lock to prevent duplicate parallel registrations in same chat with auto-expiration
 BUSY_CHATS_LOCK = threading.RLock()
 BUSY_LOCK_TIMEOUT = 180.0  # 3 minutes max lock duration
@@ -1031,15 +1047,16 @@ def send_exported_full_report(chat_id, user_id):
     report_lines.append("================================================================================\n")
 
     for idx, r in enumerate(recs, 1):
-        report_lines.append(f"[{idx}] Phone:    {r.get('phone', 'N/A')}")
-        report_lines.append(f"    Password: {r.get('password', 'N/A')}")
-        report_lines.append(f"    UID:      {r.get('uid', 'N/A')}")
-        report_lines.append(f"    Site:     {r.get('site', 'N/A')}")
-        report_lines.append(f"    Invite:   {r.get('invite', 'N/A')}")
-        report_lines.append(f"    Device:   {r.get('device', 'N/A')}")
-        report_lines.append(f"    IP Proxy: {r.get('ip', 'Direct')}")
-        report_lines.append(f"    Time:     {r.get('time', 'N/A')}")
-        report_lines.append("--------------------------------------------------------------------------------")
+        clean_ip = mask_proxy(r.get('ip', 'Direct'))
+        report_lines.append(f"[{idx}] 📱 Phone:    {r.get('phone', 'N/A')}")
+        report_lines.append(f"    🔑 Password: {r.get('password', 'N/A')}")
+        report_lines.append(f"    🆔 UID:      {r.get('uid', 'N/A')}")
+        report_lines.append(f"    📱 Device:   {r.get('device', 'N/A')}")
+        report_lines.append(f"    🌐 Proxy IP: {clean_ip}")
+        report_lines.append(f"    🌐 Site:     {r.get('site', 'N/A')}")
+        report_lines.append(f"    🎟️ Invite:   {r.get('invite', 'N/A')}")
+        report_lines.append(f"    🕒 Time:     {r.get('time', 'N/A')}")
+        report_lines.append("-" * 60)
 
     content = "\n".join(report_lines).encode("utf-8")
     bio = io.BytesIO(content)
@@ -1991,14 +2008,16 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
             tokens_disp = "♾️ Unlimited (Admin)" if admin_manager.is_admin(uid) else f"{new_balance} Tokens"
 
             used_ip = res.get("proxy", "Direct")
+            clean_ip = mask_proxy(used_ip)
             used_dev = res.get("device", "Standard Mobile")
             card_text = (
                 "🎉 <b>ACCOUNT CREATED SUCCESSFULLY!</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━\n"
-                f"🌐 <b>IP / Device:</b> <code>{used_ip}</code> | <code>{used_dev}</code>\n"
-                f"🆔 <b>UID:</b> <code>{res.get('uid') or 'Registered'}</code>\n"
                 f"📱 <b>Phone:</b> <code>{res['phone']}</code>\n"
                 f"🔑 <b>Password:</b> <code>{res['password']}</code>\n"
+                f"🆔 <b>UID:</b> <code>{res.get('uid') or 'Registered'}</code>\n"
+                f"📱 <b>Device:</b> <code>{used_dev}</code>\n"
+                f"🌐 <b>Proxy IP:</b> <code>{clean_ip}</code>\n"
                 f"🎟️ <b>Invite Code:</b> <code>{res['invite']}</code>\n"
                 f"🌐 <b>Site:</b> <code>{target_site}</code>\n"
                 f"🎫 <b>Remaining Tokens:</b> <code>{tokens_disp}</code>\n"
@@ -2419,18 +2438,19 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         )
 
         formatted_blocks = []
-        for acc in success_accounts:
-            ip_val = acc.get('proxy', 'Direct')
+        for idx, acc in enumerate(success_accounts, 1):
+            clean_ip = mask_proxy(acc.get('proxy', 'Direct'))
             dev_val = acc.get('device', 'Android')
             uid_val = acc.get('uid') or 'Registered'
             phone_val = acc['phone']
             pwd_val = acc['password']
 
             block = (
-                f"🌐 <b>IP / Device:</b> <code>{ip_val}</code> | <code>{dev_val}</code>\n"
-                f"🆔 <b>UID:</b> <code>{uid_val}</code>\n"
-                f"📱 <b>Number:</b> <code>{phone_val}</code>\n"
-                f"🔑 <b>Password:</b> <code>{pwd_val}</code>"
+                f"<b>Account #{idx}</b>\n"
+                f"📱 <code>{phone_val}</code> : <code>{pwd_val}</code>\n"
+                f"   ├ 🆔 <b>UID:</b> <code>{uid_val}</code>\n"
+                f"   ├ 📱 <b>Device:</b> <code>{dev_val}</code>\n"
+                f"   └ 🌐 <b>Proxy IP:</b> <code>{clean_ip}</code>"
             )
             formatted_blocks.append(block)
 
@@ -2443,17 +2463,28 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         else:
             # Auto-generate downloadable clean .txt file for 15+ accounts to avoid Telegram FloodWait / message limits
             doc_lines = [
-                "# Raxi Auto-Register Bulk Accounts Export",
-                f"# Total Created: {len(success_accounts)} / {count}",
-                f"# Target Platform: {target_site}",
-                f"# Invite Code: {target_invite}",
-                f"# Generated At: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
-                "# Format: phone:password | UID | Device | IP",
-                "=" * 60,
-                ""
+                "================================================================================",
+                "RAXI AUTO-REGISTER - BULK ACCOUNTS EXPORT REPORT",
+                f"Total Accounts Created: {len(success_accounts)} / {count}",
+                f"Target Platform: {target_site}",
+                f"Invite Code: {target_invite}",
+                f"Export Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+                "================================================================================\n",
+                "--- [QUICK COMBOS SUMMARY (PHONE:PASSWORD)] ---"
             ]
             for acc in success_accounts:
-                doc_lines.append(f"{acc['phone']}:{acc['password']} | UID: {acc.get('uid') or 'Registered'} | Device: {acc.get('device', 'Android')} | IP: {acc.get('proxy', 'Direct')}")
+                doc_lines.append(f"{acc['phone']}:{acc['password']}")
+            doc_lines.append("\n================================================================================")
+            doc_lines.append("--- [STRUCTURED AUDIT RECORDS] ---")
+            doc_lines.append("================================================================================\n")
+            for idx, acc in enumerate(success_accounts, 1):
+                clean_ip = mask_proxy(acc.get('proxy', 'Direct'))
+                doc_lines.append(f"[{idx}] 📱 Phone:    {acc['phone']}")
+                doc_lines.append(f"    🔑 Password: {acc['password']}")
+                doc_lines.append(f"    🆔 UID:      {acc.get('uid') or 'Registered'}")
+                doc_lines.append(f"    📱 Device:   {acc.get('device', 'Android')}")
+                doc_lines.append(f"    🌐 Proxy IP: {clean_ip}")
+                doc_lines.append("-" * 60)
 
             doc_bytes = "\n".join(doc_lines).encode("utf-8")
             doc_stream = io.BytesIO(doc_bytes)
@@ -3184,6 +3215,22 @@ def handle_addtoken_cmd(message):
         bot.reply_to(message, "❌ Amount must be greater than 0.", parse_mode="HTML")
         return
 
+    is_super = admin_manager.is_super_admin(user.id)
+    if not is_super:
+        if target_id == user.id:
+            bot.reply_to(message, "⛔ <b>Access Denied:</b> Admin apne khud ke account me tokens add nahi kar sakta.", parse_mode="HTML")
+            return
+        if target_id == admin_manager.super_admin_id:
+            bot.reply_to(message, "⛔ <b>Access Denied:</b> Super Admin account me tokens modify nahi kiye ja sakte.", parse_mode="HTML")
+            return
+        if amount > 1000:
+            bot.reply_to(message, "⛔ <b>Limit Exceeded:</b> Admin maximum <code>1,000 Tokens</code> per ID add kar sakta hai.", parse_mode="HTML")
+            return
+        cur_tok = admin_manager.get_tokens(target_id)
+        if cur_tok + amount > 1000:
+            bot.reply_to(message, f"⛔ <b>Balance Cap Exceeded:</b> Target user ka total balance 1,000 se upar nahi ho sakta (Current: <code>{cur_tok}</code>, Adding: <code>+{amount}</code>).", parse_mode="HTML")
+            return
+
     new_bal = admin_manager.add_tokens(target_id, amount)
     bot.reply_to(
         message,
@@ -3227,6 +3274,19 @@ def handle_settoken_cmd(message):
 
     target_id = int(args[1])
     amount = int(args[2])
+    is_super = admin_manager.is_super_admin(user.id)
+
+    if not is_super:
+        if target_id == user.id:
+            bot.reply_to(message, "⛔ <b>Access Denied:</b> Admin apne khud ke account me tokens set nahi kar sakta.", parse_mode="HTML")
+            return
+        if target_id == admin_manager.super_admin_id:
+            bot.reply_to(message, "⛔ <b>Access Denied:</b> Super Admin account me tokens modify nahi kiye ja sakte.", parse_mode="HTML")
+            return
+        if amount > 1000:
+            bot.reply_to(message, "⛔ <b>Limit Exceeded:</b> Admin maximum <code>1,000 Tokens</code> set kar sakta hai.", parse_mode="HTML")
+            return
+
     new_bal = admin_manager.set_tokens(target_id, amount)
     bot.reply_to(
         message,
@@ -3257,6 +3317,12 @@ def handle_deltoken_cmd(message):
 
     target_id = int(args[1])
     amount = int(args[2])
+    is_super = admin_manager.is_super_admin(user.id)
+
+    if not is_super and target_id == admin_manager.super_admin_id:
+        bot.reply_to(message, "⛔ <b>Access Denied:</b> Super Admin account me tokens modify nahi kiye ja sakte.", parse_mode="HTML")
+        return
+
     new_bal = admin_manager.deduct_tokens(target_id, amount, force=True)
     bot.reply_to(
         message,
