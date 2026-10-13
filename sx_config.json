@@ -2,26 +2,15 @@
   "active": true,
   "accounts": [
     {
-      "api_key": "yXfSzrWE35YCr5SE8V3RsKDoCYZ1ej9a",
+      "api_key": "Djw3DgWMfG4OWMXvEgH3zmM4gGyI6RXa",
       "active": true,
-      "port_id": 241639649,
+      "port_id": 241774440,
       "proxy_host": "62.112.8.26:9999",
-      "login_template": "askrief7ch-pool-res.mobile.corp-country-IN-mode-hold-session-{session_id}",
-      "password": "4WXKCarrQc21IokO",
+      "login_template": "oae0c4niq0-pool-res.mobile.corp-country-IN-mode-hold-session-{session_id}",
+      "password": "KwPHdscCNvhKe06q",
       "country": "IN",
-      "balance_traffic": 999882999,
-      "updated_at": 1791799275
-    },
-    {
-      "api_key": "EOSZL7qhg8wQvrU47jPWCSjgwNeky7Cc",
-      "active": true,
-      "port_id": 241638422,
-      "proxy_host": "62.112.8.26:9999",
-      "login_template": "mm0gdfyvu8-pool-res.mobile.corp-country-IN-mode-hold-session-{session_id}",
-      "password": "WddhcB8DpFfayi66",
-      "country": "IN",
-      "balance_traffic": 996997327,
-      "updated_at": 1791799269
+      "balance_traffic": 981809570,
+      "updated_at": 1791892464
     }
   ]
 }

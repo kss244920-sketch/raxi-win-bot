@@ -10,6 +10,7 @@ import time
 import shutil
 import logging
 import threading
+import gc
 try:
     threading.stack_size(262144)  # 256 KB thread stack size (preserves low RAM in 150MB cgroup)
 except Exception:
@@ -248,7 +249,7 @@ class ProxyManager:
         self.sx_config = cfg
 
     def get_active_sx_accounts(self) -> list:
-        """Returns list of active SX.ORG accounts."""
+        """Returns list of active SX.ORG accounts that have positive data balance."""
         if not self.sx_config:
             return []
         accs = []
@@ -256,8 +257,8 @@ class ProxyManager:
             accs = [a for a in self.sx_config["accounts"] if a.get("active") and a.get("proxy_host")]
         elif self.sx_config.get("active") and self.sx_config.get("proxy_host"):
             accs = [self.sx_config]
-        valid_with_data = [a for a in accs if a.get("balance_traffic", 1) > 10240]
-        return valid_with_data if valid_with_data else accs
+        valid_with_data = [a for a in accs if a.get("balance_traffic", 0) > 10240]
+        return valid_with_data
 
     def is_sx_active(self) -> bool:
         """Returns True if at least one SX.ORG rotating residential account is enabled."""
@@ -342,50 +343,103 @@ class ProxyManager:
             self.sx_config["active"] = True
             self.save_sx_config(self.sx_config)
 
-            total_traffic = sum(a.get("balance_traffic", 0) for a in self.sx_config["accounts"])
-            logger.info(f"SX.ORG Account {api_key[:6]}... added/updated. Total accounts: {len(self.sx_config['accounts'])}, total data: {total_traffic} bytes.")
+            # Auto-purge any expired 0 MB trial accounts
+            purged = self.purge_expired_sx_accounts()
+            active_accs = [a for a in self.sx_config.get("accounts", []) if a.get("balance_traffic", 0) > 10240]
+            total_traffic = sum(a.get("balance_traffic", 0) for a in active_accs)
+            logger.info(f"SX.ORG Account {api_key[:6]}... added/updated. Active accounts: {len(active_accs)}, total data: {total_traffic} bytes, purged: {len(purged)}.")
             return {
                 "ok": True,
                 "account": new_acc,
-                "total_accounts": len(self.sx_config["accounts"]),
-                "total_traffic": total_traffic
+                "total_accounts": len(active_accs),
+                "total_traffic": total_traffic,
+                "purged_accounts": len(purged)
             }
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def purge_expired_sx_accounts(self) -> list:
+        """
+        Scans all configured SX.ORG accounts and automatically purges/deletes any
+        accounts whose 1-day trial expired or balance is exhausted (<= 10 KB).
+        Saves updated configuration. Returns list of purged API keys.
+        """
+        if not self.sx_config or not isinstance(self.sx_config, dict):
+            return []
+
+        accounts = self.sx_config.get("accounts", [])
+        if not isinstance(accounts, list):
+            return []
+
+        remaining = []
+        purged = []
+
+        for acc in accounts:
+            key = acc.get("api_key", "")
+            if not key:
+                continue
+            bal = acc.get("balance_traffic", 0)
+            try:
+                r = requests.get(f"https://api.sx.org/v2/user/balance?apiKey={key}", timeout=5)
+                data = r.json() if r.status_code == 200 else {}
+                if data.get("success"):
+                    bal = data.get("all_available_traffic", bal)
+                    acc["balance_traffic"] = bal
+                else:
+                    bal = 0
+            except Exception:
+                pass
+
+            if bal > 10240:
+                remaining.append(acc)
+            else:
+                purged.append(key)
+                logger.info(f"Purging expired/exhausted SX account: {key[:6]}... (balance: {bal} bytes)")
+
+        if purged:
+            self.sx_config["accounts"] = remaining
+            self.sx_config["active"] = len(remaining) > 0
+            self.save_sx_config(self.sx_config)
+
+        return purged
+
     def get_sx_status(self) -> str:
         """Returns formatted status of all active SX.ORG connections with combined traffic total."""
-        accounts = self.get_active_sx_accounts()
-        if not accounts:
-            return "❌ <b>SX.ORG Proxy Pool:</b> Not active (using local pool)."
+        purged = self.purge_expired_sx_accounts()
+        all_accounts = []
+        if self.sx_config:
+            if "accounts" in self.sx_config and isinstance(self.sx_config["accounts"], list):
+                all_accounts = [a for a in self.sx_config["accounts"] if a.get("active") and a.get("proxy_host")]
+            elif self.sx_config.get("active") and self.sx_config.get("proxy_host"):
+                all_accounts = [self.sx_config]
 
-        lines = [f"🌐 <b>SX.ORG Multi-Account Proxy Pool:</b> ACTIVE ✅\n"]
+        if not all_accounts:
+            return "❌ <b>SX.ORG Proxy Pool:</b> Not configured / no active accounts (using local pool)."
+
+        lines = ["🌐 <b>SX.ORG Multi-Account Proxy Pool:</b> " + ("ACTIVE ✅" if self.is_sx_active() else "EXHAUSTED ⚠️ (Using Local Pool)") + "\n"]
         total_bytes = 0
 
-        for i, a in enumerate(accounts, 1):
+        for i, a in enumerate(all_accounts, 1):
             key = a.get("api_key", "")
             key_disp = f"{key[:6]}...{key[-4:]}" if len(key) >= 10 else key
             bal = a.get("balance_traffic", 0)
-            try:
-                r = requests.get(f"https://api.sx.org/v2/user/balance?apiKey={key}", timeout=5)
-                if r.status_code == 200 and r.json().get("success"):
-                    bal = r.json().get("all_available_traffic", bal)
-                    a["balance_traffic"] = bal
-            except Exception:
-                pass
             total_bytes += bal
             a_mb = round(bal / (1024 * 1024), 2)
             lines.append(f"• <b>Account #{i}:</b> <code>{key_disp}</code> ➔ <b>{a_mb} MB</b>")
 
-        self.save_sx_config(self.sx_config)
         tot_mb = round(total_bytes / (1024 * 1024), 2)
         tot_gb = round(total_bytes / (1024 * 1024 * 1024), 2)
         approx_accounts = int(total_bytes / (25 * 1024))
 
         lines.append(f"\n📊 <b>Total Combined Data:</b> <code>{tot_mb} MB (~{tot_gb} GB)</code>")
-        lines.append(f"👥 <b>Active Accounts Linked:</b> <code>{len(accounts)}</code>")
+        lines.append(f"👥 <b>Active Accounts Linked:</b> <code>{len(all_accounts)}</code>")
         lines.append(f"⚡ <b>Estimated Capacity:</b> <code>~{approx_accounts:,} accounts</code>")
-        lines.append(f"🔄 <b>Rotation Mode:</b> <i>Round-robin across all accounts with Indian IP stickiness!</i>")
+        if purged:
+            lines.append(f"🗑️ <i>Auto-purged {len(purged)} expired trial account(s).</i>")
+        if total_bytes > 10240:
+            lines.append("🔄 <b>Rotation Mode:</b> <i>Round-robin across active accounts with Indian IP stickiness!</i>")
+        else:
+            lines.append("⚠️ <i>All SX keys are exhausted (0 MB). Bot is automatically using high-speed local proxies! Add new key with /sxkey &lt;key&gt; to reload.</i>")
 
         return "\n".join(lines)
 
@@ -908,8 +962,7 @@ class ProxyManager:
         Runs periodically: Re-tests unauthenticated proxies in pool and purges dead ones.
         ALWAYS preserves authenticated/Webshare proxies!
         """
-        import gc
-        logger.info(f"Running scheduled health check on working proxies pool...")
+        logger.info("Running scheduled health check on working proxies pool...")
         pool = self.load_local_pool()
 
         if not pool:
@@ -990,6 +1043,8 @@ class ProxyManager:
             "total_pool": len(pool),
             "target": POOL_TARGET,
             "min_threshold": POOL_MIN_THRESHOLD,
+            "available": len(avail),
+            "used": len(used_site),
             "available_for_domain": len(avail),
             "used_for_domain": len(used_site),
             "total_used_records": len(all_used),

@@ -7,6 +7,7 @@ broadcast messaging, free mode, and dual-channel isolation (Master Channel hidde
 import os
 import json
 import time
+import shutil
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
@@ -44,7 +45,6 @@ class AdminManager:
         base_fallback = BASE_DIR / "admin_settings.json"
         if not self.filepath.exists() and base_fallback.exists() and self.filepath != base_fallback:
             try:
-                import shutil
                 shutil.copy(base_fallback, self.filepath)
                 print(f"[AdminManager] Initialized persistent settings from {base_fallback} -> {self.filepath}")
             except Exception as e:

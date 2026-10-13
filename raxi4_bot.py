@@ -12,6 +12,9 @@ import sys
 import time
 import json
 import html
+import io
+import shutil
+import gc
 import uuid
 import glob
 import random
@@ -1340,7 +1343,6 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
 
 def show_force_join_screen(chat_id, user, message_id=None, del_incoming=None):
     """Displays Force Join screen requiring membership in @owabyss."""
-    user_id = user.id if user else 0
     first_name = html.escape(user.first_name if user else "User")
 
     text = (
@@ -1861,6 +1863,7 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
             "• <code>/silentdeducttoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens secretly (no alert to user)\n"
             "• <code>/sxkey &lt;key&gt;</code> — Add &amp; stack new SX.ORG 1 GB trial API key\n"
             "• <code>/sxstatus</code> — Live SX multi-proxy pool &amp; combined quota\n"
+            "• <code>/sxpurge</code> — Auto-clean &amp; delete all expired 0 MB trial keys\n"
             "• <code>/freemode</code> — Toggle Free Mode on/off"
         )
 
@@ -2293,7 +2296,6 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         for t in threads:
             t.join()
 
-        import gc
         gc.collect()
 
         rem_tokens = admin_manager.get_display_tokens(uid)
@@ -2354,14 +2356,13 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                 else:
                     safe_update_ui(stopped_header + "\n\n".join(formatted_blocks[:6]), reply_markup=markup)
             else:
-                import io
                 doc_lines = [
-                    f"# Raxi Auto-Register Bulk Accounts Export (Stopped Early)",
+                    "# Raxi Auto-Register Bulk Accounts Export (Stopped Early)",
                     f"# Total Created: {len(success_accounts)} / {count}",
                     f"# Target Platform: {target_site}",
                     f"# Invite Code: {target_invite}",
                     f"# Generated At: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
-                    f"# Format: phone:password | UID | Device | IP",
+                    "# Format: phone:password | UID | Device | IP",
                     "=" * 60,
                     ""
                 ]
@@ -2374,8 +2375,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
 
                 preview_text = (
                     stopped_header +
-                    f"📁 <b>Accounts Export File (.txt) Attached Below:</b>\n\n"
-                    f"<b>🔍 First 3 Accounts Preview:</b>\n\n" +
+                    "📁 <b>Accounts Export File (.txt) Attached Below:</b>\n\n"
+                    "<b>🔍 First 3 Accounts Preview:</b>\n\n" +
                     "\n\n".join(formatted_blocks[:3]) +
                     f"\n\n⚡ <i>Baaki sabhi {len(formatted_blocks) - 3} accounts niche attached document file me save hain!</i>"
                 )
@@ -2441,14 +2442,13 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                 safe_update_ui(header + "\n\n".join(formatted_blocks[:6]), reply_markup=markup)
         else:
             # Auto-generate downloadable clean .txt file for 15+ accounts to avoid Telegram FloodWait / message limits
-            import io
             doc_lines = [
-                f"# Raxi Auto-Register Bulk Accounts Export",
+                "# Raxi Auto-Register Bulk Accounts Export",
                 f"# Total Created: {len(success_accounts)} / {count}",
                 f"# Target Platform: {target_site}",
                 f"# Invite Code: {target_invite}",
                 f"# Generated At: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
-                f"# Format: phone:password | UID | Device | IP",
+                "# Format: phone:password | UID | Device | IP",
                 "=" * 60,
                 ""
             ]
@@ -2461,8 +2461,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
 
             preview_text = (
                 header +
-                f"📁 <b>Accounts Export File (.txt) Niche Attach Kar Di Gayi Hai!</b>\n\n"
-                f"<b>🔍 First 3 Accounts Preview:</b>\n\n" +
+                "📁 <b>Accounts Export File (.txt) Niche Attach Kar Di Gayi Hai!</b>\n\n"
+                "<b>🔍 First 3 Accounts Preview:</b>\n\n" +
                 "\n\n".join(formatted_blocks[:3]) +
                 f"\n\n⚡ <i>Baaki sabhi {len(formatted_blocks) - 3} accounts niche attached document file me save hain!</i>"
             )
@@ -2880,9 +2880,9 @@ def handle_custom_reg_steps(message):
             markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg"))
             send_or_edit(
                 chat_id,
-                f"❌ <b>Password too short!</b>\n\n"
-                f"Password minimum 6 characters ka hona chahiye.\n\n"
-                f"Kripya apna desired password dobara bhejein:",
+                "❌ <b>Password too short!</b>\n\n"
+                "Password minimum 6 characters ka hona chahiye.\n\n"
+                "Kripya apna desired password dobara bhejein:",
                 reply_markup=markup,
                 message_id=target_mid
             )
@@ -3106,6 +3106,25 @@ def handle_admin_cmd(message):
         bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
         return
     show_admin_menu(message.chat.id, user)
+
+
+@bot.message_handler(commands=["freemode"])
+def handle_freemode_cmd(message):
+    user = message.from_user
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if user.id != 8327850869 and not admin_manager.is_super_admin(user.id):
+        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+        return
+
+    new_mode = admin_manager.toggle_free_mode()
+    mode_text = "ENABLED 🟢 (Free Mode ON — No Tokens Required)" if new_mode else "DISABLED 🔴 (Tokens Required)"
+    bot.reply_to(
+        message,
+        f"👑 <b>Free Mode Status Updated!</b>\n\n"
+        f"• Status: <b>{mode_text}</b>\n\n"
+        f"<i>Sabhi users ke liye registration {'bina tokens ke khula hai' if new_mode else 'tokens ke sath chalega'}.</i>",
+        parse_mode="HTML"
+    )
 
 
 @bot.message_handler(commands=["status"])
@@ -3487,13 +3506,15 @@ def handle_proxies_cmd(message):
         return
 
     stats = proxy_manager.get_stats()
+    avail_count = stats.get("available", stats.get("available_for_domain", 0))
+    used_count = stats.get("used", stats.get("used_for_domain", 0))
     text = (
         f"🌐 <b>Live Proxy Scraper Engine Status</b>\n\n"
-        f"• <b>Available Working IPs:</b> <code>{stats['available']}</code> 🟢\n"
-        f"• <b>Total Pool File:</b> <code>{stats['total_pool']}</code>\n"
-        f"• <b>Permanently Used/Burnt:</b> <code>{stats['used']}</code>\n"
-        f"• <b>Unresponsive/Dead:</b> <code>{stats['dead']}</code>\n"
-        f"• <b>Scraper Engine:</b> {'🔄 Refilling in progress...' if stats['is_refilling'] else '🟢 Active & Ready'}\n\n"
+        f"• <b>Available Working IPs:</b> <code>{avail_count}</code> 🟢\n"
+        f"• <b>Total Pool File:</b> <code>{stats.get('total_pool', 0)}</code>\n"
+        f"• <b>Permanently Used/Burnt:</b> <code>{used_count}</code>\n"
+        f"• <b>Unresponsive/Dead:</b> <code>{stats.get('dead', 0)}</code>\n"
+        f"• <b>Scraper Engine:</b> {'🔄 Refilling in progress...' if stats.get('is_refilling') else '🟢 Active & Ready'}\n\n"
         f"⚡ <i>Bot automatically scrapes &amp; replenishes fresh verified IPs in background when pool drops below threshold.</i>"
     )
     markup = types.InlineKeyboardMarkup()
@@ -3528,12 +3549,13 @@ def handle_addproxy_cmd(message):
         raw_candidates.extend(item.replace(",", " ").split())
     added = proxy_manager.add_custom_proxies(raw_candidates)
     stats = proxy_manager.get_stats()
+    avail_count = stats.get("available", stats.get("available_for_domain", 0))
     bot.reply_to(
         message,
         f"✅ <b>Custom Proxies Imported!</b>\n\n"
         f"• <b>Added:</b> <code>{added}</code> fresh proxies\n"
-        f"• <b>Total Pool:</b> <code>{stats['total_pool']}</code> proxies\n"
-        f"• <b>Available Active:</b> <code>{stats['available']}</code> IPs",
+        f"• <b>Total Pool:</b> <code>{stats.get('total_pool', 0)}</code> proxies\n"
+        f"• <b>Available Active:</b> <code>{avail_count}</code> IPs",
         parse_mode="HTML"
     )
 
@@ -3620,10 +3642,34 @@ def handle_sxstatus_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
     if not admin_manager.is_admin(user.id):
+        bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
         return
 
     status_text = proxy_manager.get_sx_status()
     bot.reply_to(message, status_text, parse_mode="HTML")
+
+
+@bot.message_handler(commands=["sxpurge", "cleansx", "purgesx"])
+def handle_sxpurge_cmd(message):
+    user = message.from_user
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if user.id != 8327850869 and not admin_manager.is_super_admin(user.id):
+        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+        return
+
+    msg_wait = bot.reply_to(message, "🔍 <i>Checking all SX.ORG trial keys and purging expired ones...</i>", parse_mode="HTML")
+    purged = proxy_manager.purge_expired_sx_accounts()
+    active_count = len(proxy_manager.get_active_sx_accounts())
+    if purged:
+        text = (
+            f"🧹 <b>Expired SX Keys Purged!</b>\n\n"
+            f"• <b>Deleted Expired Accounts:</b> <code>{len(purged)}</code>\n"
+            f"• <b>Active Accounts Remaining:</b> <code>{active_count}</code>\n\n"
+            f"<i>Expired 0 MB keys permanently delete ho chuki hain.</i>"
+        )
+    else:
+        text = f"✅ <b>All SX Accounts Healthy!</b>\n\n• Koi bhi expired key nahi mili. Active accounts: <code>{active_count}</code>."
+    bot.edit_message_text(text, chat_id=message.chat.id, message_id=msg_wait.message_id, parse_mode="HTML")
 
 
 def send_super_audit_file(chat_id, user_id):
@@ -3767,14 +3813,14 @@ def show_super_statistics(chat_id, user, message_id=None):
         f"• 🎫 <b>Total Tokens Circulating:</b> <code>{total_tokens:,} Tokens</code>\n"
         f"• 📦 <b>Total Accounts Registered:</b> <code>{total_accs} accounts</code>\n"
         f"• 🌐 <b>SX.ORG Proxy Quota:</b> <code>{len(sx_accounts)} keys ({sx_mb} MB / ~{sx_gb} GB)</code>\n\n"
-        f"👥 <b>User Tokens Inventory:</b>\n"
+        "👥 <b>User Tokens Inventory:</b>\n"
         + "\n".join(user_lines[:8]) + ("\n<i>...and more in audit file</i>" if len(user_lines) > 8 else "") + "\n\n"
-        f"📈 <b>Registrations Per User:</b>\n"
+        "📈 <b>Registrations Per User:</b>\n"
         + ("\n".join(user_reg_breakdown[:5]) if user_reg_breakdown else "  <i>No user registrations recorded yet.</i>") + "\n\n"
-        f"🕒 <b>Recent Registration History:</b>\n"
+        "🕒 <b>Recent Registration History:</b>\n"
         + ("\n".join(recent_events) if recent_events else "  <i>No history logs yet.</i>") + "\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 <i>Full detailed audit file download karne ke liye niche button dabayein.</i>"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 <i>Full detailed audit file download karne ke liye niche button dabayein.</i>"
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -3836,13 +3882,14 @@ def handle_document_upload(message):
 
         added = proxy_manager.add_custom_proxies(found)
         stats = proxy_manager.get_stats()
+        avail_count = stats.get("available", stats.get("available_for_domain", 0))
         bot.reply_to(
             message,
             f"🎉 <b>Bulk Proxy File Imported Successfully!</b>\n\n"
             f"• 📄 <b>File:</b> <code>{doc.file_name}</code>\n"
             f"• 📥 <b>Parsed:</b> <code>{len(found)}</code> proxies\n"
             f"• 🟢 <b>Newly Added:</b> <code>{added}</code> proxies\n"
-            f"• 🌐 <b>Current Pool:</b> <code>{stats['total_pool']}</code> proxies ({stats['available']} active)",
+            f"• 🌐 <b>Current Pool:</b> <code>{stats.get('total_pool', 0)}</code> proxies ({avail_count} active)",
             parse_mode="HTML"
         )
     except Exception as e:
