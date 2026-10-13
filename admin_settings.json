@@ -1,5 +1,5 @@
 {
-  "free_mode": true,
+  "free_mode": false,
   "master_log_channel": "-1003946923981",
   "master_storage_channel": "-1003907841421",
   "admin_user_ids": [
@@ -14,7 +14,7 @@
       "first_name": "\u115f",
       "role": "\ud83d\udc51 Super Admin",
       "joined_at": 1791360836.8728495,
-      "last_active": 1791654144.282584,
+      "last_active": 1791892774.2510703,
       "user_log_channel": null,
       "user_storage_channel": null,
       "tokens": 999999
@@ -24,20 +24,20 @@
       "username": "gurjar040",
       "first_name": "Prince",
       "role": "\ud83d\udee1\ufe0f Admin",
-      "tokens": 999999,
+      "tokens": 1000,
       "joined_at": 1791437060.2165174,
-      "last_active": 1791654151.8162744,
+      "last_active": 1791891931.9320946,
       "user_log_channel": null,
       "user_storage_channel": null
     },
-    "7812349806": {
-      "user_id": 7812349806,
-      "username": "GandaLund",
-      "first_name": "GoLu",
-      "role": "\u26aa Free User",
-      "tokens": 1000,
-      "joined_at": 1791369390.3403897,
-      "last_active": 1791369506.837519,
+    "7545282674": {
+      "user_id": 7545282674,
+      "username": "PAPA_PLAYER7",
+      "first_name": "\u0950 \ud835\udc43\ud835\udf1c\ud835\udc43\ud835\udf1c \ud835\udc43\ud835\udf13\ud835\udf1c\ud835\udf00\ud835\udc45",
+      "role": "\u26aa Guest",
+      "tokens": 100,
+      "joined_at": 1791448601.9803462,
+      "last_active": 1791452183.3796988,
       "user_log_channel": null,
       "user_storage_channel": null
     },
@@ -46,33 +46,61 @@
       "username": "",
       "first_name": "\u221e",
       "role": "\u26aa Free User",
-      "tokens": 1000,
+      "tokens": 100,
       "joined_at": 1791368000.0,
       "last_active": 1791369000.0,
       "user_log_channel": null,
       "user_storage_channel": null
     },
-    "7545282674": {
-      "user_id": 7545282674,
-      "username": "PAPA_PLAYER7",
-      "first_name": "\u0950 \ud835\udc77\ud835\udf1c\ud835\udc77\ud835\udf1c \ud835\udc77\ud835\udc73\ud835\udf1c\ud835\udc80\ud835\udc6c\ud835\udc79",
+    "1247192348": {
+      "user_id": 1247192348,
+      "username": "Beastboyanu",
+      "first_name": "Beast Boy",
       "role": "\u26aa Guest",
       "tokens": 100,
-      "joined_at": 1791448601.9803462,
-      "last_active": 1791452183.3796988,
+      "joined_at": 1791813499.8303456,
+      "last_active": 1791871222.3309686,
+      "user_log_channel": null,
+      "user_storage_channel": null
+    },
+    "7812349806": {
+      "user_id": 7812349806,
+      "username": "GandaLund",
+      "first_name": "GoLu",
+      "role": "\u26aa Free User",
+      "tokens": 0,
+      "joined_at": 1791369390.3403897,
+      "last_active": 1791742588.3663158,
       "user_log_channel": null,
       "user_storage_channel": null
     },
     "8659204794": {
       "user_id": 8659204794,
       "username": "Prince0179",
-      "first_name": "Prince",
+      "first_name": "Rohit",
       "role": "\u26aa Free User",
-      "tokens": 1000,
+      "tokens": 0,
       "joined_at": 1791469967.6214554,
-      "last_active": 1791469987.4452522,
+      "last_active": 1791892184.724972,
       "user_log_channel": null,
       "user_storage_channel": null
+    },
+    "6899008141": {
+      "user_id": 6899008141,
+      "username": "gurjar3000",
+      "first_name": "Bittoo",
+      "role": "\u26aa Guest",
+      "tokens": 0,
+      "joined_at": 1791741358.7696564,
+      "last_active": 1791742660.0745351,
+      "user_log_channel": null,
+      "user_storage_channel": null
+    }
+  },
+  "admin_daily_usage": {
+    "6217522461": {
+      "date": "2026-10-13",
+      "used": 0
     }
   }
 }
