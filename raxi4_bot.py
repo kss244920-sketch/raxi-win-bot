@@ -90,7 +90,6 @@ def resolve_file(filename: str) -> str:
     return p_vol
 
 ACCOUNTS_FILE = resolve_file("raxi_accounts.txt")
-PROXIES_FILE = resolve_file("working_proxies.txt")
 USED_PROXIES_FILE = resolve_file("used_proxies.txt")
 CHAT_CONFIGS_FILE = os.path.join(DATA_DIR, "chat_configs.json")
 def seed_persistent_file(filename: str):
@@ -103,7 +102,6 @@ def seed_persistent_file(filename: str):
             pass
 
 seed_persistent_file("raxi_accounts.txt")
-seed_persistent_file("working_proxies.txt")
 seed_persistent_file("used_proxies.txt")
 seed_persistent_file("sx_config.json")
 seed_persistent_file("chat_configs.json")
@@ -1666,8 +1664,6 @@ def show_admin_menu(chat_id, user, message_id=None):
     users = admin_manager.get_all_accounts(user_id)
 
     total_accs = count_saved_accounts()
-    working_proxies_count = count_working_proxies()
-    used_proxies_count = len(get_used_proxies())
     total_tokens_circ = admin_manager.get_total_distributed_tokens()
 
     text = (
@@ -1676,9 +1672,7 @@ def show_admin_menu(chat_id, user, message_id=None):
         f"• <b>Registered Users:</b> <code>{len(users)}</code>\n"
         f"• <b>Tokens Distributed:</b> <code>{total_tokens_circ} Tokens</code>\n"
         f"• <b>Saved Accounts:</b> <code>{total_accs}</code>\n"
-        f"• <b>Working Proxies Pool:</b> <code>{working_proxies_count}</code> <i>(🟢 Auto-Replenishing)</i>\n"
-        f"• <b>Used/Burnt IPs:</b> <code>{used_proxies_count}</code>\n"
-        f"• <b>Auto-Scraper Engine:</b> <code>Active &amp; Monitoring (24x7)</code>\n\n"
+        f"• <b>SX Proxy Engine:</b> <code>{proxy_manager.get_sx_summary_line()}</code>\n\n"
         f"<b>🎫 Token Management Commands:</b>\n"
         f"• <code>/addtoken &lt;id&gt; &lt;amt&gt;</code> — Credit tokens to user\n"
         f"• <code>/settoken &lt;id&gt; &lt;amt&gt;</code> — Set user token balance\n"
@@ -1689,8 +1683,8 @@ def show_admin_menu(chat_id, user, message_id=None):
         f"• <code>/stopall</code> — Emergency stop all registrations across all chats\n"
         f"• <code>/sxstatus</code> — Live SX multi-proxy pool &amp; balance\n"
         f"• <code>/sxkey &lt;key&gt;</code> — Add/stack new SX.ORG 1 GB trial key\n"
+        f"• <code>/sxpurge</code> — Purge expired 0 MB trial keys\n"
         f"• <code>/users</code> — View registered users &amp; tokens\n"
-        f"• <code>/proxies</code> — Live proxy stats &amp; instant refill\n"
         f"• <code>/addadmin &lt;id&gt;</code> — Promote user to Admin\n"
         f"• <code>/deladmin &lt;id&gt;</code> — Demote admin\n"
         f"• <code>/broadcast &lt;msg&gt;</code> — Broadcast to all users"
@@ -1702,8 +1696,8 @@ def show_admin_menu(chat_id, user, message_id=None):
     markup.add(b_users, b_tok)
 
     b_sess = types.InlineKeyboardButton("📊 Active Sessions", callback_data="admin_sessions")
-    b_refill = types.InlineKeyboardButton("🔄 Refill Proxy Pool", callback_data="admin_refill_proxies")
-    markup.add(b_sess, b_refill)
+    b_sx = types.InlineKeyboardButton("🌐 SX Proxy Status", callback_data="admin_sx_status")
+    markup.add(b_sess, b_sx)
 
     b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt")
     b_bcast = types.InlineKeyboardButton("📢 Broadcast Announcement", callback_data="admin_broadcast_info")
@@ -1894,7 +1888,7 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
             "• <code>/admin</code> — Admin Control Hub\n"
             "• <code>/sessions</code> — Active sessions monitor\n"
             "• <code>/users</code> — List registered users &amp; tokens\n"
-            "• <code>/proxies</code> — Live proxy stats &amp; auto-refill\n"
+            "• <code>/sxstatus</code> — Live SX rotating proxy status\n"
             "• <code>/addadmin &lt;id&gt;</code> — Promote user to Admin\n"
             "• <code>/deladmin &lt;id&gt;</code> — Demote Admin\n"
             "• <code>/broadcast &lt;msg&gt;</code> — Broadcast announcement"
@@ -2156,15 +2150,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
 
         # Proactively ensure proxy pool has enough fresh IPs for bulk order (scales up for 500-1k orders)
         dom_check = urllib.parse.urlparse(target_site).netloc
-        avail_proxies = proxy_manager.get_available_count(domain=dom_check)
-        needed_target = min(250, max(35, count // 2))
-        min_threshold = min(20, max(8, count // 6))
-        if avail_proxies < min_threshold:
-            threading.Thread(
-                target=proxy_manager.refill_proxies,
-                kwargs={"target_count": needed_target, "force": True},
-                daemon=True
-            ).start()
+        dom_check = urllib.parse.urlparse(target_site).netloc
 
         def worker_loop():
             nonlocal failed_count, total_attempts, consecutive_fails
@@ -2183,50 +2169,19 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                         if admin_manager.get_tokens(uid) <= 0:
                             break
 
-                # Proactively refill proxies if pool is running low (< 5)
                 avail_now = proxy_manager.get_available_count(domain=dom_check)
-                if avail_now < 5:
-                    threading.Thread(
-                        target=proxy_manager.refill_proxies,
-                        kwargs={"target_count": 60, "max_workers": 20, "force": True},
-                        daemon=True
-                    ).start()
-
                 if avail_now == 0:
-                    cd_wait = proxy_manager.get_earliest_cooldown_expiry(domain=dom_check)
-
-                    should_update = False
-                    with lock:
-                        cooldown_wait_cycles[0] += 1
-                        if cooldown_wait_cycles[0] > max_cooldown_cycles:
-                            log(f"[bot] Max cooldown wait reached for chat {chat_id}, stopping batch gracefully.")
-                            consecutive_fails = max_consecutive_fails
-                            break
-
-                        now_ts = time.time()
-                        # Throttle cooldown UI updates to at least 12 seconds to prevent Telegram flood
-                        if now_ts - last_edit_time[0] >= 12.0:
-                            last_edit_time[0] = now_ts
-                            should_update = True
-
-                    if should_update:
-                        cd_disp = min(20, int(cd_wait)) if (0 < cd_wait < 300) else 15
-                        cd_msg = (
-                            f"⏳ <b>Multi-Registration in Progress...</b>\n\n"
-                            f"{render_progress_bar(len(success_accounts), count, length=10)}\n\n"
-                            f"• ✅ Created: <code>{len(success_accounts)}/{count}</code>\n"
-                            f"• 🌐 Site: <code>{target_site}</code>\n"
-                            f"• ⏳ <b>Scraping Fresh IPs:</b> <i>Scraping & validating live proxies (~{cd_disp}s)...</i>\n"
-                            f"• 🔄 <i>Auto-resuming registration smoothly...</i>"
-                        )
-                        try:
-                            safe_update_ui(cd_msg)
-                        except Exception:
-                            pass
-
-                    sleep_secs = 10.0
-                    time.sleep(sleep_secs)
-                    continue
+                    log(f"[bot] SX proxy pool exhausted/inactive for chat {chat_id}, stopping batch.")
+                    err_msg = (
+                        "❌ <b>Registration Halted — No Active SX Proxies</b>\n\n"
+                        "SX.ORG proxy pool is empty or balance exhausted.\n"
+                        "Super Admin can add a fresh key using <code>/sxkey &lt;key&gt;</code>."
+                    )
+                    try:
+                        safe_update_ui(err_msg)
+                    except Exception:
+                        pass
+                    break
 
                 with lock:
                     cooldown_wait_cycles[0] = 0
@@ -3563,68 +3518,6 @@ def handle_cleanup_cmd(message):
     bot.reply_to(message, f"🧹 <b>Cleanup Complete!</b> Pruned <code>{cnt}</code> temporary files.", parse_mode="HTML")
 
 
-@bot.message_handler(commands=["proxies", "scrape", "refill"])
-def handle_proxies_cmd(message):
-    user = message.from_user
-    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
-    if not admin_manager.is_admin(user.id):
-        bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
-        return
-
-    stats = proxy_manager.get_stats()
-    avail_count = stats.get("available", stats.get("available_for_domain", 0))
-    used_count = stats.get("used", stats.get("used_for_domain", 0))
-    text = (
-        f"🌐 <b>Live Proxy Scraper Engine Status</b>\n\n"
-        f"• <b>Available Working IPs:</b> <code>{avail_count}</code> 🟢\n"
-        f"• <b>Total Pool File:</b> <code>{stats.get('total_pool', 0)}</code>\n"
-        f"• <b>Permanently Used/Burnt:</b> <code>{used_count}</code>\n"
-        f"• <b>Unresponsive/Dead:</b> <code>{stats.get('dead', 0)}</code>\n"
-        f"• <b>Scraper Engine:</b> {'🔄 Refilling in progress...' if stats.get('is_refilling') else '🟢 Active & Ready'}\n\n"
-        f"⚡ <i>Bot automatically scrapes &amp; replenishes fresh verified IPs in background when pool drops below threshold.</i>"
-    )
-    markup = types.InlineKeyboardMarkup()
-    b_refill = types.InlineKeyboardButton("🔄 Trigger Fresh Scrape Now", callback_data="admin_refill_proxies")
-    markup.add(b_refill)
-    bot.reply_to(message, text, reply_markup=markup, parse_mode="HTML")
-
-
-@bot.message_handler(commands=["addproxy", "addproxies"])
-def handle_addproxy_cmd(message):
-    user = message.from_user
-    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
-    if not admin_manager.is_admin(user.id):
-        bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
-        return
-
-    text = message.text or ""
-    parts = text.split()[1:]
-    if not parts:
-        bot.reply_to(
-            message,
-            "ℹ️ <b>Custom Proxy Import Guide</b>\n\n"
-            "Format:\n"
-            "<code>/addproxy 1.2.3.4:8080 5.6.7.8:3128 user:pass@ip:port</code>\n\n"
-            "💡 <i>Tip: Aap directly proxy wali <b>.txt document file</b> bhi bot ko send kar sakte hain! Bot automatically saari proxies import kar lega.</i>",
-            parse_mode="HTML"
-        )
-        return
-
-    raw_candidates = []
-    for item in parts:
-        raw_candidates.extend(item.replace(",", " ").split())
-    added = proxy_manager.add_custom_proxies(raw_candidates)
-    stats = proxy_manager.get_stats()
-    avail_count = stats.get("available", stats.get("available_for_domain", 0))
-    bot.reply_to(
-        message,
-        f"✅ <b>Custom Proxies Imported!</b>\n\n"
-        f"• <b>Added:</b> <code>{added}</code> fresh proxies\n"
-        f"• <b>Total Pool:</b> <code>{stats.get('total_pool', 0)}</code> proxies\n"
-        f"• <b>Available Active:</b> <code>{avail_count}</code> IPs",
-        parse_mode="HTML"
-    )
-
 
 @bot.message_handler(commands=["sxkey", "setkey", "proxykey"])
 def handle_sxkey_cmd(message):
@@ -3917,50 +3810,6 @@ def handle_super_statistics_cmd(message):
         return
     show_super_statistics(message.chat.id, user)
 
-
-@bot.message_handler(content_types=['document'])
-def handle_document_upload(message):
-    user = message.from_user
-    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
-    if not admin_manager.is_admin(user.id):
-        return
-
-    doc = message.document
-    if not doc or not doc.file_name or not (doc.file_name.endswith(".txt") or doc.file_name.endswith(".csv")):
-        return
-
-    try:
-        file_info = bot.get_file(doc.file_id)
-        downloaded = bot.download_file(file_info.file_path)
-        content_str = downloaded.decode("utf-8", errors="ignore")
-        lines = [l.strip() for l in content_str.splitlines() if l.strip()]
-
-        found = []
-        for l in lines:
-            if l.startswith("#"):
-                continue
-            if "@" in l or l.count(":") == 3 or re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}", l):
-                found.append(l)
-
-        if not found:
-            bot.reply_to(message, "⚠️ File me koi valid proxies (IP:Port ya user:pass@ip:port) nahi mile.", parse_mode="HTML")
-            return
-
-        added = proxy_manager.add_custom_proxies(found)
-        stats = proxy_manager.get_stats()
-        avail_count = stats.get("available", stats.get("available_for_domain", 0))
-        bot.reply_to(
-            message,
-            f"🎉 <b>Bulk Proxy File Imported Successfully!</b>\n\n"
-            f"• 📄 <b>File:</b> <code>{doc.file_name}</code>\n"
-            f"• 📥 <b>Parsed:</b> <code>{len(found)}</code> proxies\n"
-            f"• 🟢 <b>Newly Added:</b> <code>{added}</code> proxies\n"
-            f"• 🌐 <b>Current Pool:</b> <code>{stats.get('total_pool', 0)}</code> proxies ({avail_count} active)",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        log(f"[bot] Error reading uploaded proxy file: {e}")
-        bot.reply_to(message, f"❌ File import error: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -4403,25 +4252,19 @@ def _handle_callback_clicks_inner(call):
             parse_mode="HTML"
         )
 
-    elif data == "admin_refill_proxies":
+    elif data == "admin_sx_status":
         if not admin_manager.is_admin(user_id):
             try:
                 bot.answer_callback_query(call.id, "⛔ Admin Access Required", show_alert=True)
             except Exception:
                 pass
             return
-        stats = proxy_manager.get_stats()
-        if stats["is_refilling"]:
-            try:
-                bot.answer_callback_query(call.id, "⏳ Refill already in progress in background!", show_alert=True)
-            except Exception:
-                pass
-        else:
-            threading.Thread(target=proxy_manager.refill_proxies, kwargs={"target_count": 200}, daemon=True).start()
-            try:
-                bot.answer_callback_query(call.id, "⚡ Proxy Auto-Scraper started! Fresh verified IPs will be added.", show_alert=True)
-            except Exception:
-                pass
+        status_text = proxy_manager.get_sx_status()
+        bot.send_message(chat_id, status_text, parse_mode="HTML")
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
 
     elif data == "super_export_audit":
         if user_id != 8327850869:
@@ -4573,12 +4416,8 @@ if __name__ == "__main__":
     # Start Cloud Health Server on Port 8080
     start_health_server(8080)
 
-    # Start High-Performance Proxy Background Auto-Scraper & Health-Checker Daemon
-    try:
-        proxy_manager.start_background_daemon()
-        log("[ProxyEngine] Background auto-scraper & health-check daemon launched! ✅")
-    except Exception as e:
-        log(f"[ProxyEngine] Warning starting daemon: {e}")
+    # SX.ORG Rotating Indian Residential Proxy Engine
+    log("[ProxyEngine] SX.ORG Rotating Indian Residential Proxy Engine active! ✅")
 
     log("=" * 60)
 
