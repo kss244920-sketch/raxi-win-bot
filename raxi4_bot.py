@@ -1038,8 +1038,8 @@ def send_exported_full_report(chat_id, user_id):
         "================================================================================\n",
         "--- [QUICK COMBOS SUMMARY (PHONE:PASSWORD)] ---"
     ]
-    for r in recs:
-        report_lines.append(f"{r['phone']}:{r['password']}")
+    for idx, r in enumerate(recs, 1):
+        report_lines.append(f"[{idx}] {r['phone']}:{r['password']}")
     report_lines.append("\n================================================================================")
     report_lines.append("--- [DETAILED ACCOUNT RECORDS] ---")
     report_lines.append("================================================================================\n")
@@ -2133,6 +2133,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         max_consecutive_fails = max(150, count)
         consecutive_fails = 0
         lock = threading.Lock()
+        cond = threading.Condition(lock)
+        in_flight = 0
         last_edit_time = [time.time()]
         cooldown_wait_cycles = [0]
         max_cooldown_cycles = 30
@@ -2150,24 +2152,36 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
 
         # Proactively ensure proxy pool has enough fresh IPs for bulk order (scales up for 500-1k orders)
         dom_check = urllib.parse.urlparse(target_site).netloc
-        dom_check = urllib.parse.urlparse(target_site).netloc
 
         def worker_loop():
-            nonlocal failed_count, total_attempts, consecutive_fails
+            nonlocal failed_count, total_attempts, consecutive_fails, in_flight
             while True:
                 if is_session_stop_requested(chat_id):
                     log(f"[bot] Session in chat {chat_id} received STOP signal, halting worker.")
                     break
-                with lock:
-                    if len(success_accounts) >= count:
-                        break
-                    if total_attempts >= max_total_attempts:
-                        break
-                    if consecutive_fails >= max_consecutive_fails:
-                        break
-                    if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
-                        if admin_manager.get_tokens(uid) <= 0:
+
+                with cond:
+                    while True:
+                        if is_session_stop_requested(chat_id):
+                            return
+                        if len(success_accounts) >= count:
+                            return
+                        if total_attempts >= max_total_attempts:
+                            return
+                        if consecutive_fails >= max_consecutive_fails:
+                            return
+                        if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
+                            if admin_manager.get_tokens(uid) <= 0:
+                                return
+
+                        # Check if a slot is available
+                        if len(success_accounts) + in_flight < count:
+                            in_flight += 1
+                            total_attempts += 1
                             break
+                        else:
+                            # Enough workers are currently in-flight to complete remaining target. Wait for them.
+                            cond.wait(timeout=0.5)
 
                 avail_now = proxy_manager.get_available_count(domain=dom_check)
                 if avail_now == 0:
@@ -2181,22 +2195,30 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                         safe_update_ui(err_msg)
                     except Exception:
                         pass
+                    with cond:
+                        in_flight = max(0, in_flight - 1)
+                        cond.notify_all()
                     break
 
-                with lock:
+                with cond:
                     cooldown_wait_cycles[0] = 0
 
-                with lock:
-                    total_attempts += 1
-
-                res = auto_register_account(site=target_site, api=target_api, invite=target_invite, creator_id=uid, api_type=cfg.get("api_type"))
+                try:
+                    res = auto_register_account(site=target_site, api=target_api, invite=target_invite, creator_id=uid, api_type=cfg.get("api_type"))
+                except Exception as e:
+                    log(f"[bot] auto_register_account unexpected exception in worker: {e}")
+                    res = {"ok": False, "msg": str(e)}
 
                 update_text = None
-                with lock:
+                with cond:
+                    in_flight = max(0, in_flight - 1)
                     if res.get("ok"):
-                        admin_manager.deduct_tokens(uid, 1)
-                        success_accounts.append(res)
-                        consecutive_fails = 0
+                        if len(success_accounts) < count:
+                            admin_manager.deduct_tokens(uid, 1)
+                            success_accounts.append(res)
+                            consecutive_fails = 0
+                        else:
+                            log(f"[bot] Target count {count} reached; ignoring overflow account {res.get('phone')}")
                     else:
                         failed_count += 1
                         consecutive_fails += 1
@@ -2234,6 +2256,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                             f"• ⚡ Mode: <code>{speed_label}</code>"
                             f"{eta_line}{retry_note}"
                         )
+                    cond.notify_all()
 
                 if update_text:
                     try:
@@ -2309,17 +2332,18 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                 return
 
             formatted_blocks = []
-            for acc in success_accounts:
-                ip_val = acc.get('proxy', 'Direct')
+            for idx, acc in enumerate(success_accounts, 1):
+                clean_ip = mask_proxy(acc.get('proxy', 'Direct'))
                 dev_val = acc.get('device', 'Android')
                 uid_val = acc.get('uid') or 'Registered'
                 phone_val = acc['phone']
                 pwd_val = acc['password']
                 block = (
-                    f"🌐 <b>IP / Device:</b> <code>{ip_val}</code> | <code>{dev_val}</code>\n"
-                    f"🆔 <b>UID:</b> <code>{uid_val}</code>\n"
-                    f"📱 <b>Number:</b> <code>{phone_val}</code>\n"
-                    f"🔑 <b>Password:</b> <code>{pwd_val}</code>"
+                    f"<b>[#{idx}] Account #{idx}</b>\n"
+                    f"📱 <b>[{idx}]</b> <code>{phone_val}</code> : <code>{pwd_val}</code>\n"
+                    f"   ├ 🆔 <b>UID:</b> <code>{uid_val}</code>\n"
+                    f"   ├ 📱 <b>Device:</b> <code>{dev_val}</code>\n"
+                    f"   └ 🌐 <b>Proxy IP:</b> <code>{clean_ip}</code>"
                 )
                 formatted_blocks.append(block)
 
@@ -2331,17 +2355,28 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                     safe_update_ui(stopped_header + "\n\n".join(formatted_blocks[:6]), reply_markup=markup)
             else:
                 doc_lines = [
-                    "# Raxi Auto-Register Bulk Accounts Export (Stopped Early)",
-                    f"# Total Created: {len(success_accounts)} / {count}",
-                    f"# Target Platform: {target_site}",
-                    f"# Invite Code: {target_invite}",
-                    f"# Generated At: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
-                    "# Format: phone:password | UID | Device | IP",
-                    "=" * 60,
-                    ""
+                    "================================================================================",
+                    "RAXI AUTO-REGISTER - BULK ACCOUNTS EXPORT REPORT (STOPPED EARLY)",
+                    f"Total Accounts Created: {len(success_accounts)} / {count}",
+                    f"Target Platform: {target_site}",
+                    f"Invite Code: {target_invite}",
+                    f"Export Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+                    "================================================================================\n",
+                    "--- [QUICK COMBOS SUMMARY (PHONE:PASSWORD)] ---"
                 ]
-                for acc in success_accounts:
-                    doc_lines.append(f"{acc['phone']}:{acc['password']} | UID: {acc.get('uid') or 'Registered'} | Device: {acc.get('device', 'Android')} | IP: {acc.get('proxy', 'Direct')}")
+                for idx, acc in enumerate(success_accounts, 1):
+                    doc_lines.append(f"[{idx}] {acc['phone']}:{acc['password']}")
+                doc_lines.append("\n================================================================================")
+                doc_lines.append("--- [STRUCTURED AUDIT RECORDS] ---")
+                doc_lines.append("================================================================================\n")
+                for idx, acc in enumerate(success_accounts, 1):
+                    clean_ip = mask_proxy(acc.get('proxy', 'Direct'))
+                    doc_lines.append(f"[{idx}] 📱 Phone:    {acc['phone']}")
+                    doc_lines.append(f"    🔑 Password: {acc['password']}")
+                    doc_lines.append(f"    🆔 UID:      {acc.get('uid') or 'Registered'}")
+                    doc_lines.append(f"    📱 Device:   {acc.get('device', 'Android')}")
+                    doc_lines.append(f"    🌐 Proxy IP: {clean_ip}")
+                    doc_lines.append("-" * 60)
 
                 doc_bytes = "\n".join(doc_lines).encode("utf-8")
                 doc_stream = io.BytesIO(doc_bytes)
@@ -2401,8 +2436,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
             pwd_val = acc['password']
 
             block = (
-                f"<b>Account #{idx}</b>\n"
-                f"📱 <code>{phone_val}</code> : <code>{pwd_val}</code>\n"
+                f"<b>[#{idx}] Account #{idx}</b>\n"
+                f"📱 <b>[{idx}]</b> <code>{phone_val}</code> : <code>{pwd_val}</code>\n"
                 f"   ├ 🆔 <b>UID:</b> <code>{uid_val}</code>\n"
                 f"   ├ 📱 <b>Device:</b> <code>{dev_val}</code>\n"
                 f"   └ 🌐 <b>Proxy IP:</b> <code>{clean_ip}</code>"
@@ -2427,8 +2462,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                 "================================================================================\n",
                 "--- [QUICK COMBOS SUMMARY (PHONE:PASSWORD)] ---"
             ]
-            for acc in success_accounts:
-                doc_lines.append(f"{acc['phone']}:{acc['password']}")
+            for idx, acc in enumerate(success_accounts, 1):
+                doc_lines.append(f"[{idx}] {acc['phone']}:{acc['password']}")
             doc_lines.append("\n================================================================================")
             doc_lines.append("--- [STRUCTURED AUDIT RECORDS] ---")
             doc_lines.append("================================================================================\n")
