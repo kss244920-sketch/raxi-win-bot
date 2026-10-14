@@ -2548,10 +2548,10 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
 
         if delay > 0:
             workers = 1
-        elif count >= 50:
-            workers = 3
+        elif count >= 10:
+            workers = 5
         else:
-            workers = min(count, 3)
+            workers = min(count, 5)
 
         threads = []
         for _ in range(workers):
