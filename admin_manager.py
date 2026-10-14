@@ -637,8 +637,13 @@ class AdminManager:
             new_val = max(0, current - amount)
             self.user_registry[uid_str]["tokens"] = new_val
             if uid in self.admin_user_ids and not self.is_super_admin(uid):
+                today_str = get_current_ist_date()
                 rec = self.admin_daily_usage.get(uid_str, {})
+                if rec.get("date") != today_str:
+                    rec = {"date": today_str, "used": 0, "last_reset": time.time()}
                 rec["used"] = rec.get("used", 0) + amount
+                if "last_reset" not in rec:
+                    rec["last_reset"] = time.time()
                 self.admin_daily_usage[uid_str] = rec
             self.save()
             return new_val

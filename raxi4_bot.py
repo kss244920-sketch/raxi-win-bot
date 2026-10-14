@@ -658,7 +658,12 @@ def detect_and_parse_referral_link(text_or_url):
     Extracts site URL, backend API, invite code, and platform engine type from ANY referral link or text
     (supports raxi4, raxi win, maanwin, 51game, and all clone sites).
     """
-    match = re.search(r"(https?://[^\s\"'<>]+)", text_or_url)
+    clean_text = text_or_url.strip()
+    if not clean_text.startswith("http://") and not clean_text.startswith("https://"):
+        if clean_text.startswith("www.") or re.match(r"^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", clean_text):
+            clean_text = f"https://{clean_text}"
+
+    match = re.search(r"(https?://[^\s\"'<>]+)", clean_text)
     if not match:
         return None
 
@@ -673,11 +678,11 @@ def detect_and_parse_referral_link(text_or_url):
     if inv_match:
         invite_code = inv_match.group(1)
     else:
-        m_trail = re.search(r"/(?:r|register|invite|join)/([A-Za-z0-9]{4,20})/?$", raw_url, re.I)
+        m_trail = re.search(r"/(?:r|register|invite|join)/([A-Za-z0-9]{4,20})(?:[/?#]|$)", raw_url, re.I)
         if m_trail:
             invite_code = m_trail.group(1)
         else:
-            m_num = re.search(r"/([0-9]{5,15})/?$", raw_url)
+            m_num = re.search(r"/([0-9]{5,15})(?:[/?#]|$)", raw_url)
             if m_num:
                 invite_code = m_num.group(1)
 
@@ -708,13 +713,15 @@ def detect_and_parse_referral_link(text_or_url):
     except Exception:
         pass
 
-    # Check 2B: 51game / Raxi clone (VITE / WEBAPI)
+    # Check 2B: 51game / Raxi / DMFirst clone (VITE / WEBAPI)
     api_url = None
     domain_lower = parsed.netloc.lower()
 
     # FAST PATH: Instant 0.01ms resolution for known platform families
     if any(k in domain_lower for k in ["raxi", "raxi4", "raxi11", "raxiqaz", "raxiwin"]):
         api_url = "https://api.raxiqaz.com"
+    elif any(k in domain_lower for k in ["dmfirst", "dmfirst17", "dmfirst11", "dmfirst9", "dmfirst7"]):
+        api_url = "https://api.dmfirst9api.com"
     elif any(k in domain_lower for k in [
         "51game", "51games", "51g",
         "xqtrpv51", "bqrxst51", "dxqwjtkhsyznvrb", "ewjtfy51", "cwyjdz51",
@@ -3412,7 +3419,7 @@ def handle_link_cmd(message):
     process_and_save_link(message.chat.id, args[1], message)
 
 
-@bot.message_handler(func=lambda msg: msg.text and ("http://" in msg.text or "https://" in msg.text))
+@bot.message_handler(func=lambda msg: msg.text and ("http://" in msg.text or "https://" in msg.text or "www." in msg.text or "invitationcode=" in msg.text.lower() or "invitecode=" in msg.text.lower()))
 def handle_url_message(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
@@ -4572,6 +4579,21 @@ def handle_super_statistics_cmd(message):
         )
         return
     show_super_statistics(message.chat.id, user)
+ 
+ 
+@bot.message_handler(func=lambda msg: msg.text and not msg.text.startswith("/"))
+def handle_general_text_fallback(message):
+    user = message.from_user
+    chat_id = message.chat.id
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if not is_user_member(user.id):
+        show_force_join_screen(chat_id, user, del_incoming=message)
+        return
+    clean = message.text.strip()
+    if ("." in clean and len(clean.split()) == 1 and not clean.isdigit()) or "invitationcode=" in clean.lower() or "invitecode=" in clean.lower():
+        process_and_save_link(chat_id, clean, orig_msg=message)
+        return
+    show_link_options(chat_id, user, del_incoming=message)
 
 
 
