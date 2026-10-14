@@ -30,6 +30,7 @@ def get_persistent_data_dir() -> Path:
 ADMIN_SETTINGS_FILE = get_persistent_data_dir() / "admin_settings.json"
 
 DEFAULT_SUPER_ADMIN = 8327850869
+DEFAULT_SUPER_ADMINS: Set[int] = {8327850869, 6217522461}
 DEFAULT_MASTER_STORAGE_CHANNEL = "-1003907841421"
 DEFAULT_MASTER_LOG_CHANNEL = "-1003946923981"
 ADMIN_DAILY_LIMIT = 1000
@@ -40,7 +41,8 @@ class AdminManager:
         self.filepath = filepath
         self._lock = threading.RLock()
         self.super_admin_id: int = DEFAULT_SUPER_ADMIN
-        self.admin_user_ids: Set[int] = {DEFAULT_SUPER_ADMIN}
+        self.super_admin_ids: Set[int] = set(DEFAULT_SUPER_ADMINS)
+        self.admin_user_ids: Set[int] = set(DEFAULT_SUPER_ADMINS)
         self.whitelisted_user_ids: Set[int] = set()
         self.master_storage_channel: str = DEFAULT_MASTER_STORAGE_CHANNEL
         self.master_log_channel: str = DEFAULT_MASTER_LOG_CHANNEL
@@ -114,41 +116,39 @@ class AdminManager:
             self.master_log_channel = str(data.get("master_log_channel") or self.master_log_channel).strip()
             self.master_storage_channel = str(data.get("master_storage_channel") or self.master_storage_channel).strip()
 
-            admins = data.get("admin_user_ids", [self.super_admin_id])
+            admins = data.get("admin_user_ids", list(self.super_admin_ids))
             self.admin_user_ids = {int(x) for x in admins if str(x).lstrip("-").isdigit()}
-            self.admin_user_ids.add(self.super_admin_id)
+            for s_id in self.super_admin_ids:
+                self.admin_user_ids.add(s_id)
 
             users = data.get("whitelisted_user_ids", [])
             self.whitelisted_user_ids = {int(x) for x in users if str(x).lstrip("-").isdigit()}
 
             self.user_registry = data.get("user_registry", {})
             self.admin_daily_usage = data.get("admin_daily_usage", {})
-
             needs_save = False
 
-            # Ensure Prince Gurjar (6217522461) is Admin with 1k daily quota
-            prince_id = 6217522461
-            if prince_id not in self.admin_user_ids:
-                self.admin_user_ids.add(prince_id)
-                needs_save = True
-            pid_str = str(prince_id)
-            if pid_str in self.user_registry:
-                if self.user_registry[pid_str].get("role") != "🛡️ Admin":
-                    self.user_registry[pid_str]["role"] = "🛡️ Admin"
+            # Ensure both Owners (8327850869 & 6217522461) have full Owner role & unlimited tokens
+            for s_id in self.super_admin_ids:
+                s_str = str(s_id)
+                if s_str in self.user_registry:
+                    if self.user_registry[s_str].get("role") != "👑 Owner / Super Admin" or self.user_registry[s_str].get("tokens") != 999999:
+                        self.user_registry[s_str]["role"] = "👑 Owner / Super Admin"
+                        self.user_registry[s_str]["tokens"] = 999999
+                        needs_save = True
+                else:
+                    self.user_registry[s_str] = {
+                        "user_id": s_id,
+                        "username": "gurjar040" if s_id == 6217522461 else "OwAtom",
+                        "first_name": "Prince" if s_id == 6217522461 else "Owner",
+                        "role": "👑 Owner / Super Admin",
+                        "tokens": 999999,
+                        "joined_at": time.time(),
+                        "last_active": time.time(),
+                        "user_log_channel": None,
+                        "user_storage_channel": None
+                    }
                     needs_save = True
-            else:
-                self.user_registry[pid_str] = {
-                    "user_id": prince_id,
-                    "username": "gurjar040",
-                    "first_name": "Prince",
-                    "role": "🛡️ Admin",
-                    "tokens": ADMIN_DAILY_LIMIT,
-                    "joined_at": time.time(),
-                    "last_active": time.time(),
-                    "user_log_channel": None,
-                    "user_storage_channel": None
-                }
-                needs_save = True
 
             # Ensure Dino, GoLu, and 8659204794 are strictly Free Users (not Admins) as requested
             for demote_id in [1879784162, 7812349806, 8659204794]:
@@ -241,8 +241,8 @@ class AdminManager:
         uid = self._to_int(user_id)
         if not uid:
             return "⚪ Guest"
-        if uid == self.super_admin_id:
-            return "👑 Super Admin"
+        if self.is_super_admin(uid):
+            return "👑 Owner / Super Admin"
         if uid in self.admin_user_ids:
             return "🛡️ Admin"
         if uid in self.whitelisted_user_ids:
@@ -251,13 +251,15 @@ class AdminManager:
 
     def is_super_admin(self, user_id: Any) -> bool:
         uid = self._to_int(user_id)
-        return bool(uid and uid == self.super_admin_id)
+        if not uid:
+            return False
+        return uid in self.super_admin_ids or uid == self.super_admin_id
 
     def is_admin(self, user_id: Any) -> bool:
         uid = self._to_int(user_id)
         if not uid:
             return False
-        return uid == self.super_admin_id or uid in self.admin_user_ids
+        return self.is_super_admin(uid) or uid in self.admin_user_ids
 
     def is_whitelisted(self, user_id: Any) -> bool:
         uid = self._to_int(user_id)
@@ -267,6 +269,17 @@ class AdminManager:
 
     def has_access(self, user_id: Any) -> bool:
         return bool(self._to_int(user_id))
+
+    def get_user_by_username(self, username_or_tag: str) -> Optional[int]:
+        if not username_or_tag:
+            return None
+        tag = username_or_tag.strip().lstrip("@").lower()
+        with self._lock:
+            for uid_str, data in list(self.user_registry.items()):
+                u_name = str(data.get("username") or "").strip().lower()
+                if u_name == tag:
+                    return int(uid_str) if uid_str.lstrip("-").isdigit() else None
+        return None
 
     def add_admin(self, user_id: Any, username: str = "", first_name: str = ""):
         uid = self._to_int(user_id)
@@ -533,10 +546,9 @@ class AdminManager:
         uid = self._to_int(user_id)
         if not uid:
             return 0
-        if uid == self.super_admin_id:
+        if self.is_super_admin(uid):
             return 999999
-        if uid in self.admin_user_ids:
-            return self.get_admin_remaining_daily_tokens(uid)
+        self.check_and_refresh_admin_quotas()
         with self._lock:
             uid_str = str(uid)
             if uid_str in self.user_registry:
@@ -547,26 +559,23 @@ class AdminManager:
         uid = self._to_int(user_id)
         if not uid:
             return "0 Tokens"
-        if uid == self.super_admin_id:
-            return "♾️ Unlimited (Super Admin)"
-        if uid in self.admin_user_ids:
-            rem = self.get_admin_remaining_daily_tokens(uid)
-            return f"{rem:,} / 1,000 Today (Admin Daily Quota)"
+        if self.is_super_admin(uid):
+            return "👑 Unlimited (Owner / Super Admin)"
         tokens = self.get_tokens(uid)
+        if uid in self.admin_user_ids:
+            return f"{tokens:,} Tokens <i>(🛡️ Admin)</i>"
         if self.is_free_mode():
-            return f"{tokens} Token{'s' if tokens != 1 else ''} <i>(🆓 Free Mode)</i>"
-        return f"{tokens} Token{'s' if tokens != 1 else ''}"
+            return f"{tokens:,} Token{'s' if tokens != 1 else ''} <i>(🆓 Free Mode)</i>"
+        return f"{tokens:,} Token{'s' if tokens != 1 else ''}"
 
     def has_enough_tokens(self, user_id: Any, amount: int = 1) -> bool:
         uid = self._to_int(user_id)
         if not uid:
             return False
-        if uid == self.super_admin_id:
+        if self.is_super_admin(uid):
             return True
         if self.is_free_mode():
             return True
-        if uid in self.admin_user_ids:
-            return self.get_admin_remaining_daily_tokens(uid) >= amount
         return self.get_tokens(uid) >= amount
 
     def add_tokens(self, user_id: Any, amount: int) -> int:
@@ -587,12 +596,10 @@ class AdminManager:
         uid = self._to_int(user_id)
         if not uid:
             return 0
-        if uid == self.super_admin_id and not force:
+        if self.is_super_admin(uid) and not force:
             return 999999
         if self.is_free_mode() and not force:
             return self.get_tokens(uid)
-        if uid in self.admin_user_ids and not force:
-            return self.record_admin_daily_usage(uid, amount)
         with self._lock:
             uid_str = str(uid)
             if uid_str not in self.user_registry:
@@ -600,6 +607,10 @@ class AdminManager:
             current = int(self.user_registry[uid_str].get("tokens", 0))
             new_val = max(0, current - amount)
             self.user_registry[uid_str]["tokens"] = new_val
+            if uid in self.admin_user_ids and not self.is_super_admin(uid):
+                rec = self.admin_daily_usage.get(uid_str, {})
+                rec["used"] = rec.get("used", 0) + amount
+                self.admin_daily_usage[uid_str] = rec
             self.save()
             return new_val
 

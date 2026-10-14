@@ -3292,7 +3292,61 @@ def handle_users_cmd(message):
     show_users_list(message.chat.id, user)
 
 
-@bot.message_handler(commands=["addtoken", "addtokens", "addtokem", "add_token"])
+def parse_token_command_args(message, default_cmd="addtoken"):
+    """
+    Intelligently parses target and amount for token commands.
+    Supports:
+    - /command <user_id_or_username> <amount>
+    - Reply to user: /command <amount>
+    """
+    text = (message.text or "").strip()
+    parts = text.split()
+
+    # Case 1: Reply to a user's message with: /command <amount>
+    if message.reply_to_message and message.reply_to_message.from_user:
+        r_user = message.reply_to_message.from_user
+        target_id = r_user.id
+        admin_manager.record_user(r_user.id, r_user.username or "", r_user.first_name or "")
+        if len(parts) >= 2 and parts[1].isdigit():
+            amt = int(parts[1])
+            if amt > 0:
+                return target_id, amt, None
+        elif len(parts) >= 3 and parts[2].isdigit():
+            amt = int(parts[2])
+            if amt > 0:
+                return target_id, amt, None
+
+    if len(parts) < 3:
+        return None, None, (
+            f"⚠️ <b>Usage:</b> <code>/{default_cmd} &lt;user_id_ya_username&gt; &lt;amount&gt;</code>\n\n"
+            f"<b>Examples:</b>\n"
+            f"• <code>/{default_cmd} 7545282674 100</code>\n"
+            f"• <code>/{default_cmd} @PAPA_PLAYER7 100</code>\n"
+            f"• User ke kisi message par reply karke: <code>/{default_cmd} 100</code>"
+        )
+
+    raw_target = parts[1].strip()
+    raw_amount = parts[2].strip()
+
+    if not raw_amount.isdigit() or int(raw_amount) <= 0:
+        return None, None, "❌ Amount ek valid positive number hona chahiye (e.g. <code>50</code>, <code>100</code>)."
+
+    amount = int(raw_amount)
+
+    # 1. Numeric ID
+    if raw_target.lstrip("-").isdigit():
+        return int(raw_target), amount, None
+
+    # 2. Username (@username or username)
+    clean_username = raw_target.lstrip("@").lower()
+    resolved_id = admin_manager.get_user_by_username(clean_username)
+    if resolved_id:
+        return resolved_id, amount, None
+
+    return None, None, f"❌ User <code>{html.escape(raw_target)}</code> bot database me nahi mila.\n\n💡 <i>Direct numeric Telegram ID use karein ya user ko pehle bot me <code>/start</code> dabane bole.</i>"
+
+
+@bot.message_handler(commands=["addtoken", "addtokens", "addtokem", "add_token", "add", "credit"])
 def handle_addtoken_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
@@ -3300,45 +3354,21 @@ def handle_addtoken_cmd(message):
         bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
         return
 
-    args = message.text.strip().split()
-    if len(args) < 3 or not args[1].lstrip("-").isdigit() or not args[2].isdigit():
-        bot.reply_to(
-            message,
-            "⚠️ <b>Usage:</b> <code>/addtoken &lt;telegram_user_id&gt; &lt;amount&gt;</code>\n"
-            "Example: <code>/addtoken 8327850869 20</code>",
-            parse_mode="HTML"
-        )
+    target_id, amount, err = parse_token_command_args(message, default_cmd="addtoken")
+    if err:
+        bot.reply_to(message, err, parse_mode="HTML")
         return
-
-    target_id = int(args[1])
-    amount = int(args[2])
-    if amount <= 0:
-        bot.reply_to(message, "❌ Amount must be greater than 0.", parse_mode="HTML")
-        return
-
-    is_super = admin_manager.is_super_admin(user.id)
-    if not is_super:
-        if target_id == user.id:
-            bot.reply_to(message, "⛔ <b>Access Denied:</b> Admin apne khud ke account me tokens add nahi kar sakta.", parse_mode="HTML")
-            return
-        if target_id == admin_manager.super_admin_id:
-            bot.reply_to(message, "⛔ <b>Access Denied:</b> Super Admin account me tokens modify nahi kiye ja sakte.", parse_mode="HTML")
-            return
-        if amount > 1000:
-            bot.reply_to(message, "⛔ <b>Limit Exceeded:</b> Admin maximum <code>1,000 Tokens</code> per ID add kar sakta hai.", parse_mode="HTML")
-            return
-        cur_tok = admin_manager.get_tokens(target_id)
-        if cur_tok + amount > 1000:
-            bot.reply_to(message, f"⛔ <b>Balance Cap Exceeded:</b> Target user ka total balance 1,000 se upar nahi ho sakta (Current: <code>{cur_tok}</code>, Adding: <code>+{amount}</code>).", parse_mode="HTML")
-            return
 
     new_bal = admin_manager.add_tokens(target_id, amount)
+    t_reg = admin_manager.user_registry.get(str(target_id), {})
+    t_name = f"@{t_reg.get('username')}" if t_reg.get('username') else (t_reg.get('first_name') or f"User_{target_id}")
+
     bot.reply_to(
         message,
         f"✅ <b>Tokens Credited Successfully!</b>\n\n"
-        f"• <b>User ID:</b> <code>{target_id}</code>\n"
-        f"• <b>Added:</b> <code>+{amount} Tokens</code>\n"
-        f"• <b>New Balance:</b> <b>{new_bal} Tokens</b>",
+        f"• <b>User:</b> {html.escape(t_name)} (<code>{target_id}</code>)\n"
+        f"• <b>Added:</b> <code>+{amount:,} Tokens</code>\n"
+        f"• <b>New Balance:</b> <b>{new_bal:,} Tokens</b>",
         parse_mode="HTML"
     )
 
@@ -3346,8 +3376,8 @@ def handle_addtoken_cmd(message):
         bot.send_message(
             target_id,
             f"🎉 <b>Tokens Added to Your Account!</b>\n\n"
-            f"• <b>Credited:</b> <code>+{amount} Tokens</code>\n"
-            f"• <b>New Balance:</b> <b>{new_bal} Tokens</b>\n\n"
+            f"• <b>Credited:</b> <code>+{amount:,} Tokens</code>\n"
+            f"• <b>New Balance:</b> <b>{new_bal:,} Tokens</b>\n\n"
             f"Aap abhi /start par click karke registration kar sakte hain!",
             parse_mode="HTML"
         )
@@ -3355,7 +3385,7 @@ def handle_addtoken_cmd(message):
         pass
 
 
-@bot.message_handler(commands=["settoken", "settokens", "settokem", "set_token"])
+@bot.message_handler(commands=["settoken", "settokens", "settokem", "set_token", "set"])
 def handle_settoken_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
@@ -3363,42 +3393,25 @@ def handle_settoken_cmd(message):
         bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
         return
 
-    args = message.text.strip().split()
-    if len(args) < 3 or not args[1].lstrip("-").isdigit() or not args[2].isdigit():
-        bot.reply_to(
-            message,
-            "⚠️ <b>Usage:</b> <code>/settoken &lt;telegram_user_id&gt; &lt;exact_amount&gt;</code>\n"
-            "Example: <code>/settoken 8327850869 50</code>",
-            parse_mode="HTML"
-        )
+    target_id, amount, err = parse_token_command_args(message, default_cmd="settoken")
+    if err:
+        bot.reply_to(message, err, parse_mode="HTML")
         return
 
-    target_id = int(args[1])
-    amount = int(args[2])
-    is_super = admin_manager.is_super_admin(user.id)
-
-    if not is_super:
-        if target_id == user.id:
-            bot.reply_to(message, "⛔ <b>Access Denied:</b> Admin apne khud ke account me tokens set nahi kar sakta.", parse_mode="HTML")
-            return
-        if target_id == admin_manager.super_admin_id:
-            bot.reply_to(message, "⛔ <b>Access Denied:</b> Super Admin account me tokens modify nahi kiye ja sakte.", parse_mode="HTML")
-            return
-        if amount > 1000:
-            bot.reply_to(message, "⛔ <b>Limit Exceeded:</b> Admin maximum <code>1,000 Tokens</code> set kar sakta hai.", parse_mode="HTML")
-            return
-
     new_bal = admin_manager.set_tokens(target_id, amount)
+    t_reg = admin_manager.user_registry.get(str(target_id), {})
+    t_name = f"@{t_reg.get('username')}" if t_reg.get('username') else (t_reg.get('first_name') or f"User_{target_id}")
+
     bot.reply_to(
         message,
         f"✅ <b>Token Balance Updated!</b>\n\n"
-        f"• <b>User ID:</b> <code>{target_id}</code>\n"
-        f"• <b>Set To:</b> <b>{new_bal} Tokens</b>",
+        f"• <b>User:</b> {html.escape(t_name)} (<code>{target_id}</code>)\n"
+        f"• <b>Set To:</b> <b>{new_bal:,} Tokens</b>",
         parse_mode="HTML"
     )
 
 
-@bot.message_handler(commands=["deltoken", "removetoken", "deltokens", "deltokem", "del_token"])
+@bot.message_handler(commands=["deltoken", "del_token", "deltokens", "deltokem", "deduct", "deducttoken", "deducttokens", "removetoken", "removetokens", "subtoken", "subtokens", "minus", "cuttoken"])
 def handle_deltoken_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
@@ -3406,102 +3419,85 @@ def handle_deltoken_cmd(message):
         bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
         return
 
-    args = message.text.strip().split()
-    if len(args) < 3 or not args[1].lstrip("-").isdigit() or not args[2].isdigit():
-        bot.reply_to(
-            message,
-            "⚠️ <b>Usage:</b> <code>/deltoken &lt;telegram_user_id&gt; &lt;amount&gt;</code>\n"
-            "Example: <code>/deltoken 8327850869 5</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    target_id = int(args[1])
-    amount = int(args[2])
-    is_super = admin_manager.is_super_admin(user.id)
-
-    if not is_super and target_id == admin_manager.super_admin_id:
-        bot.reply_to(message, "⛔ <b>Access Denied:</b> Super Admin account me tokens modify nahi kiye ja sakte.", parse_mode="HTML")
+    target_id, amount, err = parse_token_command_args(message, default_cmd="deduct")
+    if err:
+        bot.reply_to(message, err, parse_mode="HTML")
         return
 
     new_bal = admin_manager.deduct_tokens(target_id, amount, force=True)
+    t_reg = admin_manager.user_registry.get(str(target_id), {})
+    t_name = f"@{t_reg.get('username')}" if t_reg.get('username') else (t_reg.get('first_name') or f"User_{target_id}")
+
     bot.reply_to(
         message,
-        f"⚪ <b>Tokens Deducted!</b>\n\n"
-        f"• <b>User ID:</b> <code>{target_id}</code>\n"
-        f"• <b>Deducted:</b> <code>-{amount} Tokens</code>\n"
-        f"• <b>New Balance:</b> <b>{new_bal} Tokens</b>",
+        f"⚪ <b>Tokens Deducted Successfully!</b>\n\n"
+        f"• <b>User:</b> {html.escape(t_name)} (<code>{target_id}</code>)\n"
+        f"• <b>Deducted:</b> <code>-{amount:,} Tokens</code>\n"
+        f"• <b>New Balance:</b> <b>{new_bal:,} Tokens</b>",
         parse_mode="HTML"
     )
+
+    try:
+        bot.send_message(
+            target_id,
+            f"⚠️ <b>Tokens Deducted from Your Account!</b>\n\n"
+            f"• <b>Deducted:</b> <code>-{amount:,} Tokens</code>\n"
+            f"• <b>Remaining Balance:</b> <b>{new_bal:,} Tokens</b>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
 
 
 @bot.message_handler(commands=["silentaddtoken", "silentaddtokens", "saddtoken", "saddtokens"])
 def handle_silentaddtoken_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
-    if user.id != 8327850869:
-        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+    if not admin_manager.is_super_admin(user.id):
+        bot.reply_to(message, "⛔ <b>Super Admin / Owner Access Required</b>", parse_mode="HTML")
         return
 
-    args = message.text.strip().split()
-    if len(args) < 3 or not args[1].lstrip("-").isdigit() or not args[2].isdigit():
-        bot.reply_to(
-            message,
-            "⚠️ <b>Usage:</b> <code>/silentaddtoken &lt;telegram_user_id&gt; &lt;amount&gt;</code>\n"
-            "<i>Example:</i> <code>/silentaddtoken 7812349806 50</code>\n\n"
-            "🤫 <i>Target user ko koi bhi alert ya notification message nahi jayega.</i>",
-            parse_mode="HTML"
-        )
-        return
-
-    target_id = int(args[1])
-    amount = int(args[2])
-    if amount <= 0:
-        bot.reply_to(message, "❌ Amount must be greater than 0.", parse_mode="HTML")
+    target_id, amount, err = parse_token_command_args(message, default_cmd="silentaddtoken")
+    if err:
+        bot.reply_to(message, err, parse_mode="HTML")
         return
 
     new_bal = admin_manager.add_tokens(target_id, amount)
+    t_reg = admin_manager.user_registry.get(str(target_id), {})
+    t_name = f"@{t_reg.get('username')}" if t_reg.get('username') else (t_reg.get('first_name') or f"User_{target_id}")
+
     bot.reply_to(
         message,
         f"🤫 <b>Silent Token Credit Applied!</b> <i>(No user notification)</i>\n\n"
-        f"• <b>User ID:</b> <code>{target_id}</code>\n"
-        f"• <b>Added:</b> <code>+{amount} Tokens</code>\n"
+        f"• <b>User:</b> {html.escape(t_name)} (<code>{target_id}</code>)\n"
+        f"• <b>Added:</b> <code>+{amount:,} Tokens</code>\n"
         f"• <b>New Balance:</b> <b>{new_bal:,} Tokens</b>",
         parse_mode="HTML"
     )
 
 
-@bot.message_handler(commands=["silentdeducttoken", "silentdeltoken", "sdeducttoken", "sdeltoken"])
+@bot.message_handler(commands=["silentdeducttoken", "silentdeltoken", "sdeducttoken", "sdeltoken", "sdeduct"])
 def handle_silentdeducttoken_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
-    if user.id != 8327850869:
-        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+    if not admin_manager.is_super_admin(user.id):
+        bot.reply_to(message, "⛔ <b>Super Admin / Owner Access Required</b>", parse_mode="HTML")
         return
 
-    args = message.text.strip().split()
-    if len(args) < 3 or not args[1].lstrip("-").isdigit() or not args[2].isdigit():
-        bot.reply_to(
-            message,
-            "⚠️ <b>Usage:</b> <code>/silentdeducttoken &lt;telegram_user_id&gt; &lt;amount&gt;</code>\n"
-            "<i>Example:</i> <code>/silentdeducttoken 7812349806 20</code>\n\n"
-            "🤫 <i>Target user ko koi bhi alert ya notification message nahi jayega.</i>",
-            parse_mode="HTML"
-        )
-        return
-
-    target_id = int(args[1])
-    amount = int(args[2])
-    if amount <= 0:
-        bot.reply_to(message, "❌ Amount must be greater than 0.", parse_mode="HTML")
+    target_id, amount, err = parse_token_command_args(message, default_cmd="silentdeducttoken")
+    if err:
+        bot.reply_to(message, err, parse_mode="HTML")
         return
 
     new_bal = admin_manager.deduct_tokens(target_id, amount, force=True)
+    t_reg = admin_manager.user_registry.get(str(target_id), {})
+    t_name = f"@{t_reg.get('username')}" if t_reg.get('username') else (t_reg.get('first_name') or f"User_{target_id}")
+
     bot.reply_to(
         message,
         f"🤫 <b>Silent Token Deduction Applied!</b> <i>(No user notification)</i>\n\n"
-        f"• <b>User ID:</b> <code>{target_id}</code>\n"
-        f"• <b>Deducted:</b> <code>-{amount} Tokens</code>\n"
+        f"• <b>User:</b> {html.escape(t_name)} (<code>{target_id}</code>)\n"
+        f"• <b>Deducted:</b> <code>-{amount:,} Tokens</code>\n"
         f"• <b>New Balance:</b> <b>{new_bal:,} Tokens</b>",
         parse_mode="HTML"
     )
