@@ -187,8 +187,9 @@ class ProxyManager:
 
     def purge_expired_sx_accounts(self) -> list:
         """
-        Scans all configured SX.ORG accounts and automatically purges/deletes any
-        accounts whose 1-day trial expired or balance is exhausted (<= 10 KB).
+        Scans all configured SX.ORG accounts and purges/deletes accounts whose
+        balance is confirmed exhausted (<= 10 KB) or invalidated by SX.ORG.
+        Network glitches, timeouts, or rate limits NEVER cause false purges.
         """
         if not self.sx_config or not isinstance(self.sx_config, dict):
             return []
@@ -205,18 +206,37 @@ class ProxyManager:
             if not key:
                 continue
             bal = acc.get("balance_traffic", 0)
-            try:
-                r = requests.get(f"https://api.sx.org/v2/user/balance?apiKey={key}", timeout=5)
-                data = r.json() if r.status_code == 200 else {}
-                if data.get("success"):
-                    bal = data.get("all_available_traffic", bal)
-                    acc["balance_traffic"] = bal
-                else:
-                    bal = 0
-            except Exception:
-                pass
+            is_definitely_dead = False
 
-            if bal > 10240:
+            try:
+                r = requests.get(f"https://api.sx.org/v2/user/balance?apiKey={key}", timeout=10)
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("success"):
+                        # Successfully retrieved balance
+                        bal = data.get("all_available_traffic", data.get("balance_traffic", bal))
+                        acc["balance_traffic"] = bal
+                        acc["updated_at"] = int(time.time())
+                        if bal <= 10240:
+                            is_definitely_dead = True
+                    else:
+                        msg = str(data.get("message", "")).lower()
+                        if "invalid" in msg or "suspended" in msg or "not found" in msg or "credential" in msg:
+                            is_definitely_dead = True
+                            bal = 0
+                            logger.warning(f"SX API key {key[:6]}... invalidated: {msg}")
+                elif r.status_code in (401, 403):
+                    is_definitely_dead = True
+                    bal = 0
+                    logger.warning(f"SX API key {key[:6]}... rejected (HTTP {r.status_code})")
+                else:
+                    # 429 (rate limit), 500, 502, 503 -> Temporary SX.ORG glitch, DO NOT purge!
+                    logger.warning(f"SX balance check returned HTTP {r.status_code} for {key[:6]}... (preserving account)")
+            except Exception as e:
+                # Network timeout or connection drop -> DO NOT purge!
+                logger.warning(f"SX balance check network error for {key[:6]}...: {e} (preserving account)")
+
+            if not is_definitely_dead and bal > 10240:
                 remaining.append(acc)
             else:
                 purged.append(key)
