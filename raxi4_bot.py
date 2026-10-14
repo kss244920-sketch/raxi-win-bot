@@ -1602,11 +1602,14 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
         else:
             sms_note = "⚡ <b>Ready:</b> Direct instant registration bina kisi OTP ke supported hai."
 
+    is_owner = bool(user_id == 8327850869 or admin_manager.is_super_admin(user_id))
+    api_line = f"⚡ <b>Backend API:</b> <code>{cfg['api']}</code>\n" if is_owner else ""
+
     text = (
         f"🎯 <b>Platform Configuration Active!</b>\n\n"
         f"🌐 <b>Target Site:</b> <code>{cfg['site']}</code>\n"
         f"🎟️ <b>Invite Code:</b> <code>{cfg['invite']}</code>\n"
-        f"⚡ <b>Backend API:</b> <code>{cfg['api']}</code>\n"
+        f"{api_line}"
         f"🔒 <b>SMS OTP Status:</b> {sms_badge}\n\n"
         f"{sms_note}\n\n"
         f"👤 <b>User:</b> {first_name} | 🆔 <b>ID:</b> <code>{user_id}</code>\n"
@@ -3457,12 +3460,14 @@ def handle_link_cmd(message):
     args = message.text.strip().split(maxsplit=1)
     if len(args) < 2:
         cfg = get_chat_config(message.chat.id)
+        is_owner = bool(user.id == 8327850869 or admin_manager.is_super_admin(user.id))
+        api_line = f"• ⚡ <b>API:</b> <code>{cfg['api']}</code>\n" if is_owner else ""
         bot.reply_to(
             message,
             f"⚠️ <b>Usage:</b> <code>/link &lt;referral_or_site_url&gt;</code>\n\n"
             f"📌 <b>Current Active Config:</b>\n"
             f"• 🌐 <b>Site:</b> <code>{cfg['site']}</code>\n"
-            f"• ⚡ <b>API:</b> <code>{cfg['api']}</code>\n"
+            f"{api_line}"
             f"• 🎟️ <b>Invite Code:</b> <code>{cfg['invite']}</code>\n\n"
             f"💡 <b>Example:</b> <code>/link https://www.raxi4.com/#/register?invitationCode=12345678901</code>",
             parse_mode="HTML"
