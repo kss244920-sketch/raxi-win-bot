@@ -315,6 +315,7 @@ BUSY_LOCK_TIMEOUT = 180.0  # 3 minutes max lock duration
 BUSY_CHATS = {}  # chat_id -> timestamp
 CUSTOM_REG_STATE = {}  # user_id -> {"step": "phone"|"password", "phone": str, "chat_id": int, "mid": int}
 CUSTOM_SPEED_STATE = {}  # user_id -> {"count": int, "chat_id": int, "mid": int, "time": float}
+CUSTOM_SCHEDULED_STATE = {}  # user_id -> {"step": "awaiting_count"|"awaiting_minutes", "chat_id": int, "mid": int, "count": int, "time": float}
 
 def is_chat_busy(chat_id: int) -> bool:
     with BUSY_CHATS_LOCK:
@@ -1671,12 +1672,14 @@ def show_multi_menu(chat_id, user, message_id=None):
     b3 = types.InlineKeyboardButton("⚡ 50 Accounts (50 🎫)", callback_data="multi_run_50")
     b4 = types.InlineKeyboardButton("⚡ 100 Accounts (100 🎫)", callback_data="multi_run_100")
     b5 = types.InlineKeyboardButton("⚡ 500 Accounts (500 🎫)", callback_data="multi_run_500")
-    b_custom = types.InlineKeyboardButton("✍️ Custom (1-1000)", callback_data="multi_custom")
+    b_custom = types.InlineKeyboardButton("✍️ Custom Fast", callback_data="multi_custom")
+    b_sched = types.InlineKeyboardButton("🎲 Custom Scheduled (Random Human Time) 🌟", callback_data="multi_sched")
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
     b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
     markup.add(b1, b2)
     markup.add(b3, b4)
     markup.add(b5, b_custom)
+    markup.add(b_sched)
     markup.add(b_back, b_home)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
@@ -1703,10 +1706,79 @@ def show_custom_amount_prompt(chat_id, user, message_id=None):
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
 
+def show_custom_scheduled_count_prompt(chat_id, user, message_id=None, default_count=20):
+    """Step 1: Asks user how many accounts to create for scheduled registration."""
+    user_id = user.id if hasattr(user, "id") else (user or chat_id)
+    tokens_disp = admin_manager.get_display_tokens(user_id)
+    cfg = get_chat_config(chat_id)
+    CUSTOM_SCHEDULED_STATE[user_id] = {
+        "step": "awaiting_count",
+        "chat_id": chat_id,
+        "mid": message_id,
+        "time": time.time()
+    }
+
+    text = (
+        f"🎲 <b>Custom Scheduled Registration (Anti-Ban Human Mode)</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🌐 <b>Platform:</b> <code>{cfg['site']}</code> | 🎟️ <b>Invite:</b> <code>{cfg['invite']}</code>\n"
+        f"🎫 <b>Your Tokens:</b> <b>{tokens_disp}</b>\n\n"
+        f"👉 <b>Step 1 of 2: Kitne accounts create karne hain?</b>\n\n"
+        f"Niche preset button dabayein ya chat me koi bhi number (e.g. <code>20</code>, <code>50</code>, <code>100</code>) likh kar send karein:\n"
+        f"<i>(1 Token = 1 Account)</i>"
+    )
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    b1 = types.InlineKeyboardButton("10 Accounts", callback_data="sched_cnt_10")
+    b2 = types.InlineKeyboardButton("25 Accounts", callback_data="sched_cnt_25")
+    b3 = types.InlineKeyboardButton("50 Accounts", callback_data="sched_cnt_50")
+    b4 = types.InlineKeyboardButton("100 Accounts", callback_data="sched_cnt_100")
+    b5 = types.InlineKeyboardButton("200 Accounts", callback_data="sched_cnt_200")
+    b6 = types.InlineKeyboardButton("500 Accounts", callback_data="sched_cnt_500")
+    b_back = types.InlineKeyboardButton("🔙 Cancel / Back", callback_data="reg_multi")
+    markup.add(b1, b2, b3)
+    markup.add(b4, b5, b6)
+    markup.add(b_back)
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
+
+
+def show_custom_scheduled_minutes_prompt(chat_id, user, count, message_id=None):
+    """Step 2: Asks user in how many minutes the accounts should be completed."""
+    user_id = user.id if hasattr(user, "id") else (user or chat_id)
+    cfg = get_chat_config(chat_id)
+    CUSTOM_SCHEDULED_STATE[user_id] = {
+        "step": "awaiting_minutes",
+        "chat_id": chat_id,
+        "mid": message_id,
+        "count": count,
+        "time": time.time()
+    }
+
+    text = (
+        f"⏱️ <b>Custom Scheduled Registration — Step 2 of 2</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 🎯 <b>Target Accounts:</b> <code>{count} Accounts</code>\n"
+        f"• 🌐 <b>Target Platform:</b> <code>{cfg['site']}</code>\n"
+        f"• 🎟️ <b>Invite Code:</b> <code>{cfg['invite']}</code>\n\n"
+        f"👉 <b>Ye {count} accounts kitne MINUTES ke andar complete hojane chahiye?</b>\n\n"
+        f"Bot is given time me <b>random times par 1-1 ya 2-2 accounts</b> naturally create karke target reach karega (100% human-like behavior).\n\n"
+        f"Niche preset time chunein ya chat me minutes likhein (e.g. <code>15</code>, <code>30</code>, <code>60</code>, <code>120</code>):"
+    )
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    b1 = types.InlineKeyboardButton("⏱️ 15 Minutes", callback_data=f"sched_min_{count}_15")
+    b2 = types.InlineKeyboardButton("⏱️ 30 Minutes", callback_data=f"sched_min_{count}_30")
+    b3 = types.InlineKeyboardButton("⏱️ 60 Min (1 Hour)", callback_data=f"sched_min_{count}_60")
+    b4 = types.InlineKeyboardButton("⏱️ 120 Min (2 Hours)", callback_data=f"sched_min_{count}_120")
+    b_back = types.InlineKeyboardButton("🔙 Back to Step 1", callback_data="multi_sched")
+    markup.add(b1, b2)
+    markup.add(b3, b4)
+    markup.add(b_back)
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
+
+
 def show_speed_selection_menu(chat_id, user, count, message_id=None):
     """
     Prompts user to select registration speed / delay before running bulk registration.
-    Options: FASTEST (Parallel), SAFE (3s delay), STEALTH (6s delay), Custom Speed.
+    Options: FASTEST (Parallel Turbo), SAFE (3s delay), STEALTH (6s delay), Custom Speed, Custom Scheduled.
     """
     user_id = user.id if hasattr(user, "id") else (user or chat_id)
     tokens_disp = admin_manager.get_display_tokens(user_id)
@@ -1744,16 +1816,20 @@ def show_speed_selection_menu(chat_id, user, count, message_id=None):
         f"• 🐢 <b>STEALTH (6s Delay):</b>\n"
         f"  6s gap per ID — maximum safety\n\n"
         f"• ⏱️ <b>Custom Speed:</b>\n"
-        f"  Apna customized delay ya total duration enter karein"
+        f"  Apna customized delay ya total duration enter karein\n\n"
+        f"• 🎲 <b>Custom Scheduled (Random Human Time):</b>\n"
+        f"  Aap total accounts & minutes batao — bot random times par 1-1 ya 2-2 karke target reach karega! <i>(100% Turbo Safe)</i>"
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
     b1 = types.InlineKeyboardButton("⚡ FASTEST (Turbo)", callback_data=f"bspeed_{count}_0")
     b2 = types.InlineKeyboardButton("🛡️ SAFE (3s Delay)", callback_data=f"bspeed_{count}_3")
     b3 = types.InlineKeyboardButton("🐢 STEALTH (6s)", callback_data=f"bspeed_{count}_6")
-    b4 = types.InlineKeyboardButton("⏱️ Custom Speed", callback_data=f"bspeed_{count}_custom")
+    b4 = types.InlineKeyboardButton("⏱️ Custom Gap", callback_data=f"bspeed_{count}_custom")
+    b_sched = types.InlineKeyboardButton("🎲 Custom Scheduled (Random Human Time) 🌟", callback_data=f"bspeed_{count}_sched")
     b_back = types.InlineKeyboardButton("🔙 Back to Multi-Menu", callback_data="reg_multi")
     markup.add(b1, b2)
     markup.add(b3, b4)
+    markup.add(b_sched)
     markup.add(b_back)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
@@ -2622,6 +2698,392 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         release_chat_lock(chat_id)
 
 
+def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_minutes=30, message_id=None):
+    """
+    Runs Anti-Ban Scheduled Registration in background:
+    Distributes account creations randomly across the requested minutes window (1-1 or 2-2 per burst).
+    """
+    uid = user_id or chat_id
+    if not is_user_member(uid):
+        show_force_join_screen(chat_id, type('UserObj', (), {'id': uid, 'first_name': 'User'})(), message_id=message_id)
+        return
+
+    # Check token requirement
+    if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
+        avail = admin_manager.get_tokens(uid)
+        if avail <= 0:
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options"))
+            send_or_edit(
+                chat_id,
+                "❌ <b>Insufficient Tokens!</b>\n\nAapke pass <code>0 Tokens</code> bache hain. Recharge karne ke liye Admin se contact karein.",
+                reply_markup=markup,
+                message_id=message_id
+            )
+            return
+        if avail < count:
+            count = avail
+
+    if not acquire_chat_lock(chat_id):
+        log(f"[bot] Registration already running in chat {chat_id}, skipping duplicate scheduled run.")
+        return
+
+    cfg = get_chat_config(chat_id)
+    target_site = cfg["site"]
+    target_api = cfg["api"]
+    target_invite = cfg["invite"]
+    api_type = cfg.get("api_type")
+
+    total_seconds = max(60, int(total_minutes * 60))
+    start_time = time.time()
+    target_end_time = start_time + total_seconds
+
+    current_mid = [message_id]
+    stop_markup = types.InlineKeyboardMarkup()
+    stop_markup.add(types.InlineKeyboardButton("🛑 Stop Registration", callback_data=f"stop_reg_{chat_id}"))
+
+    bar_init = render_progress_bar(0, count, length=10)
+    current_mid[0] = send_or_edit(
+        chat_id,
+        f"🎲 <b>Custom Scheduled Registration Started!</b> 🚀\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{bar_init}\n\n"
+        f"• 🎯 <b>Target:</b> <code>{count} Accounts</code>\n"
+        f"• ⏱️ <b>Time Window:</b> <code>{total_minutes} Minutes</code>\n"
+        f"• 🌐 <b>Site:</b> <code>{target_site}</code>\n"
+        f"• 🎟️ <b>Invite Code:</b> <code>{target_invite}</code>\n"
+        f"• 🛡️ <b>Distribution:</b> <i>Random 1–2 accounts per burst with organic pauses</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⏳ <i>First registration burst initializing...</i>",
+        reply_markup=stop_markup,
+        message_id=message_id
+    )
+
+    u_reg = admin_manager.user_registry.get(str(uid), {})
+    username_val = u_reg.get("username") or str(uid)
+    register_active_session(chat_id, uid, count, target_site, target_invite, mid=current_mid[0], username=username_val)
+
+    success_accounts = []
+    failed_count = 0
+    consecutive_fails = 0
+    max_consecutive_fails = 12
+    was_stopped = False
+    last_fail_reason = ""
+
+    try:
+        while len(success_accounts) < count:
+            if is_session_stop_requested(chat_id):
+                was_stopped = True
+                break
+
+            rem_needed = count - len(success_accounts)
+            if rem_needed == 1:
+                burst_size = 1
+            else:
+                burst_size = 2 if (random.random() < 0.4 and rem_needed >= 2) else 1
+
+            for b_idx in range(burst_size):
+                if is_session_stop_requested(chat_id):
+                    was_stopped = True
+                    break
+                if len(success_accounts) >= count:
+                    break
+                if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
+                    if not admin_manager.has_enough_tokens(uid, 1):
+                        log(f"[bot] Scheduled run stopped: insufficient tokens for user {uid}")
+                        was_stopped = True
+                        break
+
+                if not proxy_manager.is_sx_active():
+                    log(f"[bot] No active SX proxies during scheduled run")
+                    last_fail_reason = "SX Proxy balance exhausted or inactive"
+                    break
+
+                try:
+                    res = auto_register_account(
+                        site=target_site,
+                        api=target_api,
+                        invite=target_invite,
+                        creator_id=uid,
+                        api_type=api_type
+                    )
+                except Exception as e:
+                    log(f"[bot] Scheduled register exception: {e}")
+                    res = {"ok": False, "msg": str(e)}
+
+                if res.get("ok"):
+                    admin_manager.deduct_tokens(uid, 1)
+                    success_accounts.append(res)
+                    consecutive_fails = 0
+                    update_active_session(chat_id, completed=len(success_accounts), failed=failed_count, mid=current_mid[0])
+
+                    if b_idx == 0 and burst_size == 2 and len(success_accounts) < count:
+                        time.sleep(random.uniform(2.0, 4.5))
+                else:
+                    failed_count += 1
+                    consecutive_fails += 1
+                    last_fail_reason = str(res.get("msg", ""))
+                    err_msg = last_fail_reason.lower()
+                    if res.get("fatal") or ("sms" in err_msg and "required" in err_msg):
+                        consecutive_fails = max_consecutive_fails
+                        break
+                    elif "expired" in err_msg or "invitor not existed" in err_msg:
+                        consecutive_fails = max_consecutive_fails
+                        break
+                    time.sleep(1.0)
+
+                if consecutive_fails >= max_consecutive_fails:
+                    break
+
+            if consecutive_fails >= max_consecutive_fails:
+                log(f"[bot] Breaking scheduled run due to {consecutive_fails} consecutive fails.")
+                break
+
+            cur_succ = len(success_accounts)
+            if cur_succ >= count or is_session_stop_requested(chat_id):
+                if is_session_stop_requested(chat_id):
+                    was_stopped = True
+                break
+
+            now = time.time()
+            elapsed_sec = int(now - start_time)
+            rem_sec = max(10.0, target_end_time - now)
+            rem_accounts = count - cur_succ
+            est_bursts_left = max(1.0, math.ceil(rem_accounts / 1.4))
+            avg_interval = rem_sec / est_bursts_left
+            pause_sec = random.uniform(max(10.0, avg_interval * 0.7), min(rem_sec, avg_interval * 1.3))
+            pause_sec = max(8.0, pause_sec)
+
+            next_burst_hint = 2 if (random.random() < 0.4 and rem_accounts >= 2) else 1
+            last_acc = success_accounts[-1] if success_accounts else {}
+            last_phone = last_acc.get("phone", "N/A")
+            last_uid = last_acc.get("uid", "N/A")
+            last_ip = mask_proxy(last_acc.get("proxy", "Direct"))
+
+            elapsed_m = elapsed_sec // 60
+            elapsed_s = elapsed_sec % 60
+            el_str = f"{elapsed_m}m {elapsed_s}s" if elapsed_m > 0 else f"{elapsed_s}s"
+            bar_now = render_progress_bar(cur_succ, count, length=10)
+
+            dash_text = (
+                f"🎲 <b>Custom Scheduled Registration in Progress...</b> 🚀\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{bar_now}\n\n"
+                f"• 🎯 <b>Progress:</b> <b>{cur_succ} / {count} Accounts</b> ({int(cur_succ*100/count)}%)\n"
+                f"• ⏱️ <b>Time Elapsed:</b> <code>{el_str}</code> / <code>{total_minutes}m</code>\n"
+                f"• ⏳ <b>Next Burst in:</b> <b>~{int(pause_sec)}s</b> <i>({next_burst_hint} account{'s' if next_burst_hint > 1 else ''})</i>\n"
+                f"• 📱 <b>Last Registered:</b> <code>{last_phone}</code> | UID: <code>{last_uid}</code>\n"
+                f"• 🌐 <b>Proxy Exit IP:</b> <code>{last_ip}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💡 <i>Bot random times par 1-1 / 2-2 accounts banakar {total_minutes}m me target reach kar raha hai.</i>"
+            )
+            try:
+                bot.edit_message_text(dash_text, chat_id=chat_id, message_id=current_mid[0], reply_markup=stop_markup, parse_mode="HTML")
+            except Exception:
+                pass
+
+            for _ in range(int(pause_sec)):
+                if is_session_stop_requested(chat_id):
+                    was_stopped = True
+                    break
+                refresh_chat_lock(chat_id)
+                time.sleep(1)
+
+    finally:
+        unregister_active_session(chat_id)
+        release_chat_lock(chat_id)
+        try:
+            bot.unpin_chat_message(chat_id, current_mid[0])
+        except Exception:
+            pass
+
+    # Delivery & Output
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    b_new = types.InlineKeyboardButton("🔄 New Registration", callback_data="show_link_options")
+    b_multi = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi")
+    markup.add(b_new, b_multi)
+
+    rem_tokens = admin_manager.get_display_tokens(uid)
+    now_total = int(time.time() - start_time)
+    tot_m = now_total // 60
+    tot_s = now_total % 60
+    total_time_str = f"{tot_m}m {tot_s}s" if tot_m > 0 else f"{tot_s}s"
+
+    if was_stopped:
+        stopped_header = (
+            "🛑 <b>SCHEDULED REGISTRATION STOPPED!</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏹️ <b>Status:</b> Batch stopped by user / admin\n"
+            f"✅ <b>Successfully Created:</b> <code>{len(success_accounts)}/{count}</code>\n"
+            f"⏱️ <b>Time Active:</b> <code>{total_time_str}</code> (Window: {total_minutes}m)\n"
+            f"🎫 <b>Tokens Deducted:</b> <code>{len(success_accounts)} Tokens</code>\n"
+            f"🎫 <b>Remaining Balance:</b> <b>{rem_tokens}</b>\n"
+            f"🌐 <b>Target Site:</b> <code>{target_site}</code>\n"
+            f"🎟️ <b>Invite Code:</b> <code>{target_invite}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        )
+        if not success_accounts:
+            stopped_text = stopped_header + "<i>Registration was stopped before any accounts were created. No tokens were deducted.</i>"
+            send_or_edit(chat_id, stopped_text, reply_markup=markup, message_id=current_mid[0])
+            return
+
+        formatted_blocks = []
+        for idx, acc in enumerate(success_accounts, 1):
+            clean_ip = mask_proxy(acc.get('proxy', 'Direct'))
+            dev_val = acc.get('device', 'Android')
+            uid_val = acc.get('uid') or 'Registered'
+            formatted_blocks.append(
+                f"<b>[#{idx}] Account #{idx}</b>\n"
+                f"📱 <b>[{idx}]</b> <code>{acc['phone']}</code> : <code>{acc['password']}</code>\n"
+                f"   ├ 🆔 <b>UID:</b> <code>{uid_val}</code>\n"
+                f"   ├ 📱 <b>Device:</b> <code>{dev_val}</code>\n"
+                f"   └ 🌐 <b>Proxy IP:</b> <code>{clean_ip}</code>"
+            )
+
+        if len(formatted_blocks) <= 15:
+            full_text = stopped_header + "\n\n".join(formatted_blocks)
+            if len(full_text) <= 3900:
+                send_or_edit(chat_id, full_text, reply_markup=markup, message_id=current_mid[0])
+            else:
+                send_or_edit(chat_id, stopped_header + "\n\n".join(formatted_blocks[:6]), reply_markup=markup, message_id=current_mid[0])
+        else:
+            doc_lines = [
+                "================================================================================",
+                "RAXI AUTO-REGISTER - SCHEDULED ACCOUNTS EXPORT REPORT (STOPPED EARLY)",
+                f"Total Accounts Created: {len(success_accounts)} / {count}",
+                f"Target Time Window: {total_minutes} Minutes (Active: {total_time_str})",
+                f"Target Platform: {target_site}",
+                f"Invite Code: {target_invite}",
+                f"Export Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+                "================================================================================\n",
+                "--- [QUICK COMBOS SUMMARY (PHONE:PASSWORD)] ---"
+            ]
+            for idx, acc in enumerate(success_accounts, 1):
+                doc_lines.append(f"[{idx}] {acc['phone']}:{acc['password']}")
+            doc_lines.append("\n================================================================================")
+            doc_lines.append("--- [STRUCTURED AUDIT RECORDS] ---")
+            doc_lines.append("================================================================================\n")
+            for idx, acc in enumerate(success_accounts, 1):
+                clean_ip = mask_proxy(acc.get('proxy', 'Direct'))
+                doc_lines.append(f"[{idx}] 📱 Phone:    {acc['phone']}")
+                doc_lines.append(f"    🔑 Password: {acc['password']}")
+                doc_lines.append(f"    🆔 UID:      {acc.get('uid') or 'Registered'}")
+                doc_lines.append(f"    📱 Device:   {acc.get('device', 'Android')}")
+                doc_lines.append(f"    🌐 Proxy IP: {clean_ip}")
+                doc_lines.append("-" * 60)
+
+            doc_bytes = "\n".join(doc_lines).encode("utf-8")
+            doc_stream = io.BytesIO(doc_bytes)
+            doc_stream.name = f"raxi_sched_stopped_{len(success_accounts)}_accounts.txt"
+            preview_text = (
+                stopped_header +
+                "📁 <b>Accounts Export File (.txt) Attached Below:</b>\n\n"
+                "<b>🔍 First 3 Accounts Preview:</b>\n\n" +
+                "\n\n".join(formatted_blocks[:3]) +
+                f"\n\n⚡ <i>Baaki sabhi {len(formatted_blocks) - 3} accounts niche attached document file me save hain!</i>"
+            )
+            send_or_edit(chat_id, preview_text, reply_markup=markup, message_id=current_mid[0])
+            try:
+                bot.send_document(
+                    chat_id,
+                    doc_stream,
+                    caption=f"📋 <b>{len(success_accounts)} Scheduled Accounts (Stopped Early)</b>\n🌐 <code>{target_site}</code> | 🎟️ <code>{target_invite}</code>",
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                log(f"[bot] Error sending stopped scheduled doc: {e}")
+        return
+
+    if not success_accounts:
+        fail_text = (
+            "❌ <b>Scheduled Registration Completed with 0 Hits</b>\n\n"
+            f"• Failed attempts: <code>{failed_count}</code>\n"
+            f"• Reason: <code>{html.escape(last_fail_reason or 'No accounts could be created')}</code>\n\n"
+            f"💡 <i>Kripya target platform aur referral link check karein.</i>"
+        )
+        send_or_edit(chat_id, fail_text, reply_markup=markup, message_id=current_mid[0])
+        return
+
+    header = (
+        "🎉 <b>CUSTOM SCHEDULED REGISTRATION COMPLETED!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ <b>Successfully Created:</b> <code>{len(success_accounts)}/{count} Accounts</code>\n"
+        f"⏱️ <b>Time Taken:</b> <code>{total_time_str}</code> (Window: {total_minutes}m)\n"
+        f"🛡️ <b>Mode:</b> <i>Human-Like Random Time Window (1-2 IDs per burst)</i>\n"
+        f"🎫 <b>Tokens Deducted:</b> <code>{len(success_accounts)} Tokens</code>\n"
+        f"🎫 <b>Remaining Balance:</b> <b>{rem_tokens}</b>\n"
+        f"🌐 <b>Target Site:</b> <code>{target_site}</code>\n"
+        f"🎟️ <b>Invite Code:</b> <code>{target_invite}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+
+    formatted_blocks = []
+    for idx, acc in enumerate(success_accounts, 1):
+        clean_ip = mask_proxy(acc.get('proxy', 'Direct'))
+        dev_val = acc.get('device', 'Android')
+        uid_val = acc.get('uid') or 'Registered'
+        formatted_blocks.append(
+            f"<b>[#{idx}] Account #{idx}</b>\n"
+            f"📱 <b>[{idx}]</b> <code>{acc['phone']}</code> : <code>{acc['password']}</code>\n"
+            f"   ├ 🆔 <b>UID:</b> <code>{uid_val}</code>\n"
+            f"   ├ 📱 <b>Device:</b> <code>{dev_val}</code>\n"
+            f"   └ 🌐 <b>Proxy IP:</b> <code>{clean_ip}</code>"
+        )
+
+    if len(formatted_blocks) <= 15:
+        full_text = header + "\n\n".join(formatted_blocks)
+        if len(full_text) <= 3900:
+            send_or_edit(chat_id, full_text, reply_markup=markup, message_id=current_mid[0])
+        else:
+            send_or_edit(chat_id, header + "\n\n".join(formatted_blocks[:6]), reply_markup=markup, message_id=current_mid[0])
+    else:
+        doc_lines = [
+            "================================================================================",
+            "RAXI AUTO-REGISTER - SCHEDULED ACCOUNTS EXPORT REPORT",
+            f"Total Accounts Created: {len(success_accounts)} / {count}",
+            f"Total Duration: {total_time_str} (Window: {total_minutes} Minutes)",
+            f"Target Platform: {target_site}",
+            f"Invite Code: {target_invite}",
+            f"Export Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+            "================================================================================\n",
+            "--- [QUICK COMBOS SUMMARY (PHONE:PASSWORD)] ---"
+        ]
+        for idx, acc in enumerate(success_accounts, 1):
+            doc_lines.append(f"[{idx}] {acc['phone']}:{acc['password']}")
+        doc_lines.append("\n================================================================================")
+        doc_lines.append("--- [STRUCTURED AUDIT RECORDS] ---")
+        doc_lines.append("================================================================================\n")
+        for idx, acc in enumerate(success_accounts, 1):
+            clean_ip = mask_proxy(acc.get('proxy', 'Direct'))
+            doc_lines.append(f"[{idx}] 📱 Phone:    {acc['phone']}")
+            doc_lines.append(f"    🔑 Password: {acc['password']}")
+            doc_lines.append(f"    🆔 UID:      {acc.get('uid') or 'Registered'}")
+            doc_lines.append(f"    📱 Device:   {acc.get('device', 'Android')}")
+            doc_lines.append(f"    🌐 Proxy IP: {clean_ip}")
+            doc_lines.append("-" * 60)
+
+        doc_bytes = "\n".join(doc_lines).encode("utf-8")
+        doc_stream = io.BytesIO(doc_bytes)
+        doc_stream.name = f"raxi_sched_{len(success_accounts)}_accounts.txt"
+        preview_text = (
+            header +
+            "📁 <b>Accounts Export File (.txt) Niche Attach Kar Di Gayi Hai!</b>\n\n"
+            "<b>🔍 First 3 Accounts Preview:</b>\n\n" +
+            "\n\n".join(formatted_blocks[:3]) +
+            f"\n\n⚡ <i>Baaki sabhi {len(formatted_blocks) - 3} accounts niche attached document file me save hain!</i>"
+        )
+        send_or_edit(chat_id, preview_text, reply_markup=markup, message_id=current_mid[0])
+        try:
+            bot.send_document(
+                chat_id,
+                doc_stream,
+                caption=f"📋 <b>{len(success_accounts)} Scheduled Accounts File</b>\n🌐 <code>{target_site}</code> | 🎟️ <code>{target_invite}</code>",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            log(f"[bot] Error sending scheduled bulk document file: {e}")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  COMMAND HANDLERS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2636,6 +3098,7 @@ def handle_start(message):
     # Cancel any active custom registration flow
     CUSTOM_REG_STATE.pop(user.id, None)
     CUSTOM_SPEED_STATE.pop(user.id, None)
+    CUSTOM_SCHEDULED_STATE.pop(user.id, None)
 
     # Clean old bot message if possible so a fresh welcome screen lands right at the bottom
     old_mid = LAST_BOT_MSG.pop(chat_id, None)
@@ -2931,14 +3394,14 @@ def process_and_save_link(chat_id, text, orig_msg=None):
 @bot.message_handler(commands=["cancel"])
 def handle_cancel_cmd(message):
     uid = message.from_user.id
-    if uid in CUSTOM_REG_STATE or uid in CUSTOM_SPEED_STATE:
-        CUSTOM_REG_STATE.pop(uid, None)
-        CUSTOM_SPEED_STATE.pop(uid, None)
-        try:
-            bot.delete_message(message.chat.id, message.message_id)
-        except Exception:
-            pass
-        show_single_menu(message.chat.id, message.from_user)
+    CUSTOM_REG_STATE.pop(uid, None)
+    CUSTOM_SPEED_STATE.pop(uid, None)
+    CUSTOM_SCHEDULED_STATE.pop(uid, None)
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    show_single_menu(message.chat.id, message.from_user)
 
 
 @bot.message_handler(func=lambda msg: msg.from_user and msg.from_user.id in CUSTOM_REG_STATE and msg.text and not msg.text.startswith("/"))
@@ -3173,6 +3636,57 @@ def handle_custom_speed_msg(message):
         args=(chat_id, uid, count, target_mid, delay, label),
         daemon=True
     ).start()
+
+
+@bot.message_handler(func=lambda msg: msg.from_user and msg.from_user.id in CUSTOM_SCHEDULED_STATE and msg.text and not msg.text.startswith("/"))
+def handle_custom_scheduled_msg(message):
+    """Processes user response for scheduled registration: count (Step 1) and minutes (Step 2)."""
+    user = message.from_user
+    uid = user.id
+    chat_id = message.chat.id
+    state_data = CUSTOM_SCHEDULED_STATE.get(uid)
+    if not state_data:
+        return
+
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception:
+        pass
+
+    step = state_data.get("step")
+    target_mid = state_data.get("mid") or LAST_BOT_MSG.get(chat_id)
+    raw = message.text.strip()
+    nums = re.findall(r"\d+", raw)
+    if not nums:
+        bot.send_message(chat_id, "❌ Kripya ek valid number likhein (e.g. <code>25</code> ya <code>30</code>).", parse_mode="HTML")
+        return
+
+    val = int(nums[0])
+
+    if step == "awaiting_count":
+        if val <= 0 or val > 1000:
+            bot.send_message(chat_id, "❌ Accounts count 1 se 1000 ke beech hona chahiye.", parse_mode="HTML")
+            return
+        if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
+            avail = admin_manager.get_tokens(uid)
+            if avail < val:
+                bot.send_message(chat_id, f"❌ <b>Insufficient Tokens:</b> Aapke pass sirf <code>{avail} Tokens</code> hain.", parse_mode="HTML")
+                return
+        show_custom_scheduled_minutes_prompt(chat_id, user, count=val, message_id=target_mid)
+
+    elif step == "awaiting_minutes":
+        CUSTOM_SCHEDULED_STATE.pop(uid, None)
+        count = state_data.get("count", 20)
+        minutes = val
+        if minutes <= 0:
+            minutes = 30
+        if minutes > 1440:
+            minutes = 1440
+        threading.Thread(
+            target=run_custom_scheduled_registration,
+            args=(chat_id, uid, count, minutes, target_mid),
+            daemon=True
+        ).start()
 
 
 @bot.message_handler(func=lambda msg: msg.text and msg.text.strip().isdigit() and 1 <= int(msg.text.strip()) <= 1000)
@@ -4257,10 +4771,56 @@ def _handle_callback_clicks_inner(call):
             pass
         show_speed_selection_menu(chat_id, user, count, message_id=msg_id)
 
+    elif data == "multi_sched":
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        show_custom_scheduled_count_prompt(chat_id, user, message_id=msg_id)
+
+    elif data.startswith("sched_cnt_"):
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        cnt = int(data.split("_")[2])
+        if not (admin_manager.is_super_admin(user_id) or admin_manager.is_free_mode()):
+            avail = admin_manager.get_tokens(user_id)
+            if avail < cnt:
+                try:
+                    bot.answer_callback_query(call.id, f"❌ Insufficient Tokens (Available: {avail})", show_alert=True)
+                except Exception:
+                    pass
+                return
+        show_custom_scheduled_minutes_prompt(chat_id, user, count=cnt, message_id=msg_id)
+
+    elif data.startswith("sched_min_"):
+        parts = data.split("_")
+        cnt = int(parts[2])
+        mins = int(parts[3])
+        CUSTOM_SCHEDULED_STATE.pop(user_id, None)
+        try:
+            bot.answer_callback_query(call.id, f"🚀 Scheduled: {cnt} accounts in {mins}m")
+        except Exception:
+            pass
+        threading.Thread(
+            target=run_custom_scheduled_registration,
+            args=(chat_id, user_id, cnt, mins, msg_id),
+            daemon=True
+        ).start()
+
     elif data.startswith("bspeed_"):
         parts = data.split("_")
         count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 5
         speed_mode = parts[2] if len(parts) > 2 else "0"
+
+        if speed_mode == "sched":
+            try:
+                bot.answer_callback_query(call.id)
+            except Exception:
+                pass
+            show_custom_scheduled_minutes_prompt(chat_id, user, count=count, message_id=msg_id)
+            return
 
         if speed_mode == "custom":
             CUSTOM_SPEED_STATE[user_id] = {
