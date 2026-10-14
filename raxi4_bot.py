@@ -3359,6 +3359,10 @@ def handle_addtoken_cmd(message):
         bot.reply_to(message, err, parse_mode="HTML")
         return
 
+    if target_id == 8327850869 or admin_manager.is_super_admin(target_id):
+        bot.reply_to(message, "👑 <b>Owner (@OwAtom) ke paas already Unlimited Tokens hain!</b>", parse_mode="HTML")
+        return
+
     new_bal = admin_manager.add_tokens(target_id, amount)
     t_reg = admin_manager.user_registry.get(str(target_id), {})
     t_name = f"@{t_reg.get('username')}" if t_reg.get('username') else (t_reg.get('first_name') or f"User_{target_id}")
@@ -3398,6 +3402,10 @@ def handle_settoken_cmd(message):
         bot.reply_to(message, err, parse_mode="HTML")
         return
 
+    if target_id == 8327850869 or admin_manager.is_super_admin(target_id):
+        bot.reply_to(message, "👑 <b>Owner (@OwAtom) ke paas already Unlimited Tokens hain!</b>", parse_mode="HTML")
+        return
+
     new_bal = admin_manager.set_tokens(target_id, amount)
     t_reg = admin_manager.user_registry.get(str(target_id), {})
     t_name = f"@{t_reg.get('username')}" if t_reg.get('username') else (t_reg.get('first_name') or f"User_{target_id}")
@@ -3422,6 +3430,10 @@ def handle_deltoken_cmd(message):
     target_id, amount, err = parse_token_command_args(message, default_cmd="deduct")
     if err:
         bot.reply_to(message, err, parse_mode="HTML")
+        return
+
+    if target_id == 8327850869 or admin_manager.is_super_admin(target_id):
+        bot.reply_to(message, "⛔ <b>Owner (@OwAtom) ke tokens deduct nahi kiye ja sakte!</b>", parse_mode="HTML")
         return
 
     new_bal = admin_manager.deduct_tokens(target_id, amount, force=True)
@@ -3462,6 +3474,10 @@ def handle_silentaddtoken_cmd(message):
         bot.reply_to(message, err, parse_mode="HTML")
         return
 
+    if target_id == 8327850869 or admin_manager.is_super_admin(target_id):
+        bot.reply_to(message, "👑 <b>Owner (@OwAtom) ke paas already Unlimited Tokens hain!</b>", parse_mode="HTML")
+        return
+
     new_bal = admin_manager.add_tokens(target_id, amount)
     t_reg = admin_manager.user_registry.get(str(target_id), {})
     t_name = f"@{t_reg.get('username')}" if t_reg.get('username') else (t_reg.get('first_name') or f"User_{target_id}")
@@ -3487,6 +3503,10 @@ def handle_silentdeducttoken_cmd(message):
     target_id, amount, err = parse_token_command_args(message, default_cmd="silentdeducttoken")
     if err:
         bot.reply_to(message, err, parse_mode="HTML")
+        return
+
+    if target_id == 8327850869 or admin_manager.is_super_admin(target_id):
+        bot.reply_to(message, "⛔ <b>Owner (@OwAtom) ke tokens deduct nahi kiye ja sakte!</b>", parse_mode="HTML")
         return
 
     new_bal = admin_manager.deduct_tokens(target_id, amount, force=True)
@@ -3565,48 +3585,66 @@ def handle_deluser_cmd(message):
     bot.reply_to(message, f"⚪ User <code>{target_id}</code> removed from Whitelist.", parse_mode="HTML")
 
 
+def resolve_user_id_from_arg(arg: str) -> Optional[int]:
+    if not arg:
+        return None
+    raw = arg.strip()
+    if raw.lstrip("-").isdigit():
+        return int(raw)
+    clean = raw.lstrip("@").lower()
+    return admin_manager.get_user_by_username(clean)
+
+
 @bot.message_handler(commands=["addadmin"])
 def handle_addadmin_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
-    if not admin_manager.is_admin(user.id):
-        bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
+    if user.id != 8327850869 and not admin_manager.is_super_admin(user.id):
+        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>\n<i>Sirf Owner (@OwAtom) naye admin bana sakte hain.</i>", parse_mode="HTML")
         return
 
     args = message.text.strip().split()
-    if len(args) < 2 or not args[1].lstrip("-").isdigit():
-        bot.reply_to(message, "⚠️ Usage: <code>/addadmin &lt;telegram_user_id&gt;</code>", parse_mode="HTML")
+    if len(args) < 2:
+        bot.reply_to(message, "⚠️ Usage: <code>/addadmin &lt;telegram_user_id_ya_username&gt;</code>", parse_mode="HTML")
         return
 
-    target_id = int(args[1])
-    if target_id <= 0:
-        bot.reply_to(message, "❌ Please enter a valid positive Telegram user ID.", parse_mode="HTML")
+    target_id = resolve_user_id_from_arg(args[1])
+    if not target_id or target_id <= 0:
+        bot.reply_to(message, f"❌ Valid Telegram user ID ya registered @username enter karein (User <code>{html.escape(args[1])}</code> nahi mila).", parse_mode="HTML")
         return
 
     admin_manager.add_admin(target_id)
-    bot.reply_to(message, f"👑 User <code>{target_id}</code> promoted to Admin!", parse_mode="HTML")
+    t_reg = admin_manager.user_registry.get(str(target_id), {})
+    t_name = f"@{t_reg.get('username')}" if t_reg.get('username') else f"<code>{target_id}</code>"
+    bot.reply_to(message, f"👑 User {t_name} (<code>{target_id}</code>) promoted to 🛡️ <b>Admin</b>!", parse_mode="HTML")
 
 
 @bot.message_handler(commands=["deladmin"])
 def handle_deladmin_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
-    if not admin_manager.is_admin(user.id):
-        bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
+    if user.id != 8327850869 and not admin_manager.is_super_admin(user.id):
+        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>\n<i>Sirf Owner (@OwAtom) admin hata sakte hain.</i>", parse_mode="HTML")
         return
 
     args = message.text.strip().split()
-    if len(args) < 2 or not args[1].lstrip("-").isdigit():
-        bot.reply_to(message, "⚠️ Usage: <code>/deladmin &lt;telegram_user_id&gt;</code>", parse_mode="HTML")
+    if len(args) < 2:
+        bot.reply_to(message, "⚠️ Usage: <code>/deladmin &lt;telegram_user_id_ya_username&gt;</code>", parse_mode="HTML")
         return
 
-    target_id = int(args[1])
-    if target_id == admin_manager.super_admin_id:
-        bot.reply_to(message, "❌ Cannot remove Super Administrator!", parse_mode="HTML")
+    target_id = resolve_user_id_from_arg(args[1])
+    if not target_id or target_id <= 0:
+        bot.reply_to(message, f"❌ Valid Telegram user ID ya registered @username enter karein (User <code>{html.escape(args[1])}</code> nahi mila).", parse_mode="HTML")
+        return
+
+    if target_id == 8327850869 or admin_manager.is_super_admin(target_id):
+        bot.reply_to(message, "❌ Cannot remove Master Owner (@OwAtom)!", parse_mode="HTML")
         return
 
     admin_manager.remove_admin(target_id)
-    bot.reply_to(message, f"⚪ Admin <code>{target_id}</code> demoted.", parse_mode="HTML")
+    t_reg = admin_manager.user_registry.get(str(target_id), {})
+    t_name = f"@{t_reg.get('username')}" if t_reg.get('username') else f"<code>{target_id}</code>"
+    bot.reply_to(message, f"⚪ Admin {t_name} (<code>{target_id}</code>) demoted to Member.", parse_mode="HTML")
 
 
 

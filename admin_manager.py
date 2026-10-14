@@ -30,7 +30,7 @@ def get_persistent_data_dir() -> Path:
 ADMIN_SETTINGS_FILE = get_persistent_data_dir() / "admin_settings.json"
 
 DEFAULT_SUPER_ADMIN = 8327850869
-DEFAULT_SUPER_ADMINS: Set[int] = {8327850869, 6217522461}
+DEFAULT_SUPER_ADMINS: Set[int] = {8327850869}
 DEFAULT_MASTER_STORAGE_CHANNEL = "-1003907841421"
 DEFAULT_MASTER_LOG_CHANNEL = "-1003946923981"
 ADMIN_DAILY_LIMIT = 1000
@@ -41,8 +41,8 @@ class AdminManager:
         self.filepath = filepath
         self._lock = threading.RLock()
         self.super_admin_id: int = DEFAULT_SUPER_ADMIN
-        self.super_admin_ids: Set[int] = set(DEFAULT_SUPER_ADMINS)
-        self.admin_user_ids: Set[int] = set(DEFAULT_SUPER_ADMINS)
+        self.super_admin_ids: Set[int] = {DEFAULT_SUPER_ADMIN}
+        self.admin_user_ids: Set[int] = {DEFAULT_SUPER_ADMIN, 6217522461}
         self.whitelisted_user_ids: Set[int] = set()
         self.master_storage_channel: str = DEFAULT_MASTER_STORAGE_CHANNEL
         self.master_log_channel: str = DEFAULT_MASTER_LOG_CHANNEL
@@ -128,27 +128,56 @@ class AdminManager:
             self.admin_daily_usage = data.get("admin_daily_usage", {})
             needs_save = False
 
-            # Ensure both Owners (8327850869 & 6217522461) have full Owner role & unlimited tokens
-            for s_id in self.super_admin_ids:
-                s_str = str(s_id)
-                if s_str in self.user_registry:
-                    if self.user_registry[s_str].get("role") != "👑 Owner / Super Admin" or self.user_registry[s_str].get("tokens") != 999999:
-                        self.user_registry[s_str]["role"] = "👑 Owner / Super Admin"
-                        self.user_registry[s_str]["tokens"] = 999999
-                        needs_save = True
-                else:
-                    self.user_registry[s_str] = {
-                        "user_id": s_id,
-                        "username": "gurjar040" if s_id == 6217522461 else "OwAtom",
-                        "first_name": "Prince" if s_id == 6217522461 else "Owner",
-                        "role": "👑 Owner / Super Admin",
-                        "tokens": 999999,
-                        "joined_at": time.time(),
-                        "last_active": time.time(),
-                        "user_log_channel": None,
-                        "user_storage_channel": None
-                    }
+            # Ensure Super Admin / Owner (8327850869 - @owatom) has full Owner role & unlimited tokens
+            self.super_admin_ids = {self.super_admin_id}
+            s_str = str(self.super_admin_id)
+            if s_str in self.user_registry:
+                if self.user_registry[s_str].get("role") != "👑 Owner / Super Admin" or self.user_registry[s_str].get("tokens") != 999999 or self.user_registry[s_str].get("username") != "OwAtom":
+                    self.user_registry[s_str]["role"] = "👑 Owner / Super Admin"
+                    self.user_registry[s_str]["tokens"] = 999999
+                    self.user_registry[s_str]["username"] = "OwAtom"
                     needs_save = True
+            else:
+                self.user_registry[s_str] = {
+                    "user_id": self.super_admin_id,
+                    "username": "OwAtom",
+                    "first_name": "Owner",
+                    "role": "👑 Owner / Super Admin",
+                    "tokens": 999999,
+                    "joined_at": time.time(),
+                    "last_active": time.time(),
+                    "user_log_channel": None,
+                    "user_storage_channel": None
+                }
+                needs_save = True
+
+            # Ensure @gurjar040 (6217522461) is Admin ONLY (NOT Owner) with 1,000 daily quota
+            g_id = 6217522461
+            g_str = str(g_id)
+            self.admin_user_ids.add(g_id)
+            if g_id in self.super_admin_ids:
+                self.super_admin_ids.discard(g_id)
+
+            if g_str in self.user_registry:
+                if self.user_registry[g_str].get("role") != "🛡️ Admin" or self.user_registry[g_str].get("tokens") == 999999:
+                    self.user_registry[g_str]["role"] = "🛡️ Admin"
+                    self.user_registry[g_str]["username"] = "gurjar040"
+                    rem = self.get_admin_remaining_daily_tokens(g_id)
+                    self.user_registry[g_str]["tokens"] = rem if rem > 0 else ADMIN_DAILY_LIMIT
+                    needs_save = True
+            else:
+                self.user_registry[g_str] = {
+                    "user_id": g_id,
+                    "username": "gurjar040",
+                    "first_name": "Prince",
+                    "role": "🛡️ Admin",
+                    "tokens": ADMIN_DAILY_LIMIT,
+                    "joined_at": time.time(),
+                    "last_active": time.time(),
+                    "user_log_channel": None,
+                    "user_storage_channel": None
+                }
+                needs_save = True
 
             # Ensure Dino, GoLu, and 8659204794 are strictly Free Users (not Admins) as requested
             for demote_id in [1879784162, 7812349806, 8659204794]:
