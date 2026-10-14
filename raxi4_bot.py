@@ -2855,6 +2855,34 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
                     consecutive_fails = 0
                     update_active_session(chat_id, completed=len(success_accounts), failed=failed_count, mid=current_mid[0])
 
+                    # Immediate live dashboard update per registered account
+                    try:
+                        cur_live = len(success_accounts)
+                        bar_live = render_progress_bar(cur_live, count, length=10)
+                        now_live = time.time()
+                        el_sec_live = int(now_live - start_time)
+                        el_m_live = el_sec_live // 60
+                        el_s_live = el_sec_live % 60
+                        el_str_live = f"{el_m_live}m {el_s_live}s" if el_m_live > 0 else f"{el_s_live}s"
+                        l_phone = res.get("phone", "N/A")
+                        l_uid = res.get("uid", "N/A")
+                        l_ip = mask_proxy(res.get("proxy", "Direct"))
+                        dash_live = (
+                            f"🎲 <b>Custom Scheduled Registration in Progress...</b> 🚀\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"{bar_live}\n\n"
+                            f"• 🎯 <b>Progress:</b> <b>{cur_live} / {count} Accounts</b> ({int(cur_live*100/count)}%)\n"
+                            f"• ⏱️ <b>Time Elapsed:</b> <code>{el_str_live}</code> / <code>{total_minutes}m</code>\n"
+                            f"• ⚡ <b>Status:</b> <i>Account #{cur_live} successfully registered!</i>\n"
+                            f"• 📱 <b>Last Registered:</b> <code>{l_phone}</code> | UID: <code>{l_uid}</code>\n"
+                            f"• 🌐 <b>Proxy Exit IP:</b> <code>{l_ip}</code>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"💡 <i>Bot random times par 1-1 / 2-2 accounts banakar {total_minutes}m me target reach kar raha hai.</i>"
+                        )
+                        bot.edit_message_text(dash_live, chat_id=chat_id, message_id=current_mid[0], reply_markup=stop_markup, parse_mode="HTML")
+                    except Exception as e_live:
+                        log(f"[bot] Live dash update exception: {e_live}")
+
                     if b_idx == 0 and burst_size == 2 and len(success_accounts) < count:
                         time.sleep(random.uniform(2.0, 4.5))
                 else:
@@ -2883,36 +2911,36 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
                     was_stopped = True
                 break
 
-            now = time.time()
-            elapsed_sec = int(now - start_time)
-            rem_sec = max(10.0, target_end_time - now)
-            rem_accounts = count - cur_succ
-            est_bursts_left = max(1.0, math.ceil(rem_accounts / 1.35))
-            avg_interval = rem_sec / est_bursts_left
+            try:
+                now = time.time()
+                elapsed_sec = int(now - start_time)
+                rem_sec = max(10.0, target_end_time - now)
+                rem_accounts = count - cur_succ
+                est_bursts_left = max(1.0, math.ceil(rem_accounts / 1.35))
+                avg_interval = rem_sec / est_bursts_left
 
-            # Truly Organic Human-like Jitter Distribution
-            # Simulates real human rhythm: quick follow-ups (35%-60%), standard intervals (75%-110%),
-            # relaxed waits (120%-155%), and occasional idle lulls (160%-195%).
-            gap_profile = random.choices(
-                ["short", "medium", "long", "extra_long"],
-                weights=[30, 40, 20, 10]
-            )[0]
-            if gap_profile == "short":
-                jitter = random.uniform(0.35, 0.60)
-            elif gap_profile == "medium":
-                jitter = random.uniform(0.75, 1.10)
-            elif gap_profile == "long":
-                jitter = random.uniform(1.20, 1.55)
-            else:
-                jitter = random.uniform(1.60, 1.95)
+                # Truly Organic Human-like Jitter Distribution
+                gap_profile = random.choices(
+                    ["short", "medium", "long", "extra_long"],
+                    weights=[30, 40, 20, 10]
+                )[0]
+                if gap_profile == "short":
+                    jitter = random.uniform(0.35, 0.60)
+                elif gap_profile == "medium":
+                    jitter = random.uniform(0.75, 1.10)
+                elif gap_profile == "long":
+                    jitter = random.uniform(1.20, 1.55)
+                else:
+                    jitter = random.uniform(1.60, 1.95)
 
-            raw_pause = avg_interval * jitter
-
-            # Guardrails: Ensure future bursts have enough room to complete within target minutes
-            min_future_time = max(0.0, (est_bursts_left - 1) * 10.0)
-            max_allowed = max(10.0, rem_sec - min_future_time)
-            pause_sec = max(10.0, min(raw_pause, max_allowed))
-            pause_sec = max(8.0, min(pause_sec, rem_sec))
+                raw_pause = avg_interval * jitter
+                min_future_time = max(0.0, (est_bursts_left - 1) * 10.0)
+                max_allowed = max(10.0, rem_sec - min_future_time)
+                pause_sec = max(10.0, min(raw_pause, max_allowed))
+                pause_sec = max(8.0, min(pause_sec, rem_sec))
+            except Exception as e_calc:
+                log(f"[bot] Pause calc fallback: {e_calc}")
+                pause_sec = max(15.0, min(60.0, (target_end_time - time.time()) / max(1, count - cur_succ)))
 
             next_burst_hint = 2 if (random.random() < 0.4 and rem_accounts >= 2) else 1
             last_acc = success_accounts[-1] if success_accounts else {}
