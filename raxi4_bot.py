@@ -1311,7 +1311,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 px_url = f"http://{active_proxy}"
             session.proxies = {"http": px_url, "https": px_url}
 
-        # 1. Fetch Captcha (Hybrid Ultra-Saver: Direct fetch saves 98% residential proxy data)
+        # 1. Fetch Captcha via residential proxy session (prevents Cloudflare Error 1015 / 429 rate limits on host IP)
         try:
             if is_arsaas:
                 cap_url = f"{target_site}/api/Home/Captcha"
@@ -1320,11 +1320,12 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 cap_url = f"{target_api}/api/webapi/Captcha"
                 cap_payload = signed_body({})
 
-            cap_session = requests.Session()
-            cap_session.verify = False
-            cap_session.headers.update(session.headers)
-            r_cap = cap_session.post(cap_url, json=cap_payload, timeout=(4.0, 6.0))
-            cdata = r_cap.json().get("data", {})
+            cap_session = session if active_proxy else requests.Session()
+            if not active_proxy:
+                cap_session.verify = False
+                cap_session.headers.update(session.headers)
+            r_cap = cap_session.post(cap_url, json=cap_payload, timeout=(5.0, 7.5))
+            cdata = r_cap.json().get("data") or {}
             cid = cdata.get("captchaId")
             bg_b64 = cdata.get("backgroundImage")
             sl_b64 = cdata.get("sliderImage")
@@ -1335,7 +1336,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             continue
 
         if not cid or not bg_b64 or not sl_b64:
-            log(f"[bot] Captcha returned empty data")
+            log(f"[bot] Captcha returned empty data (status={getattr(r_cap, 'status_code', 'NA')})")
             last_error = "Captcha returned empty data"
             time.sleep(0.2)
             continue
