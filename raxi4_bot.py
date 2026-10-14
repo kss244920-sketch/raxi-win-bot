@@ -1326,7 +1326,9 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 px_url = f"http://{active_proxy}"
             session.proxies = {"http": px_url, "https": px_url}
 
-        # 1. Fetch Captcha via residential proxy session (prevents Cloudflare Error 1015 / 429 rate limits on host IP)
+        # 1. Smart-Save Captcha Fetch (0 KB proxy data if direct works, fallback to residential proxy if blocked)
+        cid, bg_b64, sl_b64 = None, None, None
+        last_cap_status = None
         try:
             if is_arsaas:
                 cap_url = f"{target_site}/api/Home/Captcha"
@@ -1335,15 +1337,30 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 cap_url = f"{target_api}/api/webapi/Captcha"
                 cap_payload = signed_body({})
 
-            cap_session = session if active_proxy else requests.Session()
-            if not active_proxy:
-                cap_session.verify = False
-                cap_session.headers.update(session.headers)
-            r_cap = cap_session.post(cap_url, json=cap_payload, timeout=(5.0, 7.5))
-            cdata = r_cap.json().get("data") or {}
-            cid = cdata.get("captchaId")
-            bg_b64 = cdata.get("backgroundImage")
-            sl_b64 = cdata.get("sliderImage")
+            # Step 1A: Attempt direct fetch first (Zero residential proxy data consumed)
+            try:
+                direct_session = requests.Session()
+                direct_session.verify = False
+                direct_session.headers.update(session.headers)
+                r_cap = direct_session.post(cap_url, json=cap_payload, timeout=(3.0, 4.5))
+                last_cap_status = r_cap.status_code
+                if r_cap.status_code == 200:
+                    cdata = r_cap.json().get("data") or {}
+                    cid = cdata.get("captchaId")
+                    bg_b64 = cdata.get("backgroundImage")
+                    sl_b64 = cdata.get("sliderImage")
+            except Exception:
+                pass
+
+            # Step 1B: If direct was blocked (Cloudflare 429/timeout), fallback to residential proxy
+            if not cid or not bg_b64 or not sl_b64:
+                if active_proxy:
+                    r_cap = session.post(cap_url, json=cap_payload, timeout=(5.0, 7.5))
+                    last_cap_status = r_cap.status_code
+                    cdata = r_cap.json().get("data") or {}
+                    cid = cdata.get("captchaId")
+                    bg_b64 = cdata.get("backgroundImage")
+                    sl_b64 = cdata.get("sliderImage")
         except Exception as e:
             log(f"[bot] Captcha fetch error: {e}")
             last_error = f"Captcha connection error: {str(e)[:80]}"
@@ -1351,7 +1368,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             continue
 
         if not cid or not bg_b64 or not sl_b64:
-            log(f"[bot] Captcha returned empty data (status={getattr(r_cap, 'status_code', 'NA')})")
+            log(f"[bot] Captcha returned empty data (status={last_cap_status})")
             last_error = "Captcha returned empty data"
             time.sleep(0.2)
             continue
