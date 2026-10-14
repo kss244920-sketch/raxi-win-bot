@@ -2987,14 +2987,25 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
                     was_stopped = True
                     break
                 refresh_chat_lock(chat_id)
-                if sec_left < pause_int and sec_left % 15 == 0 and sec_left >= 10:
+                if sec_left < pause_int and (sec_left % 4 == 0 or sec_left <= 3):
+                    cur_now = time.time()
+                    cur_el = int(cur_now - start_time)
+                    cur_m = cur_el // 60
+                    cur_s = cur_el % 60
+                    cur_el_str = f"{cur_m}m {cur_s:02d}s" if cur_m > 0 else f"{cur_s}s"
+
+                    if sec_left <= 3:
+                        burst_wait_str = "<b>⚡ Initializing burst now...</b>"
+                    else:
+                        burst_wait_str = f"<b>~{sec_left}s</b> <i>({next_burst_hint} account{'s' if next_burst_hint > 1 else ''})</i>"
+
                     dash_countdown = (
                         f"🎲 <b>Custom Scheduled Registration in Progress...</b> 🚀\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"{bar_now}\n\n"
                         f"• 🎯 <b>Progress:</b> <b>{cur_succ} / {count} Accounts</b> ({int(cur_succ*100/count)}%)\n"
-                        f"• ⏱️ <b>Time Elapsed:</b> <code>{el_str}</code> / <code>{total_minutes}m</code>\n"
-                        f"• ⏳ <b>Next Burst in:</b> <b>~{sec_left}s</b> <i>({next_burst_hint} account{'s' if next_burst_hint > 1 else ''})</i>\n"
+                        f"• ⏱️ <b>Time Elapsed:</b> <code>{cur_el_str}</code> / <code>{total_minutes}m</code>\n"
+                        f"• ⏳ <b>Next Burst in:</b> {burst_wait_str}\n"
                         f"• 📱 <b>Last Registered:</b> <code>{last_phone}</code> | UID: <code>{last_uid}</code>\n"
                         f"• 🌐 <b>Proxy Exit IP:</b> <code>{last_ip}</code>\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -3002,8 +3013,9 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
                     )
                     try:
                         bot.edit_message_text(dash_countdown, chat_id=chat_id, message_id=current_mid[0], reply_markup=stop_markup, parse_mode="HTML")
-                    except Exception:
-                        pass
+                    except Exception as e_edit:
+                        if "message is not modified" not in str(e_edit).lower():
+                            log(f"[bot] Live countdown edit warning: {e_edit}")
                 time.sleep(1)
 
     finally:
