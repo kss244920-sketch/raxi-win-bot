@@ -151,8 +151,8 @@ def make_track(gap_x, bg_w=340, bg_h=212, sl_w=68, sl_h=212):
     Synthesizes a realistic human drag movement with ease-in-out easing,
     subtle vertical tremor, and accurate ISO start/end timestamps.
     """
-    duration = random.randint(750, 1150)       # drag duration in ms
-    n = random.randint(40, 52)                 # number of track trajectory points
+    duration = random.randint(700, 950)       # drag duration in ms
+    n = random.randint(14, 18)                 # ultra-compact trajectory points (~600 bytes vs ~1500 bytes)
     pts = []
 
     for i in range(n + 1):
@@ -160,16 +160,16 @@ def make_track(gap_x, bg_w=340, bg_h=212, sl_w=68, sl_h=212):
         # Cubic bezier easing
         eased = 4 * p ** 3 if p < 0.5 else 1 - pow(-2 * p + 2, 3) / 2
         x = round(gap_x * eased)
-        y = round(random.uniform(-1.5, 1.5))
+        y = round(random.uniform(-1.0, 1.0))
         t = int(duration * p)
         pts.append({"x": x, "y": y, "t": t})
 
     # Realistic human micro-overshoot and landing adjustment
     if len(pts) >= 3:
-        pts[-2]["x"] = min(pts[-2]["x"] + random.randint(1, 3), bg_w - sl_w)
-        pts[-2]["t"] = pts[-2]["t"] + random.randint(40, 80)
+        pts[-2]["x"] = min(pts[-2]["x"] + random.randint(1, 2), bg_w - sl_w)
+        pts[-2]["t"] = pts[-2]["t"] + random.randint(25, 45)
         pts[-1]["x"] = gap_x
-        pts[-1]["t"] = pts[-2]["t"] + random.randint(40, 80)
+        pts[-1]["t"] = pts[-2]["t"] + random.randint(25, 45)
 
     start_time = time.time()
     end_time = start_time + (pts[-1]["t"] / 1000.0)

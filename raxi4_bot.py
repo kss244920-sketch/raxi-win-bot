@@ -1307,6 +1307,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         session.headers.update({
             "User-Agent": dev_ua,
             "Accept": "application/json, text/plain, */*",
+            "Accept-Encoding": "gzip, deflate",
             "Content-Type": "application/json;charset=UTF-8",
             "Ar-Origin": target_site,
             "Origin": target_site,
