@@ -741,9 +741,21 @@ def detect_and_parse_referral_link(text_or_url):
         "nyjkhvztqwxrsbd", "wjyrtdxhnksqzvb", "sjnqyz51", "uyprdm51", "kzqaph51", "fzjnbx51"
     ]):
         api_url = "https://api.api51gameapi.com"
+    elif "goabete" in domain_lower:
+        api_url = "https://api.goa7777.com"
     else:
         try:
-            resp = requests.get(base_site, timeout=3, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+            resp = requests.get(base_site, timeout=3.5, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+        except Exception:
+            try:
+                px = proxy_manager.get_next_proxy()
+                px_d = {"http": f"http://{px}", "https": f"http://{px}"} if px else None
+                resp = requests.get(base_site, timeout=6.5, proxies=px_d, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+            except Exception as e:
+                resp = None
+                log(f"[bot] Auto-discovery error for {base_site}: {e}")
+
+        if resp and resp.status_code == 200:
             html_text = resp.text
 
             m_vite = re.search(r'["\']VITE_API_URL["\']\s*:\s*["\']([^"\']+)["\']', html_text)
@@ -754,25 +766,28 @@ def detect_and_parse_referral_link(text_or_url):
                 if m_api2:
                     api_url = m_api2.group(1)
 
+            if not api_url:
+                m_dir = re.search(r'https?://[a-zA-Z0-9.-]*api[a-zA-Z0-9.-]*\.[a-zA-Z]{2,}', html_text)
+                if m_dir and "arbpay" not in m_dir.group(0) and "microsoft" not in m_dir.group(0):
+                    api_url = m_dir.group(0)
+
             # If not in index HTML, scan linked JS bundle scripts (Vite/Vue build)
             if not api_url:
                 script_srcs = re.findall(r'(?:src=|href=)["\']([^"\']+\.js[^"\']*)["\']', html_text)
                 for s_src in script_srcs[:4]:
                     try:
                         s_url = urllib.parse.urljoin(base_site, s_src)
-                        s_resp = requests.get(s_url, timeout=3, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+                        s_resp = requests.get(s_url, timeout=4, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
                         m_js_vite = re.search(r'["\']VITE_API_URL["\']\s*:\s*["\']([^"\']+)["\']', s_resp.text)
                         if m_js_vite:
                             api_url = m_js_vite.group(1)
                             break
                         m_api_match = re.search(r'https?://[a-zA-Z0-9.-]*api[a-zA-Z0-9.-]*\.[a-zA-Z]{2,}', s_resp.text)
-                        if m_api_match and "arbpay" not in m_api_match.group(0):
+                        if m_api_match and "arbpay" not in m_api_match.group(0) and "microsoft" not in m_api_match.group(0):
                             api_url = m_api_match.group(0)
                             break
                     except Exception:
                         pass
-        except Exception as e:
-            log(f"[bot] Auto-discovery error for {base_site}: {e}")
 
     if not api_url:
         if "51" in domain_lower:
