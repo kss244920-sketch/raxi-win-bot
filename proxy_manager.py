@@ -76,7 +76,7 @@ class ProxyManager:
         self.sx_config = cfg
 
     def get_active_sx_accounts(self) -> list:
-        """Returns list of active SX.ORG accounts that have positive data balance."""
+        """Returns list of active SX.ORG accounts that have positive data balance or USD funds."""
         if not self.sx_config:
             return []
         accs = []
@@ -84,7 +84,10 @@ class ProxyManager:
             accs = [a for a in self.sx_config["accounts"] if a.get("active") and a.get("proxy_host")]
         elif self.sx_config.get("active") and self.sx_config.get("proxy_host"):
             accs = [self.sx_config]
-        valid_with_data = [a for a in accs if a.get("balance_traffic", 0) > 10240]
+        valid_with_data = [
+            a for a in accs 
+            if a.get("balance_traffic", 0) > 10240 or a.get("balance_usd", 0) > 0.005
+        ]
         return valid_with_data
 
     def is_sx_active(self) -> bool:
@@ -136,15 +139,25 @@ class ProxyManager:
             else:
                 base_login = f"{raw_login}-session-{{session_id}}"
 
+            # Calculate effective traffic: trial traffic bytes OR USD pay-as-you-go ($3.00/GB)
+            usd_bal = float(bal_data.get("balance", 0) or 0)
+            traffic_bytes = max(int(bal_data.get("all_available_traffic", 0) or 0), int(bal_data.get("balance_traffic", 0) or 0))
+            if traffic_bytes <= 10240 and usd_bal > 0.005:
+                # $3 per GB on SX.ORG
+                traffic_bytes = int((usd_bal / 3.0) * 1024 * 1024 * 1024)
+
+            actual_host = p_info.get("proxy") or "185.100.235.113:9999"
+
             new_acc = {
                 "api_key": api_key,
                 "active": True,
                 "port_id": p_info.get("id"),
-                "proxy_host": p_info.get("proxy", "62.112.8.26:9999"),
+                "proxy_host": actual_host,
                 "login_template": base_login,
                 "password": p_info.get("password", ""),
                 "country": p_info.get("countryCode", "IN"),
-                "balance_traffic": bal_data.get("all_available_traffic", 0),
+                "balance_usd": usd_bal,
+                "balance_traffic": traffic_bytes,
                 "updated_at": int(time.time())
             }
 
@@ -172,9 +185,9 @@ class ProxyManager:
 
             # Auto-purge any expired 0 MB trial accounts
             purged = self.purge_expired_sx_accounts()
-            active_accs = [a for a in self.sx_config.get("accounts", []) if a.get("balance_traffic", 0) > 10240]
+            active_accs = self.get_active_sx_accounts()
             total_traffic = sum(a.get("balance_traffic", 0) for a in active_accs)
-            logger.info(f"SX.ORG Account {api_key[:6]}... added. Active: {len(active_accs)}, total data: {total_traffic} bytes, purged: {len(purged)}.")
+            logger.info(f"SX.ORG Account {api_key[:6]}... added. Active: {len(active_accs)}, total data: {total_traffic} bytes (USD: ${usd_bal:.2f}), purged: {len(purged)}.")
             return {
                 "ok": True,
                 "account": new_acc,
@@ -188,7 +201,7 @@ class ProxyManager:
     def purge_expired_sx_accounts(self) -> list:
         """
         Scans all configured SX.ORG accounts and purges/deletes accounts whose
-        balance is confirmed exhausted (<= 10 KB) or invalidated by SX.ORG.
+        balance is confirmed exhausted (<= 10 KB and $0 USD) or invalidated by SX.ORG.
         Network glitches, timeouts, or rate limits NEVER cause false purges.
         """
         if not self.sx_config or not isinstance(self.sx_config, dict):
@@ -206,6 +219,7 @@ class ProxyManager:
             if not key:
                 continue
             bal = acc.get("balance_traffic", 0)
+            usd_bal = acc.get("balance_usd", 0.0)
             is_definitely_dead = False
 
             try:
@@ -214,10 +228,20 @@ class ProxyManager:
                     data = r.json()
                     if data.get("success"):
                         # Successfully retrieved balance
-                        bal = data.get("all_available_traffic", data.get("balance_traffic", bal))
+                        usd_bal = float(data.get("balance", 0) or 0)
+                        all_trf = int(data.get("all_available_traffic", 0) or 0)
+                        bal_trf = int(data.get("balance_traffic", 0) or 0)
+                        bal = max(all_trf, bal_trf)
+
+                        # If traffic in bytes is 0, but USD balance exists (Pay-As-You-Go)
+                        if bal <= 10240 and usd_bal > 0.005:
+                            bal = int((usd_bal / 3.0) * 1024 * 1024 * 1024)
+
                         acc["balance_traffic"] = bal
+                        acc["balance_usd"] = usd_bal
                         acc["updated_at"] = int(time.time())
-                        if bal <= 10240:
+
+                        if bal <= 10240 and usd_bal <= 0.005:
                             is_definitely_dead = True
                     else:
                         msg = str(data.get("message", "")).lower()
@@ -236,11 +260,11 @@ class ProxyManager:
                 # Network timeout or connection drop -> DO NOT purge!
                 logger.warning(f"SX balance check network error for {key[:6]}...: {e} (preserving account)")
 
-            if not is_definitely_dead and bal > 10240:
+            if not is_definitely_dead and (bal > 10240 or usd_bal > 0.005):
                 remaining.append(acc)
             else:
                 purged.append(key)
-                logger.info(f"Purging expired/exhausted SX account: {key[:6]}... (balance: {bal} bytes)")
+                logger.info(f"Purging expired/exhausted SX account: {key[:6]}... (balance: {bal} bytes, ${usd_bal} USD)")
 
         if purged:
             self.sx_config["accounts"] = remaining
@@ -268,7 +292,7 @@ class ProxyManager:
         else:
             login = f"{template}-session-{sess}"
         pwd = acc.get("password", "")
-        host = acc.get("proxy_host", "62.112.8.26:9999")
+        host = acc.get("proxy_host") or "185.100.235.113:9999"
         return f"{login}:{pwd}@{host}"
 
     def get_available_count(self, domain: str = None) -> int:
@@ -285,7 +309,9 @@ class ProxyManager:
             return "❌ No Active Keys"
         total_bytes = sum(a.get("balance_traffic", 0) for a in accounts)
         tot_mb = round(total_bytes / (1024 * 1024), 1)
-        return f"🟢 Active ({len(accounts)} Key, ~{tot_mb} MB IN Residential)"
+        tot_usd = sum(a.get("balance_usd", 0) for a in accounts)
+        usd_info = f", ${tot_usd:.2f}" if tot_usd > 0 else ""
+        return f"🟢 Active ({len(accounts)} Key, ~{tot_mb} MB{usd_info} IN Residential)"
 
     def get_sx_status(self) -> str:
         """Returns formatted status of all active SX.ORG connections with combined traffic total."""
@@ -293,27 +319,34 @@ class ProxyManager:
         all_accounts = self.get_active_sx_accounts()
 
         if not all_accounts:
-            return "❌ <b>SX.ORG Proxy Pool:</b> No active accounts configured. Use <code>/sxkey &lt;key&gt;</code> to load a 1 GB trial key."
+            return "❌ <b>SX.ORG Proxy Pool:</b> No active accounts configured. Use <code>/sxkey &lt;key&gt;</code> to load a proxy key."
 
         lines = ["🌐 <b>SX.ORG Multi-Account Proxy Pool:</b> ACTIVE ✅\n"]
         total_bytes = 0
+        total_usd = 0.0
 
         for i, a in enumerate(all_accounts, 1):
             key = a.get("api_key", "")
             key_disp = f"{key[:6]}...{key[-4:]}" if len(key) >= 10 else key
             bal = a.get("balance_traffic", 0)
+            usd = a.get("balance_usd", 0.0)
             total_bytes += bal
+            total_usd += usd
             a_mb = round(bal / (1024 * 1024), 2)
-            lines.append(f"• <b>Account #{i}:</b> <code>{key_disp}</code> ➔ <b>{a_mb} MB</b>")
+            usd_str = f" (${usd:.2f})" if usd > 0 else ""
+            lines.append(f"• <b>Account #{i}:</b> <code>{key_disp}</code> ➔ <b>{a_mb} MB{usd_str}</b>")
 
         tot_mb = round(total_bytes / (1024 * 1024), 2)
         tot_gb = round(total_bytes / (1024 * 1024 * 1024), 2)
         approx_accounts = int(total_bytes / (25 * 1024))
 
         lines.append(f"\n📊 <b>Total Combined Data:</b> <code>{tot_mb} MB (~{tot_gb} GB)</code>")
+        if total_usd > 0:
+            lines.append(f"💰 <b>Total Paid Balance:</b> <code>${total_usd:.4f} USD</code>")
         lines.append(f"👥 <b>Active Accounts Linked:</b> <code>{len(all_accounts)}</code>")
         lines.append(f"⚡ <b>Estimated Capacity:</b> <code>~{approx_accounts:,} accounts</code>")
-        lines.append("🇮🇳 <b>Gateway:</b> <code>62.112.8.26:9999 (Indian Residential)</code>")
+        first_host = all_accounts[0].get("proxy_host", "185.100.235.113:9999")
+        lines.append(f"🇮🇳 <b>Gateway:</b> <code>{first_host} (Indian Residential)</code>")
         if purged:
             lines.append(f"🗑️ <i>Auto-purged {len(purged)} expired trial account(s).</i>")
         lines.append("🔄 <b>Rotation Mode:</b> <i>Dynamic session rotation with Indian IP sticky sessions!</i>")
