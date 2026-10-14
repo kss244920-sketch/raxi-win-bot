@@ -24,7 +24,7 @@ from PIL import Image, ImageFilter
 # ─── config ───
 SITE     = "https://www.dmfirst17.com"
 API      = "https://api.dmfirst9api.com"
-INVITE   = "265762124632"
+INVITE   = "417112180491"
 UA_MOB   = ("Mozilla/5.0 (Linux; Android 13; Pixel 7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Mobile Safari/537.36")
