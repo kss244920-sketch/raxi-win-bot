@@ -27,6 +27,7 @@ import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
+from typing import Optional, List, Dict, Set, Any
 import requests
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -4175,7 +4176,7 @@ def handle_deluser_cmd(message):
     bot.reply_to(message, f"⚪ User <code>{target_id}</code> removed from Whitelist.", parse_mode="HTML")
 
 
-def resolve_user_id_from_arg(arg: str) -> Optional[int]:
+def resolve_user_id_from_arg(arg: str):
     if not arg:
         return None
     raw = arg.strip()
