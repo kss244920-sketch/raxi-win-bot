@@ -450,14 +450,44 @@ CHAT_CONFIGS = {}
 def load_chat_configs():
     global CHAT_CONFIGS
     try:
-        for p in [CHAT_CONFIGS_FILE, os.path.join(BASE_DIR, "chat_configs.json")]:
-            if os.path.exists(p):
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        CHAT_CONFIGS = {int(k) if str(k).lstrip("-").isdigit() else k: v for k, v in data.items()}
-                        log(f"[bot] Loaded {len(CHAT_CONFIGS)} saved chat configs from {p}")
-                        break
+        base_p = os.path.join(BASE_DIR, "chat_configs.json")
+        if os.path.exists(base_p):
+            try:
+                with open(base_p, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                    if isinstance(d, dict):
+                        for k, v in d.items():
+                            cid = int(k) if str(k).lstrip("-").isdigit() else k
+                            CHAT_CONFIGS[cid] = v
+            except Exception as e:
+                log(f"[bot] Error reading base chat_configs: {e}")
+
+        if CHAT_CONFIGS_FILE != base_p and os.path.exists(CHAT_CONFIGS_FILE):
+            try:
+                with open(CHAT_CONFIGS_FILE, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                    if isinstance(d, dict):
+                        for k, v in d.items():
+                            cid = int(k) if str(k).lstrip("-").isdigit() else k
+                            CHAT_CONFIGS[cid] = v
+            except Exception as e:
+                log(f"[bot] Error reading persistent chat_configs: {e}")
+
+        # Ensure both Owner and Prince have active configs
+        for uid in (8327850869, 6217522461):
+            if uid not in CHAT_CONFIGS:
+                CHAT_CONFIGS[uid] = {
+                    "site": "https://www.dmfirst17.com",
+                    "api": "https://api.dmfirst9api.com",
+                    "api_type": "webapi",
+                    "invite": "265762124632",
+                    "domain": "www.dmfirst17.com",
+                    "sms_required": False,
+                    "switched_mirror": False,
+                    "mirrors_scanned": 0
+                }
+        save_chat_configs()
+        log(f"[bot] Loaded and synced {len(CHAT_CONFIGS)} saved chat configs")
     except Exception as e:
         log(f"[bot] Error loading chat_configs: {e}")
 
@@ -2849,10 +2879,32 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
             elapsed_sec = int(now - start_time)
             rem_sec = max(10.0, target_end_time - now)
             rem_accounts = count - cur_succ
-            est_bursts_left = max(1.0, math.ceil(rem_accounts / 1.4))
+            est_bursts_left = max(1.0, math.ceil(rem_accounts / 1.35))
             avg_interval = rem_sec / est_bursts_left
-            pause_sec = random.uniform(max(10.0, avg_interval * 0.7), min(rem_sec, avg_interval * 1.3))
-            pause_sec = max(8.0, pause_sec)
+
+            # Truly Organic Human-like Jitter Distribution
+            # Simulates real human rhythm: quick follow-ups (35%-60%), standard intervals (75%-110%),
+            # relaxed waits (120%-155%), and occasional idle lulls (160%-195%).
+            gap_profile = random.choices(
+                ["short", "medium", "long", "extra_long"],
+                weights=[30, 40, 20, 10]
+            )[0]
+            if gap_profile == "short":
+                jitter = random.uniform(0.35, 0.60)
+            elif gap_profile == "medium":
+                jitter = random.uniform(0.75, 1.10)
+            elif gap_profile == "long":
+                jitter = random.uniform(1.20, 1.55)
+            else:
+                jitter = random.uniform(1.60, 1.95)
+
+            raw_pause = avg_interval * jitter
+
+            # Guardrails: Ensure future bursts have enough room to complete within target minutes
+            min_future_time = max(0.0, (est_bursts_left - 1) * 10.0)
+            max_allowed = max(10.0, rem_sec - min_future_time)
+            pause_sec = max(10.0, min(raw_pause, max_allowed))
+            pause_sec = max(8.0, min(pause_sec, rem_sec))
 
             next_burst_hint = 2 if (random.random() < 0.4 and rem_accounts >= 2) else 1
             last_acc = success_accounts[-1] if success_accounts else {}
@@ -2882,11 +2934,29 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
             except Exception:
                 pass
 
-            for _ in range(int(pause_sec)):
+            pause_int = int(pause_sec)
+            for sec_left in range(pause_int, 0, -1):
                 if is_session_stop_requested(chat_id):
                     was_stopped = True
                     break
                 refresh_chat_lock(chat_id)
+                if sec_left < pause_int and sec_left % 15 == 0 and sec_left >= 10:
+                    dash_countdown = (
+                        f"🎲 <b>Custom Scheduled Registration in Progress...</b> 🚀\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"{bar_now}\n\n"
+                        f"• 🎯 <b>Progress:</b> <b>{cur_succ} / {count} Accounts</b> ({int(cur_succ*100/count)}%)\n"
+                        f"• ⏱️ <b>Time Elapsed:</b> <code>{el_str}</code> / <code>{total_minutes}m</code>\n"
+                        f"• ⏳ <b>Next Burst in:</b> <b>~{sec_left}s</b> <i>({next_burst_hint} account{'s' if next_burst_hint > 1 else ''})</i>\n"
+                        f"• 📱 <b>Last Registered:</b> <code>{last_phone}</code> | UID: <code>{last_uid}</code>\n"
+                        f"• 🌐 <b>Proxy Exit IP:</b> <code>{last_ip}</code>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"💡 <i>Bot random times par 1-1 / 2-2 accounts banakar {total_minutes}m me target reach kar raha hai.</i>"
+                    )
+                    try:
+                        bot.edit_message_text(dash_countdown, chat_id=chat_id, message_id=current_mid[0], reply_markup=stop_markup, parse_mode="HTML")
+                    except Exception:
+                        pass
                 time.sleep(1)
 
     finally:
