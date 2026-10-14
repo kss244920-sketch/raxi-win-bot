@@ -9,9 +9,14 @@ import json
 import time
 import shutil
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def get_current_ist_date() -> str:
+    return datetime.now(IST).strftime("%Y-%m-%d")
 
 BASE_DIR = Path(__file__).parent.resolve()
 
@@ -54,6 +59,19 @@ class AdminManager:
                 print(f"[AdminManager] Failed to copy fallback settings: {e}")
 
         self.load()
+        self.check_and_refresh_admin_quotas()
+        self._start_refresh_daemon()
+
+    def _start_refresh_daemon(self):
+        def _loop():
+            while True:
+                time.sleep(60)
+                try:
+                    self.check_and_refresh_admin_quotas()
+                except Exception:
+                    pass
+        t = threading.Thread(target=_loop, daemon=True, name="AdminQuotaRefreshDaemon")
+        t.start()
 
     def is_free_mode(self) -> bool:
         return bool(self.free_mode)
@@ -144,6 +162,7 @@ class AdminManager:
                         needs_save = True
             if needs_save:
                 self.save()
+            self.check_and_refresh_admin_quotas()
 
 
         except Exception as e:
@@ -426,7 +445,39 @@ class AdminManager:
                     targets.add(int(uid_str))
         return targets
 
+    def check_and_refresh_admin_quotas(self) -> bool:
+        """
+        Proactively refreshes admin daily quotas if a new day (IST) has started or 24 hours elapsed.
+        Resets used count to 0 and tokens to ADMIN_DAILY_LIMIT (1,000) for all client admins.
+        """
+        with self._lock:
+            today_str = get_current_ist_date()
+            now = time.time()
+            changed = False
+            for admin_id in list(self.admin_user_ids):
+                if admin_id == self.super_admin_id:
+                    continue
+                aid_str = str(admin_id)
+                rec = self.admin_daily_usage.get(aid_str, {})
+                last_reset = rec.get("last_reset", 0)
+                is_new_day = rec.get("date") != today_str
+                is_24h_passed = (now - last_reset) >= 86400 if last_reset else False
+
+                if is_new_day or is_24h_passed:
+                    self.admin_daily_usage[aid_str] = {
+                        "date": today_str,
+                        "used": 0,
+                        "last_reset": now
+                    }
+                    if aid_str in self.user_registry:
+                        self.user_registry[aid_str]["tokens"] = ADMIN_DAILY_LIMIT
+                    changed = True
+            if changed:
+                self.save()
+            return changed
+
     def get_all_accounts(self, calling_user_id: Optional[int] = None) -> List[dict]:
+        self.check_and_refresh_admin_quotas()
         accounts = []
         with self._lock:
             for uid_str, data in list(self.user_registry.items()):
@@ -452,12 +503,10 @@ class AdminManager:
             return 0
         if uid == self.super_admin_id:
             return 999999
+        self.check_and_refresh_admin_quotas()
         uid_str = str(uid)
-        today_str = datetime.now().strftime("%Y-%m-%d")
         with self._lock:
             record = self.admin_daily_usage.get(uid_str, {})
-            if record.get("date") != today_str:
-                return ADMIN_DAILY_LIMIT
             used = record.get("used", 0)
             return max(0, ADMIN_DAILY_LIMIT - used)
 
@@ -465,12 +514,13 @@ class AdminManager:
         uid = self._to_int(user_id)
         if not uid or uid == self.super_admin_id:
             return 999999
+        self.check_and_refresh_admin_quotas()
         uid_str = str(uid)
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = get_current_ist_date()
         with self._lock:
             record = self.admin_daily_usage.get(uid_str, {})
             if record.get("date") != today_str:
-                record = {"date": today_str, "used": 0}
+                record = {"date": today_str, "used": 0, "last_reset": time.time()}
             record["used"] = record.get("used", 0) + amount
             self.admin_daily_usage[uid_str] = record
             rem = max(0, ADMIN_DAILY_LIMIT - record["used"])

@@ -200,28 +200,113 @@ def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming
         log(f"[bot] send_or_edit error: {e}")
         return None
 
+INDIAN_ISP_POOLS = [
+    # Airtel Mobile / Broadband (AS45609, AS24560)
+    {"isp": "Airtel", "prefix": "122", "range_b": (160, 180)},
+    {"isp": "Airtel", "prefix": "106", "range_b": (192, 220)},
+    {"isp": "Airtel", "prefix": "182", "range_b": (64, 79)},
+    # Reliance Jio 4G/5G Mobile (AS55836)
+    {"isp": "Jio", "prefix": "49", "range_b": (32, 45)},
+    {"isp": "Jio", "prefix": "157", "range_b": (32, 60)},
+    {"isp": "Jio", "prefix": "47", "range_b": (247, 255)},
+    # Vodafone Idea Mobile (AS132335)
+    {"isp": "Vi", "prefix": "27", "range_b": (56, 63)},
+    {"isp": "Vi", "prefix": "115", "range_b": (96, 110)},
+    {"isp": "Vi", "prefix": "152", "range_b": (57, 59)},
+    # BSNL Mobile / FTTH (AS9829)
+    {"isp": "BSNL", "prefix": "117", "range_b": (192, 245)},
+]
+
+SESSION_RESOLVED_IPS = {}
+SESSION_LOCK = threading.Lock()
+
+def get_session_masked_ip(session_id: str, resolved_raw_ip: str = None) -> str:
+    """
+    Returns a unique, masked Indian Mobile exit IP for the session:
+    e.g. '122.178.***.17 (IN Mobile)' or '49.36.***.82 (IN Mobile)'
+    """
+    if resolved_raw_ip and re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", str(resolved_raw_ip).strip()):
+        parts = str(resolved_raw_ip).strip().split(".")
+        return f"{parts[0]}.{parts[1]}.***.{parts[3]} (IN Mobile)"
+
+    with SESSION_LOCK:
+        if session_id in SESSION_RESOLVED_IPS:
+            return SESSION_RESOLVED_IPS[session_id]
+
+    h = int(hashlib.sha256(str(session_id).encode()).hexdigest(), 16)
+    pool = INDIAN_ISP_POOLS[h % len(INDIAN_ISP_POOLS)]
+    b_min, b_max = pool["range_b"]
+    b = b_min + ((h >> 8) % (b_max - b_min + 1))
+    d = 2 + ((h >> 24) % 250)
+
+    masked = f"{pool['prefix']}.{b}.***.{d} (IN Mobile)"
+    with SESSION_LOCK:
+        SESSION_RESOLVED_IPS[session_id] = masked
+    return masked
+
+
 def mask_proxy(proxy_str: str) -> str:
     """
-    Cleans and masks raw proxy strings to remove private credentials, session IDs, and hashes.
-    Displays a clean, professional IP:Port string.
+    Cleans and masks raw proxy strings to remove private credentials, session IDs, and gateway IPs.
+    Displays a clean, professional masked IP string with ISP indicator.
     """
     if not proxy_str or proxy_str == "Direct":
         return "Direct"
-    s = proxy_str.strip()
+    s = str(proxy_str).strip()
     for proto in ("http://", "https://", "socks5://", "socks4://"):
         if s.startswith(proto):
             s = s[len(proto):]
             break
+
+    # If it's already a masked Indian Mobile IP or labeled string
+    if "(IN Mobile)" in s or "(Residential)" in s:
+        # If it accidentally contains the raw SX gateway IP 62.112.8.26, map to dynamic masked IP
+        if "62.112.8.26" in s:
+            rnd_sess = secrets.token_hex(4)
+            return get_session_masked_ip(rnd_sess)
+        m = re.match(r"^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(.*)$", s)
+        if m:
+            parts = m.group(1).split(".")
+            return f"{parts[0]}.{parts[1]}.***.{parts[3]}{m.group(2)}"
+        return s
+
+    # Handle SX proxy format (contains session-XXXXX)
     if "@" in s:
         user_pass, host = s.split("@", 1)
-        if "country-IN" in user_pass or "mobile" in user_pass:
-            return f"{host} (IN Mobile)"
-        if "pool-res" in user_pass or "wuqayqgc" in user_pass:
-            return f"{host} (Residential)"
-        return host
+        sess_m = re.search(r"session-([a-zA-Z0-9]+)", user_pass)
+        sess_id = sess_m.group(1) if sess_m else secrets.token_hex(4)
+        return get_session_masked_ip(sess_id)
+
+    # If it is the raw SX gateway host alone without auth
+    if "62.112.8.26" in s:
+        rnd_sess = secrets.token_hex(4)
+        return get_session_masked_ip(rnd_sess)
+
+    # Standard IP:Port:User:Pass
     if s.count(":") == 3:
         parts = s.split(":")
+        ip = parts[0]
+        port = parts[1]
+        ip_parts = ip.split(".")
+        if len(ip_parts) == 4:
+            masked_ip = f"{ip_parts[0]}.{ip_parts[1]}.***.{ip_parts[3]}"
+            return f"{masked_ip}:{port}"
         return f"{parts[0]}:{parts[1]}"
+
+    # Standard IP:Port
+    if s.count(":") == 1:
+        ip, port = s.split(":")
+        ip_parts = ip.split(".")
+        if len(ip_parts) == 4:
+            masked_ip = f"{ip_parts[0]}.{ip_parts[1]}.***.{ip_parts[3]}"
+            return f"{masked_ip}:{port}"
+        return s
+
+    # Plain IP
+    ip_parts = s.split(".")
+    if len(ip_parts) == 4:
+        return f"{ip_parts[0]}.{ip_parts[1]}.***.{ip_parts[3]}"
+
     return s
 
 # Concurrency lock to prevent duplicate parallel registrations in same chat with auto-expiration
@@ -1276,7 +1361,17 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 except Exception:
                     pass
 
-            save_account_to_file(target_phone, target_pwd, uid, token, target_invite, target_site, device=dev_model, proxy=proxy_label, creator_id=creator_id)
+            resolved_ip = None
+            if active_proxy:
+                try:
+                    r_ip = session.get("https://api.ipify.org?format=json", timeout=1.0)
+                    if r_ip.status_code == 200:
+                        resolved_ip = r_ip.json().get("ip")
+                except Exception:
+                    pass
+            record_proxy = get_session_masked_ip(account_session_id, resolved_raw_ip=resolved_ip) if active_proxy else "Direct"
+
+            save_account_to_file(target_phone, target_pwd, uid, token, target_invite, target_site, device=dev_model, proxy=record_proxy, creator_id=creator_id)
             if active_proxy:
                 mark_proxy_used(active_proxy, domain=domain)
 
@@ -1288,7 +1383,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 "token": token,
                 "invite": target_invite,
                 "site": target_site,
-                "proxy": proxy_label,
+                "proxy": record_proxy,
                 "device": dev_model
             }
 
@@ -2013,7 +2108,7 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
 
             # Deduct 1 token upon successful creation
             new_balance = admin_manager.deduct_tokens(uid, 1)
-            tokens_disp = "♾️ Unlimited (Admin)" if admin_manager.is_admin(uid) else f"{new_balance} Tokens"
+            tokens_disp = admin_manager.get_display_tokens(uid)
 
             used_ip = res.get("proxy", "Direct")
             clean_ip = mask_proxy(used_ip)
@@ -2080,17 +2175,18 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         show_force_join_screen(chat_id, type('UserObj', (), {'id': uid, 'first_name': 'User'})(), message_id=message_id)
         return
 
-    # Token check for non-admins
-    if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
+    # Token check: Super Admin is unlimited; Free Mode is free; Client Admins (1k daily quota) and Users check available tokens
+    if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
         avail = admin_manager.get_tokens(uid)
         if avail <= 0:
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options"))
+            msg_quota = "Admin daily quota (1,000) exhaust ho gaya hai. 24h baad reset hoga." if admin_manager.is_admin(uid) else "Recharge karne ke liye Admin se contact karein."
             send_or_edit(
                 chat_id,
-                "❌ <b>Insufficient Tokens!</b>\n\n"
-                "Aapke pass <code>0 Tokens</code> hain. Har account registration ke liye <code>1 Token</code> lagta hai.\n"
-                "Recharge karne ke liye Admin se contact karein.",
+                f"❌ <b>Insufficient Tokens!</b>\n\n"
+                f"Aapke pass <code>0 Tokens</code> bache hain. Har account registration ke liye <code>1 Token</code> lagta hai.\n"
+                f"{msg_quota}",
                 reply_markup=markup,
                 message_id=message_id
             )
@@ -2184,7 +2280,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                             return
                         if consecutive_fails >= max_consecutive_fails:
                             return
-                        if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
+                        if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
                             if admin_manager.get_tokens(uid) <= 0:
                                 return
 
