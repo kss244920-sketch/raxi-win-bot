@@ -618,6 +618,11 @@ class AdminManager:
             current = int(self.user_registry[uid_str].get("tokens", 0))
             new_val = max(0, current + amount)
             self.user_registry[uid_str]["tokens"] = new_val
+            if uid in self.admin_user_ids and not self.is_super_admin(uid):
+                rec = self.admin_daily_usage.get(uid_str, {})
+                if rec:
+                    rec["used"] = max(0, rec.get("used", 0) - amount)
+                    self.admin_daily_usage[uid_str] = rec
             self.save()
             return new_val
 
@@ -658,6 +663,13 @@ class AdminManager:
                 self.record_user(uid)
             new_val = max(0, amount)
             self.user_registry[uid_str]["tokens"] = new_val
+            if uid in self.admin_user_ids and not self.is_super_admin(uid):
+                today_str = get_current_ist_date()
+                rec = self.admin_daily_usage.get(uid_str, {})
+                if rec.get("date") != today_str:
+                    rec = {"date": today_str, "used": 0, "last_reset": time.time()}
+                rec["used"] = max(0, ADMIN_DAILY_LIMIT - new_val)
+                self.admin_daily_usage[uid_str] = rec
             self.save()
             return new_val
 

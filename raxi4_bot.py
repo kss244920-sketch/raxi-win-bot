@@ -672,6 +672,14 @@ def detect_and_parse_referral_link(text_or_url):
     raw_url = match.group(1).rstrip("/#")
     parsed = urllib.parse.urlparse(raw_url)
     scheme = parsed.scheme if parsed.scheme in ("http", "https") else "https"
+
+    # Candidate hosts (test both direct domain and www/non-www alternate)
+    candidate_hosts = [parsed.netloc]
+    if parsed.netloc.startswith("www."):
+        candidate_hosts.append(parsed.netloc[4:])
+    elif not parsed.netloc.startswith("www.") and "." in parsed.netloc:
+        candidate_hosts.append(f"www.{parsed.netloc}")
+
     base_site = f"{scheme}://{parsed.netloc}"
 
     # 1. Extract Invitation Code from URL parameters / fragment / path
@@ -692,28 +700,30 @@ def detect_and_parse_referral_link(text_or_url):
         invite_code = INVITE
 
     # 2. Check Platform Engine (AR-SAAS vs VITE/WEBAPI)
-    # Check 2A: AR-SAAS platform (MaanWin, GoaGames, BigDaddy, Tiranga, etc.)
-    try:
-        r_ar = requests.post(
-            f"{base_site}/api/Home/Captcha",
-            json=sign_arsaas({}),
-            headers={"Origin": base_site, "Referer": f"{base_site}/register", "Content-Type": "application/json;charset=UTF-8"},
-            timeout=2.5,
-            allow_redirects=True
-        )
-        if r_ar.status_code == 200 and r_ar.json().get("data", {}).get("captchaId"):
-            log(f"[bot] Detected AR-SAAS platform engine for {base_site}")
-            return {
-                "site": base_site,
-                "api": f"{base_site}/api",
-                "api_type": "arsaas",
-                "invite": invite_code,
-                "domain": parsed.netloc,
-                "raw_url": raw_url,
-                "sms_required": False
-            }
-    except Exception:
-        pass
+    # Check 2A: AR-SAAS platform (MaanWin, GoaGames, BigDaddy, Tiranga, 13l.world, etc.)
+    for c_host in candidate_hosts:
+        c_site = f"{scheme}://{c_host}"
+        try:
+            r_ar = requests.post(
+                f"{c_site}/api/Home/Captcha",
+                json=sign_arsaas({}),
+                headers={"Origin": c_site, "Referer": f"{c_site}/register", "Content-Type": "application/json;charset=UTF-8"},
+                timeout=2.5,
+                allow_redirects=True
+            )
+            if r_ar.status_code == 200 and r_ar.json().get("data", {}).get("captchaId"):
+                log(f"[bot] Detected AR-SAAS platform engine for {c_site}")
+                return {
+                    "site": c_site,
+                    "api": f"{c_site}/api",
+                    "api_type": "arsaas",
+                    "invite": invite_code,
+                    "domain": c_host,
+                    "raw_url": raw_url,
+                    "sms_required": False
+                }
+        except Exception:
+            pass
 
     # Check 2B: 51game / Raxi / DMFirst clone (VITE / WEBAPI)
     api_url = None
@@ -1802,14 +1812,15 @@ def show_custom_scheduled_minutes_prompt(chat_id, user, count, message_id=None):
         f"Niche preset time chunein ya chat me minutes likhein (e.g. <code>15</code>, <code>30</code>, <code>60</code>, <code>120</code>):"
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
+    b0 = types.InlineKeyboardButton("⏱️ 10 Minutes", callback_data=f"sched_min_{count}_10")
     b1 = types.InlineKeyboardButton("⏱️ 15 Minutes", callback_data=f"sched_min_{count}_15")
     b2 = types.InlineKeyboardButton("⏱️ 30 Minutes", callback_data=f"sched_min_{count}_30")
     b3 = types.InlineKeyboardButton("⏱️ 60 Min (1 Hour)", callback_data=f"sched_min_{count}_60")
     b4 = types.InlineKeyboardButton("⏱️ 120 Min (2 Hours)", callback_data=f"sched_min_{count}_120")
     b_back = types.InlineKeyboardButton("🔙 Back to Step 1", callback_data="multi_sched")
-    markup.add(b1, b2)
-    markup.add(b3, b4)
-    markup.add(b_back)
+    markup.add(b0, b1)
+    markup.add(b2, b3)
+    markup.add(b4, b_back)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
 

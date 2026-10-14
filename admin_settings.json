@@ -24,7 +24,7 @@
       "username": "gurjar040",
       "first_name": "Prince",
       "role": "\ud83d\udee1\ufe0f Admin",
-      "tokens": 1000,
+      "tokens": 995,
       "joined_at": 1791437060.2165174,
       "last_active": 1791891931.9320946,
       "user_log_channel": null,
@@ -100,7 +100,7 @@
   "admin_daily_usage": {
     "6217522461": {
       "date": "2026-10-14",
-      "used": 0,
+      "used": 5,
       "last_reset": 1791943002.9808989
     }
   }
