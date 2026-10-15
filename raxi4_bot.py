@@ -221,6 +221,8 @@ INDIAN_ISP_POOLS = [
 
 SESSION_RESOLVED_IPS = {}
 SESSION_LOCK = threading.Lock()
+DIRECT_HOST_RATE_LIMITED = {}
+DIRECT_HOST_LOCK = threading.Lock()
 
 def get_session_masked_ip(session_id: str, resolved_raw_ip: str = None) -> str:
     """
@@ -1337,6 +1339,8 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         # 1. Smart-Save Captcha Fetch (0 KB proxy data if direct works, fallback to residential proxy if blocked)
         cid, bg_b64, sl_b64 = None, None, None
         last_cap_status = None
+        target_cap_domain = domain or (urllib.parse.urlparse(target_api).netloc if not is_arsaas else urllib.parse.urlparse(target_site).netloc) or "default"
+
         try:
             if is_arsaas:
                 cap_url = f"{target_site}/api/Home/Captcha"
@@ -1345,26 +1349,45 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 cap_url = f"{target_api}/api/webapi/Captcha"
                 cap_payload = signed_body({})
 
-            # Fetch Captcha directly from host server (0.00 KB residential proxy data consumed)
-            for cap_try in range(2):
+            # Check if host IP is currently rate limited (429) on this domain
+            with DIRECT_HOST_LOCK:
+                blocked_until = DIRECT_HOST_RATE_LIMITED.get(target_cap_domain, 0)
+                is_direct_blocked = time.time() < blocked_until
+
+            # Try direct fetch first (saves 100% proxy data) only if host IP is not under 429 cooldown
+            if not is_direct_blocked:
                 try:
                     direct_session = requests.Session()
                     direct_session.verify = False
                     direct_session.headers.update(session.headers)
-                    r_cap = direct_session.post(cap_url, json=cap_payload, timeout=(3.5, 5.0))
+                    r_cap = direct_session.post(cap_url, json=cap_payload, timeout=(2.5, 4.0))
                     last_cap_status = r_cap.status_code
                     if r_cap.status_code == 200:
                         cdata = r_cap.json().get("data") or {}
                         cid = cdata.get("captchaId")
                         bg_b64 = cdata.get("backgroundImage")
                         sl_b64 = cdata.get("sliderImage")
-                        if cid and bg_b64 and sl_b64:
-                            break
                     elif r_cap.status_code == 429:
-                        time.sleep(1.2)
+                        with DIRECT_HOST_LOCK:
+                            DIRECT_HOST_RATE_LIMITED[target_cap_domain] = time.time() + 300  # 5 min backoff
+                        log(f"[bot] Host IP rate limited (429) on {target_cap_domain}. Switching captcha to proxy fallback for 5m.")
                 except Exception:
-                    if cap_try == 0:
-                        time.sleep(0.5)
+                    pass
+
+            # Step 1B: Robust Fallback to Residential Proxy if direct fetch didn't return valid captcha
+            if (not cid or not bg_b64 or not sl_b64) and active_proxy:
+                try:
+                    r_cap = session.post(cap_url, json=cap_payload, timeout=(5.0, 7.5))
+                    last_cap_status = r_cap.status_code
+                    if r_cap.status_code == 200:
+                        cdata = r_cap.json().get("data") or {}
+                        cid = cdata.get("captchaId")
+                        bg_b64 = cdata.get("backgroundImage")
+                        sl_b64 = cdata.get("sliderImage")
+                    elif r_cap.status_code == 429:
+                        log(f"[bot] Proxy captcha returned 429 via {proxy_label}")
+                except Exception as px_err:
+                    log(f"[bot] Proxy captcha fetch error via {proxy_label}: {px_err}")
         except Exception as e:
             log(f"[bot] Captcha fetch error: {e}")
             last_error = f"Captcha connection error: {str(e)[:80]}"

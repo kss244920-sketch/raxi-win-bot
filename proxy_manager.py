@@ -276,28 +276,60 @@ class ProxyManager:
     def get_next_proxy(self, exclude=None, domain: str = None, session_id: str = None) -> str:
         """
         Returns dynamic session-based proxy with fresh Indian IP from SX.ORG pool.
+        Falls back to verified static proxies from working_proxies.txt if SX pool is empty.
         """
         accounts = self.get_active_sx_accounts()
-        if not accounts:
-            return None
+        if accounts:
+            with self.lock:
+                acc = accounts[self.sx_account_index % len(accounts)]
+                self.sx_account_index = (self.sx_account_index + 1) % len(accounts)
 
-        with self.lock:
-            acc = accounts[self.sx_account_index % len(accounts)]
-            self.sx_account_index = (self.sx_account_index + 1) % len(accounts)
+            sess = session_id or secrets.token_hex(6)
+            template = acc.get("login_template", "")
+            if "{session_id}" in template:
+                login = template.replace("{session_id}", sess)
+            else:
+                login = f"{template}-session-{sess}"
+            pwd = acc.get("password", "")
+            host = acc.get("proxy_host") or "185.100.235.113:9999"
+            return f"{login}:{pwd}@{host}"
 
-        sess = session_id or secrets.token_hex(6)
-        template = acc.get("login_template", "")
-        if "{session_id}" in template:
-            login = template.replace("{session_id}", sess)
-        else:
-            login = f"{template}-session-{sess}"
-        pwd = acc.get("password", "")
-        host = acc.get("proxy_host") or "185.100.235.113:9999"
-        return f"{login}:{pwd}@{host}"
+        # Emergency fallback to working_proxies.txt
+        fallback_candidates = [
+            os.path.join(DATA_DIR, "working_proxies.txt"),
+            os.path.join(BASE_DIR, "working_proxies.txt")
+        ]
+        for fpath in fallback_candidates:
+            if os.path.exists(fpath):
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        lines = [l.strip() for l in f if l.strip() and not l.strip().startswith("#")]
+                    valid = [p for p in lines if p not in (exclude or set()) and p not in self.dead_proxies]
+                    if valid:
+                        return secrets.choice(valid)
+                except Exception:
+                    pass
+
+        return None
 
     def get_available_count(self, domain: str = None) -> int:
         """Returns active count indicator for registration pools."""
-        return 999 if self.is_sx_active() else 0
+        if self.is_sx_active():
+            return 999
+        fallback_candidates = [
+            os.path.join(DATA_DIR, "working_proxies.txt"),
+            os.path.join(BASE_DIR, "working_proxies.txt")
+        ]
+        for fpath in fallback_candidates:
+            if os.path.exists(fpath):
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        lines = [l.strip() for l in f if l.strip() and not l.strip().startswith("#")]
+                    if lines:
+                        return len(lines)
+                except Exception:
+                    pass
+        return 0
 
     def get_earliest_cooldown_expiry(self, domain: str = None) -> float:
         return 0.0

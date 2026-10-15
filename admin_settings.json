@@ -3,8 +3,8 @@
   "master_log_channel": "-1003946923981",
   "master_storage_channel": "-1003907841421",
   "admin_user_ids": [
-    6217522461,
-    8327850869
+    8327850869,
+    6217522461
   ],
   "whitelisted_user_ids": [],
   "user_registry": {
@@ -24,7 +24,7 @@
       "username": "gurjar040",
       "first_name": "Prince",
       "role": "\ud83d\udee1\ufe0f Admin",
-      "tokens": 995,
+      "tokens": 1000,
       "joined_at": 1791437060.2165174,
       "last_active": 1791891931.9320946,
       "user_log_channel": null,
@@ -99,9 +99,9 @@
   },
   "admin_daily_usage": {
     "6217522461": {
-      "date": "2026-10-14",
-      "used": 5,
-      "last_reset": 1791943002.9808989
+      "date": "2026-10-15",
+      "used": 0,
+      "last_reset": 1792065487.6254406
     }
   }
 }
