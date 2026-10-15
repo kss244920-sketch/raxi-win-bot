@@ -758,33 +758,40 @@ def detect_and_parse_referral_link(text_or_url):
         if resp and resp.status_code == 200:
             html_text = resp.text
 
-            m_vite = re.search(r'["\']VITE_API_URL["\']\s*:\s*["\']([^"\']+)["\']', html_text)
-            if m_vite:
+            NON_GAME_DOMAINS = ("google", "firebase", "gstatic", "cloudflare", "microsoft", "apple", "facebook", "sentry", "arbpay", "w3.org", "schema.org", "ampproject", "doubleclick")
+
+            def _is_valid_candidate_api(cand):
+                if not cand or not isinstance(cand, str) or not cand.startswith("http"):
+                    return False
+                low = cand.lower()
+                return not any(bad in low for bad in NON_GAME_DOMAINS)
+
+            m_vite = re.search(r'["\'](?:REQUEST_URL|VITE_API_URL|api_url|apiUrl|baseURL)["\']\s*:\s*["\']([^"\']+)["\']', html_text)
+            if m_vite and _is_valid_candidate_api(m_vite.group(1)):
                 api_url = m_vite.group(1)
-            else:
-                m_api2 = re.search(r'["\'](?:api_url|apiUrl|baseURL)["\']\s*:\s*["\']([^"\']+)["\']', html_text)
-                if m_api2:
-                    api_url = m_api2.group(1)
 
             if not api_url:
-                m_dir = re.search(r'https?://[a-zA-Z0-9.-]*api[a-zA-Z0-9.-]*\.[a-zA-Z]{2,}', html_text)
-                if m_dir and "arbpay" not in m_dir.group(0) and "microsoft" not in m_dir.group(0):
-                    api_url = m_dir.group(0)
+                for m_dir in re.finditer(r'https?://[a-zA-Z0-9.-]*api[a-zA-Z0-9.-]*\.[a-zA-Z]{2,}', html_text):
+                    if _is_valid_candidate_api(m_dir.group(0)):
+                        api_url = m_dir.group(0)
+                        break
 
             # If not in index HTML, scan linked JS bundle scripts (Vite/Vue build)
             if not api_url:
                 script_srcs = re.findall(r'(?:src=|href=)["\']([^"\']+\.js[^"\']*)["\']', html_text)
-                for s_src in script_srcs[:4]:
+                for s_src in script_srcs[:6]:
                     try:
                         s_url = urllib.parse.urljoin(base_site, s_src)
                         s_resp = requests.get(s_url, timeout=4, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
-                        m_js_vite = re.search(r'["\']VITE_API_URL["\']\s*:\s*["\']([^"\']+)["\']', s_resp.text)
-                        if m_js_vite:
+                        m_js_vite = re.search(r'["\'](?:REQUEST_URL|VITE_API_URL|api_url|apiUrl|baseURL)["\']\s*:\s*["\']([^"\']+)["\']', s_resp.text)
+                        if m_js_vite and _is_valid_candidate_api(m_js_vite.group(1)):
                             api_url = m_js_vite.group(1)
                             break
-                        m_api_match = re.search(r'https?://[a-zA-Z0-9.-]*api[a-zA-Z0-9.-]*\.[a-zA-Z]{2,}', s_resp.text)
-                        if m_api_match and "arbpay" not in m_api_match.group(0) and "microsoft" not in m_api_match.group(0):
-                            api_url = m_api_match.group(0)
+                        for m_api_match in re.finditer(r'https?://[a-zA-Z0-9.-]*api[a-zA-Z0-9.-]*\.[a-zA-Z]{2,}', s_resp.text):
+                            if _is_valid_candidate_api(m_api_match.group(0)):
+                                api_url = m_api_match.group(0)
+                                break
+                        if api_url:
                             break
                     except Exception:
                         pass
