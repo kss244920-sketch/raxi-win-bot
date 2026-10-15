@@ -1345,30 +1345,26 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 cap_url = f"{target_api}/api/webapi/Captcha"
                 cap_payload = signed_body({})
 
-            # Step 1A: Attempt direct fetch first (Zero residential proxy data consumed)
-            try:
-                direct_session = requests.Session()
-                direct_session.verify = False
-                direct_session.headers.update(session.headers)
-                r_cap = direct_session.post(cap_url, json=cap_payload, timeout=(3.0, 4.5))
-                last_cap_status = r_cap.status_code
-                if r_cap.status_code == 200:
-                    cdata = r_cap.json().get("data") or {}
-                    cid = cdata.get("captchaId")
-                    bg_b64 = cdata.get("backgroundImage")
-                    sl_b64 = cdata.get("sliderImage")
-            except Exception:
-                pass
-
-            # Step 1B: If direct was blocked (Cloudflare 429/timeout), fallback to residential proxy
-            if not cid or not bg_b64 or not sl_b64:
-                if active_proxy:
-                    r_cap = session.post(cap_url, json=cap_payload, timeout=(5.0, 7.5))
+            # Fetch Captcha directly from host server (0.00 KB residential proxy data consumed)
+            for cap_try in range(2):
+                try:
+                    direct_session = requests.Session()
+                    direct_session.verify = False
+                    direct_session.headers.update(session.headers)
+                    r_cap = direct_session.post(cap_url, json=cap_payload, timeout=(3.5, 5.0))
                     last_cap_status = r_cap.status_code
-                    cdata = r_cap.json().get("data") or {}
-                    cid = cdata.get("captchaId")
-                    bg_b64 = cdata.get("backgroundImage")
-                    sl_b64 = cdata.get("sliderImage")
+                    if r_cap.status_code == 200:
+                        cdata = r_cap.json().get("data") or {}
+                        cid = cdata.get("captchaId")
+                        bg_b64 = cdata.get("backgroundImage")
+                        sl_b64 = cdata.get("sliderImage")
+                        if cid and bg_b64 and sl_b64:
+                            break
+                    elif r_cap.status_code == 429:
+                        time.sleep(1.2)
+                except Exception:
+                    if cap_try == 0:
+                        time.sleep(0.5)
         except Exception as e:
             log(f"[bot] Captcha fetch error: {e}")
             last_error = f"Captcha connection error: {str(e)[:80]}"
@@ -1381,7 +1377,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             time.sleep(0.2)
             continue
 
-        # 2. Solve slider puzzle via native PIL + NumPy contour matching
+        # 2. Solve slider puzzle via native PIL + NumPy contour matching (0 KB network data)
         try:
             container_x, score = solve_slider(bg_b64, sl_b64)
             track = make_track(container_x)
@@ -1390,7 +1386,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             container_x = random.randint(110, 210)
             track = make_track(container_x)
 
-        # 3. Submit Register POST - Reliable 4.5s connect, 7.0s read
+        # 3. Submit Register POST (THE ONLY REQUEST THAT USES THE FRESH UNIQUE RESIDENTIAL IP ~4.5 KB)
         if is_arsaas:
             reg_url = f"{target_site}/api/Home/Register"
             reg_dict = {
@@ -1422,6 +1418,9 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
 
         try:
             r = session.post(reg_url, json=reg_payload, timeout=(4.5, 7.0))
+            if r.status_code in (404, 502, 403):
+                log(f"[bot] Fatal HTTP {r.status_code} on {reg_url}")
+                return {"ok": False, "msg": f"Platform endpoint HTTP {r.status_code}", "fatal": True}
             j = r.json()
         except Exception as e:
             log(f"[bot] Proxy {proxy_label} Register POST error: {e}")
@@ -1437,28 +1436,27 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
 
         log(f"[bot] Result: code={code}, msgCode={msg_code}, msg={msg}")
 
+        # Stop early on fatal invite/platform errors to protect proxy credits
+        if msg and any(bad in str(msg).lower() for bad in ["invitor not existed", "invitecode error", "invite code invalid", "invite code does not exist", "invite code expired"]):
+            log(f"[bot] Stopping registration: Fatal invite error ({msg})")
+            return {"ok": False, "msg": msg, "fatal": True}
+
         # Success!
         if code == 0 and j.get("data"):
             d = j["data"]
             token = d.get("token")
             uid = d.get("userId") or None
-            if not uid and token:
+            resolved_ip = None
+            if token and "." in token:
                 try:
                     part = token.split(".")[1]
                     part += "=" * (-len(part) % 4)
                     decoded = json.loads(base64.urlsafe_b64decode(part))
-                    uid = decoded.get("UserId")
+                    uid = uid or decoded.get("UserId")
+                    resolved_ip = decoded.get("LoginIPAddress") or decoded.get("LoginIP") or decoded.get("loginIP")
                 except Exception:
                     pass
 
-            resolved_ip = None
-            if active_proxy:
-                try:
-                    r_ip = session.get("https://api.ipify.org?format=json", timeout=1.0)
-                    if r_ip.status_code == 200:
-                        resolved_ip = r_ip.json().get("ip")
-                except Exception:
-                    pass
             record_proxy = get_session_masked_ip(account_session_id, resolved_raw_ip=resolved_ip) if active_proxy else "Direct"
 
             save_account_to_file(target_phone, target_pwd, uid, token, target_invite, target_site, device=dev_model, proxy=record_proxy, creator_id=creator_id)
