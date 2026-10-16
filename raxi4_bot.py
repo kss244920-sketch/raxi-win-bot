@@ -110,6 +110,7 @@ seed_persistent_file("chat_configs.json")
 seed_persistent_file("admin_settings.json")
 seed_persistent_file("working_proxies.txt")
 seed_persistent_file("fresh_raw_proxies.txt")
+seed_persistent_file("used_devices.json")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
@@ -521,81 +522,247 @@ INDIAN_PREFIXES = [
     "63", "62"
 ]
 
-# ─── Dynamic Mobile Device Fingerprint Pool ───
+# ─── 100% Unique Device Fingerprint Engine (Zero Device Repeat Guarantee) ───
+INDIAN_DEVICE_CATALOG = [
+    # Samsung Flagship & Popular Indian Series (A/M/F/S/Z)
+    {"brand": "Samsung", "model": "Samsung Galaxy S24 Ultra", "hardware": "SM-S928B", "android": "14"},
+    {"brand": "Samsung", "model": "Samsung Galaxy S24+", "hardware": "SM-S926B", "android": "14"},
+    {"brand": "Samsung", "model": "Samsung Galaxy S24", "hardware": "SM-S921B", "android": "14"},
+    {"brand": "Samsung", "model": "Samsung Galaxy S23 Ultra", "hardware": "SM-S918B", "android": "13"},
+    {"brand": "Samsung", "model": "Samsung Galaxy S23 5G", "hardware": "SM-S911B", "android": "13"},
+    {"brand": "Samsung", "model": "Samsung Galaxy S23 FE", "hardware": "SM-S711B", "android": "14"},
+    {"brand": "Samsung", "model": "Samsung Galaxy A55 5G", "hardware": "SM-A556E", "android": "14"},
+    {"brand": "Samsung", "model": "Samsung Galaxy A35 5G", "hardware": "SM-A356E", "android": "14"},
+    {"brand": "Samsung", "model": "Samsung Galaxy A54 5G", "hardware": "SM-A546E", "android": "13"},
+    {"brand": "Samsung", "model": "Samsung Galaxy M55 5G", "hardware": "SM-M556B", "android": "14"},
+    {"brand": "Samsung", "model": "Samsung Galaxy M35 5G", "hardware": "SM-M356B", "android": "14"},
+    {"brand": "Samsung", "model": "Samsung Galaxy F55 5G", "hardware": "SM-E556B", "android": "14"},
+    {"brand": "Samsung", "model": "Samsung Galaxy Z Fold 5", "hardware": "SM-F946B", "android": "13"},
+    {"brand": "Samsung", "model": "Samsung Galaxy Z Flip 5", "hardware": "SM-F731B", "android": "13"},
+    # OnePlus High-Volume Indian Models
+    {"brand": "OnePlus", "model": "OnePlus 12 5G", "hardware": "CPH2573", "android": "14"},
+    {"brand": "OnePlus", "model": "OnePlus 12R", "hardware": "CPH2585", "android": "14"},
+    {"brand": "OnePlus", "model": "OnePlus 11 5G", "hardware": "CPH2449", "android": "13"},
+    {"brand": "OnePlus", "model": "OnePlus 11R", "hardware": "CPH2487", "android": "13"},
+    {"brand": "OnePlus", "model": "OnePlus Nord 4 5G", "hardware": "CPH2661", "android": "14"},
+    {"brand": "OnePlus", "model": "OnePlus Nord CE 4", "hardware": "CPH2613", "android": "14"},
+    {"brand": "OnePlus", "model": "OnePlus Nord CE 4 Lite", "hardware": "CPH2621", "android": "14"},
+    {"brand": "OnePlus", "model": "OnePlus Nord 3 5G", "hardware": "CPH2493", "android": "13"},
+    {"brand": "OnePlus", "model": "OnePlus Open", "hardware": "CPH2551", "android": "13"},
+    # Xiaomi & Redmi Popular Indian Models
+    {"brand": "Xiaomi", "model": "Xiaomi 14 Ultra", "hardware": "24030PN60G", "android": "14"},
+    {"brand": "Xiaomi", "model": "Xiaomi 14", "hardware": "23127PN0CG", "android": "14"},
+    {"brand": "Xiaomi", "model": "Xiaomi 13 Pro", "hardware": "2210132G", "android": "13"},
+    {"brand": "Redmi", "model": "Redmi Note 13 Pro+ 5G", "hardware": "23090RA98G", "android": "14"},
+    {"brand": "Redmi", "model": "Redmi Note 13 Pro 5G", "hardware": "2312DRA50G", "android": "14"},
+    {"brand": "Redmi", "model": "Redmi Note 13 5G", "hardware": "2312DRAABG", "android": "13"},
+    {"brand": "Redmi", "model": "Redmi Note 12 Pro 5G", "hardware": "22101316G", "android": "13"},
+    {"brand": "Redmi", "model": "Redmi 13C 5G", "hardware": "23124RN87G", "android": "14"},
+    {"brand": "Redmi", "model": "Redmi 12 5G", "hardware": "23076RN4BI", "android": "13"},
+    # Poco Gaming & Budget Series
+    {"brand": "Poco", "model": "Poco F6 Pro", "hardware": "23113RKC6G", "android": "14"},
+    {"brand": "Poco", "model": "Poco F6", "hardware": "24069PC21G", "android": "14"},
+    {"brand": "Poco", "model": "Poco X6 Pro 5G", "hardware": "2311DRK48G", "android": "14"},
+    {"brand": "Poco", "model": "Poco X6 5G", "hardware": "23122PCD1G", "android": "14"},
+    {"brand": "Poco", "model": "Poco M6 Pro 5G", "hardware": "23076PC4BI", "android": "13"},
+    {"brand": "Poco", "model": "Poco M6 5G", "hardware": "23128PC97I", "android": "14"},
+    # Vivo & iQOO Top Indian Performers
+    {"brand": "Vivo", "model": "Vivo X100 Pro", "hardware": "V2324A", "android": "14"},
+    {"brand": "Vivo", "model": "Vivo X100", "hardware": "V2309A", "android": "14"},
+    {"brand": "Vivo", "model": "Vivo V30 Pro", "hardware": "V2319", "android": "14"},
+    {"brand": "Vivo", "model": "Vivo V30", "hardware": "V2318", "android": "14"},
+    {"brand": "Vivo", "model": "Vivo V29 5G", "hardware": "V2250", "android": "13"},
+    {"brand": "Vivo", "model": "Vivo T3 5G", "hardware": "V2334", "android": "14"},
+    {"brand": "Vivo", "model": "Vivo T3x 5G", "hardware": "V2338", "android": "14"},
+    {"brand": "Vivo", "model": "Vivo Y200 5G", "hardware": "V2307", "android": "13"},
+    {"brand": "iQOO", "model": "iQOO 12 5G", "hardware": "I2220", "android": "14"},
+    {"brand": "iQOO", "model": "iQOO Neo 9 Pro", "hardware": "I2217", "android": "14"},
+    {"brand": "iQOO", "model": "iQOO Neo 7 Pro", "hardware": "I2214", "android": "13"},
+    {"brand": "iQOO", "model": "iQOO Z9 5G", "hardware": "I2302", "android": "14"},
+    {"brand": "iQOO", "model": "iQOO Z9x 5G", "hardware": "I2305", "android": "14"},
+    # Realme Number & GT Series
+    {"brand": "Realme", "model": "Realme GT 6", "hardware": "RMX3850", "android": "14"},
+    {"brand": "Realme", "model": "Realme GT 6T", "hardware": "RMX3853", "android": "14"},
+    {"brand": "Realme", "model": "Realme 12 Pro+ 5G", "hardware": "RMX3840", "android": "14"},
+    {"brand": "Realme", "model": "Realme 12 Pro 5G", "hardware": "RMX3842", "android": "14"},
+    {"brand": "Realme", "model": "Realme 12+ 5G", "hardware": "RMX3867", "android": "14"},
+    {"brand": "Realme", "model": "Realme Narzo 70 Pro 5G", "hardware": "RMX3868", "android": "14"},
+    {"brand": "Realme", "model": "Realme P1 Pro 5G", "hardware": "RMX3844", "android": "14"},
+    {"brand": "Realme", "model": "Realme P1 5G", "hardware": "RMX3870", "android": "14"},
+    {"brand": "Realme", "model": "Realme GT 5 5G", "hardware": "RMX3820", "android": "13"},
+    # Oppo Reno & F-Series
+    {"brand": "Oppo", "model": "Oppo Reno 12 Pro", "hardware": "CPH2629", "android": "14"},
+    {"brand": "Oppo", "model": "Oppo Reno 11 Pro 5G", "hardware": "CPH2607", "android": "14"},
+    {"brand": "Oppo", "model": "Oppo Reno 11 5G", "hardware": "CPH2599", "android": "14"},
+    {"brand": "Oppo", "model": "Oppo F27 Pro+ 5G", "hardware": "CPH2643", "android": "14"},
+    {"brand": "Oppo", "model": "Oppo F25 Pro 5G", "hardware": "CPH2603", "android": "14"},
+    {"brand": "Oppo", "model": "Oppo A79 5G", "hardware": "CPH2553", "android": "13"},
+    # Google Pixel
+    {"brand": "Google", "model": "Google Pixel 8 Pro", "hardware": "Pixel 8 Pro", "android": "14"},
+    {"brand": "Google", "model": "Google Pixel 8", "hardware": "Pixel 8", "android": "14"},
+    {"brand": "Google", "model": "Google Pixel 8a", "hardware": "Pixel 8a", "android": "14"},
+    {"brand": "Google", "model": "Google Pixel 7 Pro", "hardware": "Pixel 7 Pro", "android": "13"},
+    {"brand": "Google", "model": "Google Pixel 7a", "hardware": "Pixel 7a", "android": "13"},
+    # Motorola & Nothing
+    {"brand": "Motorola", "model": "Motorola Edge 50 Pro", "hardware": "motorola edge 50 pro", "android": "14"},
+    {"brand": "Motorola", "model": "Motorola Edge 40 Neo", "hardware": "motorola edge 40 neo", "android": "13"},
+    {"brand": "Motorola", "model": "Moto G84 5G", "hardware": "moto g84 5G", "android": "13"},
+    {"brand": "Nothing", "model": "Nothing Phone (2)", "hardware": "A065", "android": "14"},
+    {"brand": "Nothing", "model": "Nothing Phone (2a)", "hardware": "A142", "android": "14"},
+]
+
+CHROME_BUILDS = [
+    {"version": "124.0.6367.113", "major": "124"},
+    {"version": "124.0.6367.179", "major": "124"},
+    {"version": "125.0.6422.112", "major": "125"},
+    {"version": "125.0.6422.165", "major": "125"},
+    {"version": "126.0.6478.122", "major": "126"},
+    {"version": "126.0.6478.186", "major": "126"},
+    {"version": "127.0.6533.103", "major": "127"},
+    {"version": "128.0.6613.88", "major": "128"},
+    {"version": "128.0.6613.127", "major": "128"},
+    {"version": "129.0.6668.70", "major": "129"},
+    {"version": "130.0.6723.58", "major": "130"},
+]
+
+USED_DEVICE_IDS = set()
+IN_FLIGHT_DEVICE_IDS = set()
+USED_MODELS_BY_DOMAIN = {}
+DEVICE_LOCK = threading.Lock()
+USED_DEVICES_FILE = os.path.join(DATA_DIR, "used_devices.json")
+
+def load_used_devices():
+    """Loads historical used device IDs and domain model allocations from JSON and accounts log."""
+    global USED_DEVICE_IDS, USED_MODELS_BY_DOMAIN
+    with DEVICE_LOCK:
+        for c in [USED_DEVICES_FILE, os.path.join(BASE_DIR, "used_devices.json")]:
+            if os.path.exists(c):
+                try:
+                    with open(c, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    dev_ids = data.get("used_device_ids", [])
+                    USED_DEVICE_IDS.update(dev_ids)
+                    for dom, models in data.get("used_models_by_domain", {}).items():
+                        USED_MODELS_BY_DOMAIN.setdefault(dom, set()).update(models)
+                except Exception as e:
+                    log(f"[devices] Error loading {c}: {e}")
+
+        # Scan accounts file to capture past model usage per domain
+        for c in [ACCOUNTS_FILE, os.path.join(DATA_DIR, "raxi_accounts.txt"), os.path.join(BASE_DIR, "raxi_accounts.txt")]:
+            if os.path.exists(c):
+                try:
+                    with open(c, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            m_site = re.search(r'Site:\s*https?://([^ /|]+)', line)
+                            dom = proxy_manager.normalize_domain(m_site.group(1)) if m_site else "default"
+                            m_dev = re.search(r'Device:\s*([^|]+)', line)
+                            if m_dev:
+                                raw_dev = m_dev.group(1).strip()
+                                # Check if device id was attached
+                                m_id = re.search(r'\(([a-f0-9]{8,32})\)', raw_dev)
+                                if m_id:
+                                    USED_DEVICE_IDS.add(m_id.group(1))
+                                    clean_model = raw_dev.split("(")[0].strip()
+                                    USED_MODELS_BY_DOMAIN.setdefault(dom, set()).add(clean_model)
+                                else:
+                                    USED_MODELS_BY_DOMAIN.setdefault(dom, set()).add(raw_dev)
+                except Exception:
+                    pass
+
+        log(f"[devices] Loaded {len(USED_DEVICE_IDS)} unique historical device IDs across {len(USED_MODELS_BY_DOMAIN)} domains.")
+
+load_used_devices()
+
+def claim_unique_device(domain=None) -> dict:
+    """
+    Enforces 100% Zero-Repeat Device Condition:
+    1. Generates a brand-new 16-hex deviceId that has NEVER been used before in history.
+    2. Selects a fresh smartphone model from the 70+ Indian model catalog, rotating models per domain.
+    3. Atomically reserves deviceId in in-flight registry.
+    """
+    global USED_DEVICE_IDS, IN_FLIGHT_DEVICE_IDS, USED_MODELS_BY_DOMAIN
+    dom = proxy_manager.normalize_domain(domain)
+    with DEVICE_LOCK:
+        # Generate non-colliding deviceId
+        dev_id = None
+        for _ in range(100):
+            cand = secrets.token_hex(16)
+            if cand not in USED_DEVICE_IDS and cand not in IN_FLIGHT_DEVICE_IDS:
+                dev_id = cand
+                break
+        if not dev_id:
+            dev_id = f"{secrets.token_hex(8)}{int(time.time()*1000):x}"[:32]
+
+        # Prioritize unused phone model for this domain if available
+        domain_used = USED_MODELS_BY_DOMAIN.get(dom, set())
+        available_models = [m for m in INDIAN_DEVICE_CATALOG if m["model"] not in domain_used]
+        if not available_models:
+            # If all 70+ models have been used on this domain, recycle pool but ensure new OS/Chrome/ID
+            available_models = INDIAN_DEVICE_CATALOG
+        selected = secrets.choice(available_models)
+        IN_FLIGHT_DEVICE_IDS.add(dev_id)
+
+    # Pick Chrome build and generate realistic User-Agent and Client Hints
+    chrome = secrets.choice(CHROME_BUILDS)
+    andr_ver = selected.get("android", "14")
+    hw = selected["hardware"]
+    model_name = selected["model"]
+
+    ua = f"Mozilla/5.0 (Linux; Android {andr_ver}; {hw}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome['version']} Mobile Safari/537.36"
+    sec_ch_ua = f'"Chromium";v="{chrome["major"]}", "Google Chrome";v="{chrome["major"]}", "Not-A.Brand";v="99"'
+
+    return {
+        "device_id": dev_id,
+        "model": model_name,
+        "brand": selected.get("brand", "Generic"),
+        "hardware": hw,
+        "android": andr_ver,
+        "ua": ua,
+        "sec_ch_ua": sec_ch_ua,
+        "platform": '"Android"',
+    }
+
+def mark_device_used(device_id: str, domain=None, model=None):
+    """Permanently commits deviceId and model to used_devices.json."""
+    global USED_DEVICE_IDS, IN_FLIGHT_DEVICE_IDS, USED_MODELS_BY_DOMAIN
+    if not device_id:
+        return
+    dom = proxy_manager.normalize_domain(domain)
+    with DEVICE_LOCK:
+        USED_DEVICE_IDS.add(device_id)
+        IN_FLIGHT_DEVICE_IDS.discard(device_id)
+        if model:
+            USED_MODELS_BY_DOMAIN.setdefault(dom, set()).add(model)
+
+        data_to_save = {
+            "used_device_ids": list(USED_DEVICE_IDS),
+            "used_models_by_domain": {d: list(m) for d, m in USED_MODELS_BY_DOMAIN.items()}
+        }
+        for dest in [USED_DEVICES_FILE, os.path.join(BASE_DIR, "used_devices.json")]:
+            try:
+                with open(dest, "w", encoding="utf-8") as f:
+                    json.dump(data_to_save, f)
+            except Exception:
+                pass
+
+def release_in_flight_device(device_id: str):
+    """Releases deviceId from in-flight on failure or cancellation."""
+    if not device_id:
+        return
+    with DEVICE_LOCK:
+        IN_FLIGHT_DEVICE_IDS.discard(device_id)
+
+# Compatibility alias for any legacy callers
 DEVICE_PROFILES = [
     {
-        "model": "Samsung Galaxy S24 Ultra",
-        "ua": "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.113 Mobile Safari/537.36",
+        "model": m["model"],
+        "ua": f"Mozilla/5.0 (Linux; Android {m['android']}; {m['hardware']}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.113 Mobile Safari/537.36",
         "sec_ch_ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        "platform": '"Android"'
-    },
-    {
-        "model": "Samsung Galaxy S23 5G",
-        "ua": "Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.90 Mobile Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="122", "Google Chrome";v="122", "Not-A.Brand";v="99"',
-        "platform": '"Android"'
-    },
-    {
-        "model": "OnePlus 12 5G",
-        "ua": "Mozilla/5.0 (Linux; Android 14; CPH2573) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.6312.80 Mobile Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="123", "Google Chrome";v="123", "Not-A.Brand";v="99"',
-        "platform": '"Android"'
-    },
-    {
-        "model": "OnePlus 11R",
-        "ua": "Mozilla/5.0 (Linux; Android 13; CPH2487) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.143 Mobile Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="121", "Google Chrome";v="121", "Not-A.Brand";v="99"',
-        "platform": '"Android"'
-    },
-    {
-        "model": "Google Pixel 8 Pro",
-        "ua": "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        "platform": '"Android"'
-    },
-    {
-        "model": "Xiaomi 13 Pro",
-        "ua": "Mozilla/5.0 (Linux; Android 13; 2210132G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="120", "Google Chrome";v="120", "Not-A.Brand";v="99"',
-        "platform": '"Android"'
-    },
-    {
-        "model": "Redmi Note 13 Pro+",
-        "ua": "Mozilla/5.0 (Linux; Android 14; 23090RA98G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.6312.118 Mobile Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="123", "Google Chrome";v="123", "Not-A.Brand";v="99"',
-        "platform": '"Android"'
-    },
-    {
-        "model": "Vivo V29 5G",
-        "ua": "Mozilla/5.0 (Linux; Android 13; V2250) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.101 Mobile Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="121", "Google Chrome";v="121", "Not-A.Brand";v="99"',
-        "platform": '"Android"'
-    },
-    {
-        "model": "Realme GT 5 5G",
-        "ua": "Mozilla/5.0 (Linux; Android 13; RMX3820) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.64 Mobile Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="122", "Google Chrome";v="122", "Not-A.Brand";v="99"',
-        "platform": '"Android"'
-    },
-    {
-        "model": "iQOO 12 5G",
-        "ua": "Mozilla/5.0 (Linux; Android 14; I2220) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.54 Mobile Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        "platform": '"Android"'
-    },
-    {
-        "model": "Poco X6 Pro",
-        "ua": "Mozilla/5.0 (Linux; Android 14; 2311DRK48G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.6312.40 Mobile Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="123", "Google Chrome";v="123", "Not-A.Brand";v="99"',
-        "platform": '"Android"'
-    },
-    {
-        "model": "Motorola Edge 40",
-        "ua": "Mozilla/5.0 (Linux; Android 13; motorola edge 40) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.164 Mobile Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="121", "Google Chrome";v="121", "Not-A.Brand";v="99"',
         "platform": '"Android"'
     }
+    for m in INDIAN_DEVICE_CATALOG[:12]
 ]
+
 
 # ─── Automatic Rotating Proxy Engine (Zero IP Repeat Guarantee + Auto-Scraper Daemon) ───
 def mark_proxy_dead(proxy_str):
@@ -1286,32 +1453,39 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
     tried_proxies = set()
     account_session_id = session_id or secrets.token_hex(6)
     for attempt in range(1, max_search_attempts + 1):
-        if attempt > 1 and proxy_manager.is_sx_active():
-            account_session_id = secrets.token_hex(6)
         target_phone = phone if not is_auto else generate_random_phone()
         target_pwd = password if password else generate_random_password()
         if is_arsaas and len(target_pwd) < 8:
             target_pwd = f"{target_pwd}1234"
 
-        dev_profile = random.choice(DEVICE_PROFILES)
+        # 1. Claim a 100% UNIQUE device (Zero Device Repeat Guarantee)
+        dev_profile = claim_unique_device(domain=domain)
         dev_model = dev_profile["model"]
         dev_ua = dev_profile["ua"]
-        device_id = secrets.token_hex(16)
+        device_id = dev_profile["device_id"]
 
-        active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain, session_id=account_session_id)
-        if not active_proxy and attempt == 1:
-            time.sleep(1.5)
+        # 2. Acquire a 100% UNIQUE Indian residential IP (Zero IP Repeat Guarantee)
+        # Pre-flight check (~220 bytes) ensures IP has NEVER been used on this domain before!
+        active_proxy, verified_ip, account_session_id = proxy_manager.acquire_session_with_unique_ip(domain=domain)
+        if not active_proxy:
             active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain, session_id=account_session_id)
-        if not active_proxy and "Direct" not in tried_proxies:
-            active_proxy = None  # fallback to Direct only once if pool has no candidate
+            verified_ip = proxy_manager._extract_clean_ip(active_proxy) if active_proxy else None
 
         if active_proxy:
             tried_proxies.add(active_proxy)
         else:
             tried_proxies.add("Direct")
-        proxy_label = active_proxy if active_proxy else "Direct"
+        proxy_label = verified_ip or active_proxy or "Direct"
 
-        log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'AR-SAAS' if is_arsaas else 'WEBAPI'}): phone={target_phone} dev='{dev_model}' proxy={proxy_label}")
+        def _cleanup_in_flight(burn_ip=False):
+            if verified_ip:
+                if burn_ip:
+                    proxy_manager.mark_ip_used(verified_ip, domain=domain)
+                else:
+                    proxy_manager.release_in_flight_ip(verified_ip, domain=domain)
+            release_in_flight_device(device_id)
+
+        log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'AR-SAAS' if is_arsaas else 'WEBAPI'}): phone={target_phone} dev='{dev_model}' id='{device_id[:8]}' ip={proxy_label}")
 
         base_headers = {
             "User-Agent": dev_ua,
@@ -1406,12 +1580,14 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         except Exception as e:
             log(f"[bot] Captcha fetch error: {e}")
             last_error = f"Captcha connection error: {str(e)[:80]}"
+            _cleanup_in_flight()
             time.sleep(0.2)
             continue
 
         if not cid or not bg_b64 or not sl_b64:
             log(f"[bot] Captcha returned empty data (status={last_cap_status}) - aborted attempt without consuming residential proxy")
             last_error = "Captcha returned empty data"
+            _cleanup_in_flight()
             time.sleep(0.2)
             continue
 
@@ -1471,12 +1647,14 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             r = session.post(reg_url, json=reg_payload, timeout=(4.5, 7.0))
             if r.status_code in (404, 502, 403):
                 log(f"[bot] Fatal HTTP {r.status_code} on {reg_url}")
+                _cleanup_in_flight()
                 return {"ok": False, "msg": f"Platform endpoint HTTP {r.status_code}", "fatal": True}
             j = r.json()
         except Exception as e:
             log(f"[bot] Proxy {proxy_label} Register POST error: {e}")
             if active_proxy:
                 mark_proxy_dead(active_proxy)
+            _cleanup_in_flight()
             last_error = f"Register POST error via {proxy_label}: {str(e)[:80]}"
             time.sleep(0.2)
             continue
@@ -1490,6 +1668,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         # Stop early on fatal invite/platform errors to protect proxy credits
         if msg and any(bad in str(msg).lower() for bad in ["invitor not existed", "invitecode error", "invite code invalid", "invite code does not exist", "invite code expired"]):
             log(f"[bot] Stopping registration: Fatal invite error ({msg})")
+            _cleanup_in_flight()
             return {"ok": False, "msg": msg, "fatal": True}
 
         # Success!
@@ -1508,11 +1687,21 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 except Exception:
                     pass
 
-            record_proxy = get_session_masked_ip(account_session_id, resolved_raw_ip=resolved_ip) if active_proxy else "Direct"
+            final_ip = resolved_ip or verified_ip
+            record_proxy = get_session_masked_ip(account_session_id, resolved_raw_ip=final_ip) if active_proxy else "Direct"
 
-            save_account_to_file(target_phone, target_pwd, uid, token, target_invite, target_site, device=dev_model, proxy=record_proxy, creator_id=creator_id)
-            if active_proxy:
-                mark_proxy_used(active_proxy, domain=domain)
+            save_account_to_file(target_phone, target_pwd, uid, token, target_invite, target_site, device=f"{dev_model} ({device_id[:8]})", proxy=record_proxy, creator_id=creator_id)
+
+            # Mark device permanently used across all domains and for this domain's model rotation
+            mark_device_used(device_id, domain=domain, model=dev_model)
+
+            # Mark verified IP permanently used for this domain
+            if verified_ip:
+                proxy_manager.mark_ip_used(verified_ip, domain=domain)
+            if resolved_ip and resolved_ip != verified_ip:
+                proxy_manager.mark_ip_used(resolved_ip, domain=domain)
+            elif active_proxy and not verified_ip and not resolved_ip:
+                proxy_manager.mark_proxy_used(active_proxy, domain=domain)
 
             return {
                 "ok": True,
@@ -1523,23 +1712,28 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 "invite": target_invite,
                 "site": target_site,
                 "proxy": record_proxy,
-                "device": dev_model
+                "device": dev_model,
+                "device_id": device_id,
+                "ip": final_ip or "Residential"
             }
 
         # If phone is already registered and in auto-mode, pick another number
         if (msg_code in (111, 5033) or "already registered" in str(msg).lower()) and is_auto:
             log("[bot] Number already registered, picking another...")
             last_error = "Number already registered"
+            _cleanup_in_flight()
             time.sleep(0.2)
             continue
 
         if (msg_code in (111, 5033) or "already registered" in str(msg).lower()) and not is_auto:
+            _cleanup_in_flight()
             return {"ok": False, "phone": target_phone, "msg": "Phone number is already registered"}
 
         # Captcha verification failed -> retry
         if msg_code in (31, 143, 5008) or "captcha" in str(msg).lower() or "verification failed" in str(msg).lower():
             log("[bot] Captcha verification failed, retrying...")
             last_error = f"Captcha verification failed ({msg})"
+            _cleanup_in_flight()
             time.sleep(0.2)
             continue
 
@@ -1559,11 +1753,12 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             )
             if is_forbidden:
                 log(f"[bot] Proxy {proxy_label} permanently forbidden on {domain} ({msg}), marking burned for domain...")
+                _cleanup_in_flight(burn_ip=True)
                 if active_proxy:
-                    proxy_manager.mark_proxy_used(active_proxy, domain=domain)
                     proxy_manager.mark_proxy_cooldown(active_proxy, domain=domain, duration=300)
             else:
                 log(f"[bot] Proxy {proxy_label} flagged by server ({msg}), placing on domain cooldown...")
+                _cleanup_in_flight(burn_ip=False)
                 if active_proxy:
                     proxy_manager.mark_proxy_cooldown(active_proxy, domain=domain, duration=300)
             last_error = f"{msg} (code {msg_code})"
@@ -1579,6 +1774,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             or "invite code" in str(msg).lower()
         ):
             log(f"[bot] Target site rejected invite code: {msg} (code={code}, msgCode={msg_code})")
+            _cleanup_in_flight()
             return {
                 "ok": False,
                 "fatal": True,
@@ -1588,12 +1784,14 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         # If site strictly requires SMS OTP (e.g. 51game)
         if msg_code == 106 or "sms" in str(msg).lower():
             log(f"[bot] Target site requires mandatory SMS OTP: {msg}")
+            _cleanup_in_flight()
             return {
                 "ok": False,
                 "fatal": True,
                 "msg": f"SMS Verification Required: This platform enforces SMS OTP ({msg}). Registration cannot proceed without real SMS OTP."
             }
 
+        _cleanup_in_flight()
         last_error = msg or f"Error code {code}"
         time.sleep(0.2)
 

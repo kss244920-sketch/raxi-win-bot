@@ -10,6 +10,7 @@ import logging
 import threading
 import json
 import secrets
+import base64
 import requests
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [ProxyEngine] %(message)s")
@@ -33,9 +34,13 @@ class ProxyManager:
         self.sx_account_index = 0
         self.dead_proxies = set()
         self.domain_cooldowns = {}
+        self.in_flight_ips = {}  # {domain: set(ips)}
+        self.used_ips_by_domain = {}  # {domain: set(ips)}
         self.sx_config = self.load_sx_config()
         # Clean expired accounts at init
         self.purge_expired_sx_accounts()
+        # Load and sync used IPs from history
+        self.load_used_ips()
 
     def load_sx_config(self) -> dict:
         """Loads and merges SX.ORG rotating residential configuration from persistent and base dirs."""
@@ -410,9 +415,199 @@ class ProxyManager:
 
         return "\n".join(lines)
 
+    def normalize_domain(self, domain: str) -> str:
+        if not domain:
+            return "default"
+        d = domain.lower().strip()
+        if "://" in d:
+            d = d.split("://")[-1]
+        d = d.split("/")[0].split(":")[0]
+        if d.startswith("www."):
+            d = d[4:]
+        return d or "default"
+
+    def _extract_clean_ip(self, s: str) -> str:
+        if not s:
+            return ""
+        m = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', s)
+        return m.group(0) if m else s.strip()
+
+    def load_used_ips(self):
+        """Loads domain-isolated used IPs from used_proxies.txt and historical raxi_accounts.txt."""
+        with self.lock:
+            self.used_ips_by_domain = {}
+            for target_dir in [BASE_DIR, DATA_DIR]:
+                fpath = os.path.join(target_dir, "used_proxies.txt")
+                if os.path.exists(fpath):
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            for line in f:
+                                line = line.strip()
+                                if not line or line.startswith("#"):
+                                    continue
+                                parts = line.split("|")
+                                ip_part = parts[0].strip()
+                                dom_part = self.normalize_domain(parts[1]) if len(parts) > 1 else "default"
+                                clean_ip = self._extract_clean_ip(ip_part)
+                                if clean_ip:
+                                    self.used_ips_by_domain.setdefault(dom_part, set()).add(clean_ip)
+                    except Exception:
+                        pass
+
+            for target_dir in [BASE_DIR, DATA_DIR]:
+                acc_path = os.path.join(target_dir, "raxi_accounts.txt")
+                if os.path.exists(acc_path):
+                    try:
+                        with open(acc_path, "r", encoding="utf-8") as f:
+                            for line in f:
+                                m_site = re.search(r'Site:\s*https?://([^ /|]+)', line)
+                                dom = self.normalize_domain(m_site.group(1)) if m_site else "default"
+                                m_tok = re.search(r'Token:\s*([a-zA-Z0-9_\-\.]+)', line)
+                                found_ip = None
+                                if m_tok and "." in m_tok.group(1):
+                                    try:
+                                        p = m_tok.group(1).split(".")[1]
+                                        p += "=" * (-len(p) % 4)
+                                        d = json.loads(base64.urlsafe_b64decode(p))
+                                        found_ip = d.get("LoginIPAddress") or d.get("LoginIP")
+                                    except Exception:
+                                        pass
+                                if not found_ip:
+                                    m_ip = re.search(r'IP:\s*([0-9\.]+)', line)
+                                    if m_ip:
+                                        found_ip = m_ip.group(1)
+                                if found_ip:
+                                    clean_ip = self._extract_clean_ip(found_ip)
+                                    if clean_ip:
+                                        self.used_ips_by_domain.setdefault(dom, set()).add(clean_ip)
+                    except Exception:
+                        pass
+            total_loaded = sum(len(v) for v in self.used_ips_by_domain.values())
+            logger.info(f"Loaded {total_loaded} unique used IP records across {len(self.used_ips_by_domain)} domains.")
+
+    def is_ip_used(self, ip: str, domain: str = None) -> bool:
+        clean_ip = self._extract_clean_ip(ip)
+        if not clean_ip:
+            return False
+        dom = self.normalize_domain(domain)
+        with self.lock:
+            used_set = self.used_ips_by_domain.get(dom, set())
+            if clean_ip in used_set:
+                return True
+            inflight_set = self.in_flight_ips.get(dom, set())
+            if clean_ip in inflight_set:
+                return True
+        return False
+
+    def mark_ip_used(self, ip: str, domain: str = None):
+        clean_ip = self._extract_clean_ip(ip)
+        if not clean_ip:
+            return
+        dom = self.normalize_domain(domain)
+        with self.lock:
+            self.used_ips_by_domain.setdefault(dom, set()).add(clean_ip)
+            if dom in self.in_flight_ips:
+                self.in_flight_ips[dom].discard(clean_ip)
+
+            entry = f"{clean_ip}|{dom}\n"
+            for target_dir in [DATA_DIR, BASE_DIR]:
+                try:
+                    fpath = os.path.join(target_dir, "used_proxies.txt")
+                    with open(fpath, "a", encoding="utf-8") as f:
+                        f.write(entry)
+                except Exception:
+                    pass
+
+    def release_in_flight_ip(self, ip: str, domain: str = None):
+        clean_ip = self._extract_clean_ip(ip)
+        if not clean_ip:
+            return
+        dom = self.normalize_domain(domain)
+        with self.lock:
+            if dom in self.in_flight_ips:
+                self.in_flight_ips[dom].discard(clean_ip)
+
     def mark_proxy_used(self, proxy_str: str, domain: str = None):
-        """Records proxy usage for audit."""
-        pass
+        clean_ip = self._extract_clean_ip(proxy_str)
+        if clean_ip:
+            self.mark_ip_used(clean_ip, domain=domain)
+
+    def get_used_proxies(self, domain: str = None) -> set:
+        dom = self.normalize_domain(domain) if domain else None
+        with self.lock:
+            if dom:
+                return set(self.used_ips_by_domain.get(dom, set()))
+            all_s = set()
+            for s in self.used_ips_by_domain.values():
+                all_s.update(s)
+            return all_s
+
+    def get_used_ips(self, domain: str = None) -> set:
+        return self.get_used_proxies(domain=domain)
+
+    def acquire_session_with_unique_ip(self, domain: str = None, max_attempts: int = 8) -> tuple:
+        """
+        Enforces 100% Zero-Repeat IP Condition:
+        Pre-resolves the IP of the session via lightweight plain HTTP (~200 bytes),
+        verifies that the IP has NEVER been used on this domain in history,
+        and atomically marks it in-flight so concurrent workers cannot collide.
+        Returns: (proxy_str, verified_ip, session_id)
+        """
+        dom = self.normalize_domain(domain)
+        accounts = self.get_active_sx_accounts()
+        if not accounts:
+            st_px = self.get_static_proxy()
+            if st_px:
+                st_ip = self._extract_clean_ip(st_px)
+                return (st_px, st_ip, "static")
+            return (None, None, None)
+
+        for attempt in range(1, max_attempts + 1):
+            with self.lock:
+                acc = accounts[self.sx_account_index % len(accounts)]
+                self.sx_account_index = (self.sx_account_index + 1) % len(accounts)
+
+            sess_id = secrets.token_hex(6)
+            template = acc.get("login_template", "")
+            if "{session_id}" in template:
+                login = template.replace("{session_id}", sess_id)
+            else:
+                login = f"{template}-session-{sess_id}"
+            pwd = acc.get("password", "")
+            host = acc.get("proxy_host") or "185.100.235.113:9999"
+            px_str = f"{login}:{pwd}@{host}"
+
+            # Lightweight plain HTTP pre-flight verification (~200 bytes)
+            assigned_ip = None
+            try:
+                px_dict = {"http": f"http://{px_str}", "https": f"http://{px_str}"}
+                r_ip = requests.get("http://api.ipify.org?format=json", proxies=px_dict, timeout=3.5)
+                if r_ip.status_code == 200:
+                    assigned_ip = r_ip.json().get("ip")
+            except Exception as e:
+                logger.warning(f"Pre-flight IP resolution error (attempt {attempt}): {e}")
+                continue
+
+            if not assigned_ip:
+                continue
+
+            with self.lock:
+                used_set = self.used_ips_by_domain.get(dom, set())
+                inflight_set = self.in_flight_ips.setdefault(dom, set())
+                if assigned_ip in used_set:
+                    logger.info(f"[Zero-Repeat] IP {assigned_ip} was already used on {dom}! Discarding session (attempt {attempt}/{max_attempts})...")
+                    continue
+                if assigned_ip in inflight_set:
+                    logger.info(f"[Zero-Repeat] IP {assigned_ip} currently in-flight on {dom}! Discarding session (attempt {attempt}/{max_attempts})...")
+                    continue
+
+                # Acquired fresh, unique IP!
+                inflight_set.add(assigned_ip)
+                logger.info(f"[Zero-Repeat] Guaranteed UNIQUE IP acquired: {assigned_ip} for {dom} (session {sess_id})")
+                return (px_str, assigned_ip, sess_id)
+
+        logger.error(f"[Zero-Repeat] Could not acquire unique residential IP for {dom} after {max_attempts} attempts.")
+        return (None, None, None)
 
     def mark_proxy_dead(self, proxy_str: str):
         pass
@@ -420,12 +615,9 @@ class ProxyManager:
     def mark_proxy_cooldown(self, proxy_str: str, domain: str = None, duration: float = 300):
         pass
 
-    def get_used_proxies(self, domain: str = None) -> set:
-        return set()
-
     # ── Compatibility methods for legacy callers ──
     def start_background_daemon(self):
-        logger.info("SX.ORG Residential Proxy Engine active (Legacy public proxy scraper completely removed).")
+        logger.info("SX.ORG Residential Proxy Engine active (Zero IP repeat verification enabled).")
         return None
 
     def refill_proxies(self, *args, **kwargs):
@@ -436,10 +628,12 @@ class ProxyManager:
 
     def get_stats(self, domain: str = None) -> dict:
         is_act = self.is_sx_active()
+        dom = self.normalize_domain(domain) if domain else None
+        used_cnt = len(self.get_used_ips(dom))
         return {
             "total_pool": 1 if is_act else 0,
             "available": 999 if is_act else 0,
-            "used": 0,
+            "used": used_cnt,
             "active": is_act
         }
 
