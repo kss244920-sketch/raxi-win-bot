@@ -112,7 +112,94 @@ seed_persistent_file("working_proxies.txt")
 seed_persistent_file("fresh_raw_proxies.txt")
 seed_persistent_file("used_devices.json")
 
+telebot.apihelper.ENABLE_MIDDLEWARE = True
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+
+# ─── TeleCore Sliding Window Anti-Flood & Maintenance Mode Guard ───
+from telebot.handler_backends import CancelUpdate
+
+_user_last_action_ts: Dict[int, float] = {}
+_user_last_warn_ts: Dict[int, float] = {}
+
+@bot.middleware_handler(update_types=['message'])
+def telecore_message_guard(bot_instance, message):
+    user = message.from_user
+    if not user or getattr(user, "is_bot", False):
+        return
+    user_id = user.id
+    is_admin = admin_manager.is_admin(user_id) or admin_manager.is_super_admin(user_id)
+
+    # 1. Maintenance Mode Guard
+    if admin_manager.is_maintenance_mode() and not is_admin:
+        try:
+            bot_instance.reply_to(
+                message,
+                "🛠️ <b>Maintenance Mode Active</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "Bot is currently undergoing system updates and maintenance.\n\n"
+                "⏳ <i>Please try again shortly. Thank you!</i>",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        return CancelUpdate()
+
+    # 2. Sliding Window Anti-Flood Rate Limiter
+    if admin_manager.is_rate_limit_enabled() and not is_admin:
+        now = time.time()
+        last = _user_last_action_ts.get(user_id, 0.0)
+        limit = getattr(admin_manager, "rate_limit_seconds", 1.0)
+        if (now - last) < limit:
+            last_warn = _user_last_warn_ts.get(user_id, 0.0)
+            if (now - last_warn) > 2.5:
+                _user_last_warn_ts[user_id] = now
+                try:
+                    bot_instance.reply_to(
+                        message,
+                        "⚠️ <b>Slow Down!</b> Commands are being sent too quickly. Please wait 1 second between actions.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+            return CancelUpdate()
+        _user_last_action_ts[user_id] = now
+
+@bot.middleware_handler(update_types=['callback_query'])
+def telecore_callback_guard(bot_instance, call):
+    user = call.from_user
+    if not user or getattr(user, "is_bot", False):
+        return
+    user_id = user.id
+    is_admin = admin_manager.is_admin(user_id) or admin_manager.is_super_admin(user_id)
+
+    # 1. Maintenance Mode Guard
+    if admin_manager.is_maintenance_mode() and not is_admin:
+        try:
+            bot_instance.answer_callback_query(
+                call.id,
+                "🛠️ Maintenance Mode active! Only admins have access right now.",
+                show_alert=True
+            )
+        except Exception:
+            pass
+        return CancelUpdate()
+
+    # 2. Sliding Window Anti-Flood Rate Limiter
+    if admin_manager.is_rate_limit_enabled() and not is_admin:
+        now = time.time()
+        last = _user_last_action_ts.get(user_id, 0.0)
+        limit = getattr(admin_manager, "rate_limit_seconds", 1.0)
+        if (now - last) < limit:
+            try:
+                bot_instance.answer_callback_query(
+                    call.id,
+                    "⚠️ Slow down! (Anti-Flood Protection)",
+                    show_alert=False
+                )
+            except Exception:
+                pass
+            return CancelUpdate()
+        _user_last_action_ts[user_id] = now
 
 # ─── Channel Force Join Configuration ───
 REQUIRED_CHANNEL = "@owabyss"
@@ -2191,9 +2278,14 @@ def show_admin_menu(chat_id, user, message_id=None):
     total_accs = count_saved_accounts()
     total_tokens_circ = admin_manager.get_total_distributed_tokens()
 
+    maint_mode_str = "⚠️ <b>ACTIVE (Admins Only)</b>" if admin_manager.is_maintenance_mode() else "🟢 <b>OFF (Public Access)</b>"
+    rate_mode_str = "🟢 <b>ACTIVE (1s Sliding Window)</b>" if admin_manager.is_rate_limit_enabled() else "🔴 <b>DISABLED</b>"
+
     text = (
         f"{header_title}\n\n"
         f"• <b>Bot Uptime:</b> <code>{uptime_str}</code>\n"
+        f"• <b>Maintenance Mode:</b> {maint_mode_str}\n"
+        f"• <b>Anti-Flood Guard:</b> {rate_mode_str}\n"
         f"• <b>Registered Users:</b> <code>{len(users)}</code>\n"
         f"• <b>Tokens Distributed:</b> <code>{total_tokens_circ} Tokens</code>\n"
         f"• <b>Saved Accounts:</b> <code>{total_accs}</code>\n"
@@ -2203,6 +2295,9 @@ def show_admin_menu(chat_id, user, message_id=None):
         f"• <code>/settoken &lt;id&gt; &lt;amt&gt;</code> — Set user token balance\n"
         f"• <code>/deltoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens from user\n\n"
         f"<b>👑 Admin Suite Commands:</b>\n"
+        f"• <code>/panel</code> or <code>/admin</code> — Dynamic Management Control Panel\n"
+        f"• <code>/maintenance</code> — Toggle Maintenance Mode\n"
+        f"• <code>/freemode</code> — Toggle Free Mode (Tokens vs Free)\n"
         f"• <code>/stats</code> or <code>/statics</code> — Super Admin Users, Tokens &amp; History Audit\n"
         f"• <code>/sessions</code> — Live active registration sessions monitor\n"
         f"• <code>/stopall</code> — Emergency stop all registrations across all chats\n"
@@ -2216,6 +2311,10 @@ def show_admin_menu(chat_id, user, message_id=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
+    b_maint = types.InlineKeyboardButton("🛠️ Maint: ACTIVE ⚠️" if admin_manager.is_maintenance_mode() else "🛠️ Maint: OFF 🟢", callback_data="toggle_maint")
+    b_rate = types.InlineKeyboardButton("⚡ Anti-Flood: ON 🟢" if admin_manager.is_rate_limit_enabled() else "⚡ Anti-Flood: OFF 🔴", callback_data="toggle_rate")
+    markup.add(b_maint, b_rate)
+
     b_users = types.InlineKeyboardButton("👥 Manage Users", callback_data="admin_users")
     b_tok = types.InlineKeyboardButton("🎫 Manage Tokens", callback_data="admin_token_help")
     markup.add(b_users, b_tok)
@@ -4166,7 +4265,7 @@ def handle_export_cmd(message):
 
 # ─── Admin Commands ───
 
-@bot.message_handler(commands=["admin"])
+@bot.message_handler(commands=["admin", "panel"])
 def handle_admin_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
@@ -4174,6 +4273,25 @@ def handle_admin_cmd(message):
         bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
         return
     show_admin_menu(message.chat.id, user)
+
+
+@bot.message_handler(commands=["maintenance", "maint"])
+def handle_maintenance_cmd(message):
+    user = message.from_user
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if user.id != 8327850869 and not admin_manager.is_super_admin(user.id):
+        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+        return
+
+    new_mode = admin_manager.toggle_maintenance_mode()
+    mode_text = "ENABLED ⚠️ (Only Admins allowed)" if new_mode else "DISABLED 🟢 (Public Access Restored)"
+    bot.reply_to(
+        message,
+        f"🛠️ <b>Maintenance Mode Updated!</b>\n\n"
+        f"• Status: <b>{mode_text}</b>\n\n"
+        f"<i>{'Ab sirf Admins bot use kar sakte hain.' if new_mode else 'Sabhi users ab bot use kar sakte hain.'}</i>",
+        parse_mode="HTML"
+    )
 
 
 @bot.message_handler(commands=["freemode"])
@@ -4963,6 +5081,39 @@ def _handle_callback_clicks_inner(call):
             bot.answer_callback_query(call.id, f"Your Telegram ID: {user_id}", show_alert=True)
         except Exception:
             pass
+        return
+
+    # TeleCore Admin Toggles: Maintenance & Anti-Flood
+    if data == "toggle_maint":
+        if not (admin_manager.is_admin(user_id) or admin_manager.is_super_admin(user_id)):
+            try:
+                bot.answer_callback_query(call.id, "⛔ Admin access required.", show_alert=True)
+            except Exception:
+                pass
+            return
+        new_state = admin_manager.toggle_maintenance_mode()
+        status_msg = "🛠️ Maintenance Mode ON (Admins only)" if new_state else "🟢 Maintenance Mode OFF (Public access restored)"
+        try:
+            bot.answer_callback_query(call.id, status_msg, show_alert=True)
+        except Exception:
+            pass
+        show_admin_menu(chat_id, user, message_id=msg_id)
+        return
+
+    if data == "toggle_rate":
+        if not (admin_manager.is_admin(user_id) or admin_manager.is_super_admin(user_id)):
+            try:
+                bot.answer_callback_query(call.id, "⛔ Admin access required.", show_alert=True)
+            except Exception:
+                pass
+            return
+        new_state = admin_manager.toggle_rate_limit()
+        status_msg = "⚡ Anti-Flood Guard ON (1s Sliding Window)" if new_state else "🔴 Anti-Flood Guard DISABLED"
+        try:
+            bot.answer_callback_query(call.id, status_msg, show_alert=True)
+        except Exception:
+            pass
+        show_admin_menu(chat_id, user, message_id=msg_id)
         return
 
     # Force Join Verification

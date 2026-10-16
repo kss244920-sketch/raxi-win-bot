@@ -47,6 +47,9 @@ class AdminManager:
         self.master_storage_channel: str = DEFAULT_MASTER_STORAGE_CHANNEL
         self.master_log_channel: str = DEFAULT_MASTER_LOG_CHANNEL
         self.free_mode: bool = False
+        self.maintenance_mode: bool = False
+        self.rate_limit_enabled: bool = True
+        self.rate_limit_seconds: float = 1.0
         self.user_registry: Dict[str, dict] = {}
         self.admin_daily_usage: Dict[str, dict] = {}
         self.bot_start_time: float = time.time()
@@ -88,6 +91,32 @@ class AdminManager:
         self.save()
         return self.free_mode
 
+    def is_maintenance_mode(self) -> bool:
+        return bool(getattr(self, "maintenance_mode", False))
+
+    def set_maintenance_mode(self, enabled: bool) -> bool:
+        self.maintenance_mode = bool(enabled)
+        self.save()
+        return self.maintenance_mode
+
+    def toggle_maintenance_mode(self) -> bool:
+        self.maintenance_mode = not self.is_maintenance_mode()
+        self.save()
+        return self.maintenance_mode
+
+    def is_rate_limit_enabled(self) -> bool:
+        return bool(getattr(self, "rate_limit_enabled", True))
+
+    def set_rate_limit_enabled(self, enabled: bool) -> bool:
+        self.rate_limit_enabled = bool(enabled)
+        self.save()
+        return self.rate_limit_enabled
+
+    def toggle_rate_limit(self) -> bool:
+        self.rate_limit_enabled = not self.is_rate_limit_enabled()
+        self.save()
+        return self.rate_limit_enabled
+
     def load(self):
         env_admin = os.getenv("ADMIN_USER_IDS", "").strip()
         if env_admin:
@@ -113,6 +142,9 @@ class AdminManager:
                 data = json.load(f)
 
             self.free_mode = bool(data.get("free_mode", False))
+            self.maintenance_mode = bool(data.get("maintenance_mode", False))
+            self.rate_limit_enabled = bool(data.get("rate_limit_enabled", True))
+            self.rate_limit_seconds = float(data.get("rate_limit_seconds", 1.0))
             self.master_log_channel = str(data.get("master_log_channel") or self.master_log_channel).strip()
             self.master_storage_channel = str(data.get("master_storage_channel") or self.master_storage_channel).strip()
 
@@ -201,6 +233,9 @@ class AdminManager:
         with self._lock:
             data = {
                 "free_mode": self.free_mode,
+                "maintenance_mode": self.is_maintenance_mode(),
+                "rate_limit_enabled": self.is_rate_limit_enabled(),
+                "rate_limit_seconds": getattr(self, "rate_limit_seconds", 1.0),
                 "master_log_channel": self.master_log_channel,
                 "master_storage_channel": self.master_storage_channel,
                 "admin_user_ids": list(self.admin_user_ids),
