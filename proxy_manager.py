@@ -312,6 +312,31 @@ class ProxyManager:
 
         return None
 
+    def get_static_proxy(self, exclude=None) -> str:
+        """
+        Returns a verified static/datacenter proxy from working_proxies.txt.
+        STRICTLY GUARANTEED to NEVER return a paid SX residential proxy.
+        Designed for heavy-bandwidth tasks (Captcha image download ~150KB-400KB, site auto-discovery).
+        """
+        fallback_candidates = [
+            os.path.join(DATA_DIR, "working_proxies.txt"),
+            os.path.join(BASE_DIR, "working_proxies.txt")
+        ]
+        for fpath in fallback_candidates:
+            if os.path.exists(fpath):
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        lines = [l.strip() for l in f if l.strip() and not l.strip().startswith("#")]
+                    valid = [p for p in lines if p not in (exclude or set()) and p not in self.dead_proxies]
+                    if valid:
+                        auth_valid = [p for p in valid if "@" in p]
+                        if auth_valid:
+                            return secrets.choice(auth_valid)
+                        return secrets.choice(valid)
+                except Exception:
+                    pass
+        return None
+
     def get_available_count(self, domain: str = None) -> int:
         """Returns active count indicator for registration pools."""
         if self.is_sx_active():

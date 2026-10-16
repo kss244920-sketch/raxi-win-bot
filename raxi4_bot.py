@@ -108,6 +108,8 @@ seed_persistent_file("used_proxies.txt")
 seed_persistent_file("sx_config.json")
 seed_persistent_file("chat_configs.json")
 seed_persistent_file("admin_settings.json")
+seed_persistent_file("working_proxies.txt")
+seed_persistent_file("fresh_raw_proxies.txt")
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
@@ -750,7 +752,7 @@ def detect_and_parse_referral_link(text_or_url):
             resp = requests.get(base_site, timeout=3.5, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
         except Exception:
             try:
-                px = proxy_manager.get_next_proxy()
+                px = proxy_manager.get_static_proxy()
                 px_d = {"http": f"http://{px}", "https": f"http://{px}"} if px else None
                 resp = requests.get(base_site, timeout=6.5, proxies=px_d, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
             except Exception as e:
@@ -1311,9 +1313,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
 
         log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'AR-SAAS' if is_arsaas else 'WEBAPI'}): phone={target_phone} dev='{dev_model}' proxy={proxy_label}")
 
-        session = requests.Session()
-        session.verify = False
-        session.headers.update({
+        base_headers = {
             "User-Agent": dev_ua,
             "Accept": "application/json, text/plain, */*",
             "Accept-Encoding": "gzip, deflate",
@@ -1325,18 +1325,14 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             "sec-ch-ua": dev_profile["sec_ch_ua"],
             "sec-ch-ua-mobile": "?1",
             "sec-ch-ua-platform": dev_profile["platform"],
-        })
-        if active_proxy:
-            if "@" in active_proxy:
-                px_url = f"http://{active_proxy}"
-            elif active_proxy.count(":") == 3:
-                parts = active_proxy.split(":")
-                px_url = f"http://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}"
-            else:
-                px_url = f"http://{active_proxy}"
-            session.proxies = {"http": px_url, "https": px_url}
+        }
 
-        # 1. Smart-Save Captcha Fetch (0 KB proxy data if direct works, fallback to residential proxy if blocked)
+        # 1. Fetch Captcha with ZERO RESIDENTIAL PROXY USAGE
+        # Captcha images (150KB-400KB base64) DO NOT require an Indian residential IP.
+        # We fetch captcha:
+        #   A) Direct from host server (0.00 KB proxy data)
+        #   B) Via free/datacenter proxy from working_proxies.txt (0.00 KB residential data)
+        # Residential proxies are STRICTLY RESERVED for the ~4.5 KB Register POST.
         cid, bg_b64, sl_b64 = None, None, None
         last_cap_status = None
         target_cap_domain = domain or (urllib.parse.urlparse(target_api).netloc if not is_arsaas else urllib.parse.urlparse(target_site).netloc) or "default"
@@ -1354,13 +1350,13 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 blocked_until = DIRECT_HOST_RATE_LIMITED.get(target_cap_domain, 0)
                 is_direct_blocked = time.time() < blocked_until
 
-            # Try direct fetch first (saves 100% proxy data) only if host IP is not under 429 cooldown
+            # Step 1A: Attempt direct fetch first (Zero residential proxy data consumed)
             if not is_direct_blocked:
                 try:
                     direct_session = requests.Session()
                     direct_session.verify = False
-                    direct_session.headers.update(session.headers)
-                    r_cap = direct_session.post(cap_url, json=cap_payload, timeout=(2.5, 4.0))
+                    direct_session.headers.update(base_headers)
+                    r_cap = direct_session.post(cap_url, json=cap_payload, timeout=(3.0, 5.0))
                     last_cap_status = r_cap.status_code
                     if r_cap.status_code == 200:
                         cdata = r_cap.json().get("data") or {}
@@ -1369,25 +1365,44 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                         sl_b64 = cdata.get("sliderImage")
                     elif r_cap.status_code == 429:
                         with DIRECT_HOST_LOCK:
-                            DIRECT_HOST_RATE_LIMITED[target_cap_domain] = time.time() + 300  # 5 min backoff
-                        log(f"[bot] Host IP rate limited (429) on {target_cap_domain}. Switching captcha to proxy fallback for 5m.")
+                            DIRECT_HOST_RATE_LIMITED[target_cap_domain] = time.time() + 45  # 45s short cooldown
+                        log(f"[bot] Host IP rate limited (429) on {target_cap_domain}. Using datacenter proxies for captcha.")
                 except Exception:
                     pass
 
-            # Step 1B: Robust Fallback to Residential Proxy if direct fetch didn't return valid captcha
-            if (not cid or not bg_b64 or not sl_b64) and active_proxy:
-                try:
-                    r_cap = session.post(cap_url, json=cap_payload, timeout=(5.0, 7.5))
-                    last_cap_status = r_cap.status_code
-                    if r_cap.status_code == 200:
-                        cdata = r_cap.json().get("data") or {}
-                        cid = cdata.get("captchaId")
-                        bg_b64 = cdata.get("backgroundImage")
-                        sl_b64 = cdata.get("sliderImage")
-                    elif r_cap.status_code == 429:
-                        log(f"[bot] Proxy captcha returned 429 via {proxy_label}")
-                except Exception as px_err:
-                    log(f"[bot] Proxy captcha fetch error via {proxy_label}: {px_err}")
+            # Step 1B: Fallback to Datacenter / Static Proxy from working_proxies.txt (STILL ZERO RESIDENTIAL DATA!)
+            if not cid or not bg_b64 or not sl_b64:
+                tried_dc = set()
+                for _ in range(3):
+                    dc_px = proxy_manager.get_static_proxy(exclude=tried_dc)
+                    if not dc_px:
+                        break
+                    tried_dc.add(dc_px)
+                    try:
+                        dc_sess = requests.Session()
+                        dc_sess.verify = False
+                        dc_sess.headers.update(base_headers)
+                        if "@" in dc_px:
+                            dc_px_url = f"http://{dc_px}"
+                        elif dc_px.count(":") == 3:
+                            p_parts = dc_px.split(":")
+                            dc_px_url = f"http://{p_parts[2]}:{p_parts[3]}@{p_parts[0]}:{p_parts[1]}"
+                        else:
+                            dc_px_url = f"http://{dc_px}"
+                        dc_sess.proxies = {"http": dc_px_url, "https": dc_px_url}
+                        r_cap = dc_sess.post(cap_url, json=cap_payload, timeout=(4.0, 6.0))
+                        last_cap_status = r_cap.status_code
+                        if r_cap.status_code == 200:
+                            cdata = r_cap.json().get("data") or {}
+                            cid = cdata.get("captchaId")
+                            bg_b64 = cdata.get("backgroundImage")
+                            sl_b64 = cdata.get("sliderImage")
+                            if cid and bg_b64 and sl_b64:
+                                break
+                        elif r_cap.status_code in (401, 403, 407):
+                            proxy_manager.mark_proxy_dead(dc_px)
+                    except Exception:
+                        continue
         except Exception as e:
             log(f"[bot] Captcha fetch error: {e}")
             last_error = f"Captcha connection error: {str(e)[:80]}"
@@ -1395,7 +1410,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             continue
 
         if not cid or not bg_b64 or not sl_b64:
-            log(f"[bot] Captcha returned empty data (status={last_cap_status})")
+            log(f"[bot] Captcha returned empty data (status={last_cap_status}) - aborted attempt without consuming residential proxy")
             last_error = "Captcha returned empty data"
             time.sleep(0.2)
             continue
@@ -1438,6 +1453,19 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 "deviceId": device_id,
             }
             reg_payload = signed_body(reg_dict)
+
+        session = requests.Session()
+        session.verify = False
+        session.headers.update(base_headers)
+        if active_proxy:
+            if "@" in active_proxy:
+                px_url = f"http://{active_proxy}"
+            elif active_proxy.count(":") == 3:
+                parts = active_proxy.split(":")
+                px_url = f"http://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}"
+            else:
+                px_url = f"http://{active_proxy}"
+            session.proxies = {"http": px_url, "https": px_url}
 
         try:
             r = session.post(reg_url, json=reg_payload, timeout=(4.5, 7.0))
