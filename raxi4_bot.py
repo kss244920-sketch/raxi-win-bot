@@ -2496,53 +2496,73 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
     header = "👑 <b>Super Admin Commands Hub</b>" if is_super else ("🛡️ <b>Admin Commands Hub</b>" if is_adm else "📌 <b>Multi-Site Register Bot — Commands Guide</b>")
 
     text = (
-        f"{header}\n\n"
-        "<b>🚀 Core Controls:</b>\n"
-        "• <code>/start</code> — Start bot &amp; configure referral link\n"
-        "• <code>/single</code> or <code>/gen</code> — Single account registration (1 🎫)\n"
-        "• <code>/bulk &lt;count&gt;</code> or <code>/multi &lt;count&gt;</code> — Multi-registration\n"
-        "• <code>/stop</code> — Stop current running registration in this chat\n"
-        "• <code>/link &lt;url&gt;</code> — Set referral link\n"
+        f"{header}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<b>🚀 Core User Commands:</b>\n"
+        "• <code>/start</code> — Open main link setup &amp; dashboard\n"
+        "• <code>/single</code> or <code>/gen</code> — Register 1 account (1 🎫)\n"
+        "• <code>/multi &lt;count&gt;</code> or <code>/bulk &lt;count&gt;</code> — Batch register accounts\n"
+        "• <code>/stop</code> — Halt active registration in this chat\n"
+        "• <code>/cancel</code> — Reset any pending input / operation\n"
+        "• <code>/link &lt;url&gt;</code> — Configure referral platform URL\n"
         "• <i>Direct Link Paste</i> — Paste link in chat to configure instantly\n"
         "• <code>/tokens</code> or <code>/balance</code> — Check your Token balance\n"
-        "• <code>/reg &lt;phone&gt; &lt;password&gt; [invite]</code> — Custom registration\n"
-        "• <code>/export</code> — Download saved accounts list (.txt)\n"
-        "• <code>/id</code> or <code>/myid</code> — Check your Telegram ID &amp; role"
+        "• <code>/reg &lt;phone&gt; &lt;pass&gt; [invite]</code> — Custom credentials registration\n"
+        "• <code>/export</code> — Download saved accounts list (.txt combos / full)\n"
+        "• <code>/id</code> or <code>/myid</code> — Check your Telegram ID &amp; role\n"
+        "• <code>/help</code> — Open this commands manual"
     )
 
     if is_super:
         text += (
-            "\n\n<b>👑 Exclusive Super Admin Suite (Only for You):</b>\n"
-            "• <code>/stats</code> or <code>/statics</code> — Master User Registry, Tokens &amp; History Audit\n"
-            "• <code>/sessions</code> — Live active registration sessions monitor\n"
-            "• <code>/stopall</code> — Emergency halt all registrations across all chats\n"
-            "• <code>/silentaddtoken &lt;id&gt; &lt;amt&gt;</code> — Add tokens secretly (no alert to user)\n"
-            "• <code>/silentdeducttoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens secretly (no alert to user)\n"
-            "• <code>/sxkey &lt;key&gt;</code> — Add &amp; stack new SX.ORG 1 GB trial API key\n"
-            "• <code>/sxstatus</code> — Live SX multi-proxy pool &amp; combined quota\n"
-            "• <code>/sxpurge</code> — Auto-clean &amp; delete all expired 0 MB trial keys\n"
-            "• <code>/freemode</code> — Toggle Free Mode on/off"
+            "\n\n<b>👑 Exclusive Super Admin Suite:</b>\n"
+            "• <code>/stats</code> — Master User Registry, Tokens &amp; Global History Audit\n"
+            "• <code>/sessions</code> — Live active multi-registration sessions monitor\n"
+            "• <code>/stopall</code> — Emergency abort ALL registrations across all chats\n"
+            "• <code>/addadmin &lt;id&gt;</code> — Promote user to Admin\n"
+            "• <code>/deladmin &lt;id&gt;</code> — Demote Admin to regular user\n"
+            "• <code>/silentaddtoken &lt;id&gt; &lt;amt&gt;</code> — Add tokens secretly (no user notification)\n"
+            "• <code>/silentdeducttoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens secretly (no user notification)\n"
+            "• <code>/sxkey &lt;key&gt;</code> — Add &amp; stack new SX.ORG Indian residential proxy key\n"
+            "• <code>/sxstatus</code> — Live SX multi-proxy pool &amp; combined balance\n"
+            "• <code>/sxpurge</code> — Auto-clean &amp; remove exhausted trial keys\n"
+            "• <code>/maintenance</code> — Toggle System Maintenance Guard on/off\n"
+            "• <code>/freemode</code> — Toggle Free Mode on/off (unlimited registrations)\n"
+            "• <code>/cleanup</code> — Clean temp files &amp; garbage collect system memory"
         )
 
     if is_adm:
         text += (
             "\n\n<b>🎫 Token Management (Admin Suite):</b>\n"
             "• <code>/addtoken &lt;id&gt; &lt;amt&gt;</code> — Credit tokens to user (with alert)\n"
-            "• <code>/settoken &lt;id&gt; &lt;amt&gt;</code> — Set user token balance\n"
-            "• <code>/deltoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens from user\n\n"
-            "<b>🛡️ General Admin Commands:</b>\n"
-            "• <code>/admin</code> — Admin Control Hub\n"
-            "• <code>/sessions</code> — Active sessions monitor\n"
-            "• <code>/users</code> — List registered users &amp; tokens\n"
-            "• <code>/sxstatus</code> — Live SX rotating proxy status\n"
-            "• <code>/addadmin &lt;id&gt;</code> — Promote user to Admin\n"
-            "• <code>/deladmin &lt;id&gt;</code> — Demote Admin\n"
-            "• <code>/broadcast &lt;msg&gt;</code> — Broadcast announcement"
+            "• <code>/settoken &lt;id&gt; &lt;amt&gt;</code> — Set exact user token balance\n"
+            "• <code>/deltoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens from user (or <code>/deduct</code>)\n\n"
+            "<b>🛡️ General Admin Management:</b>\n"
+            "• <code>/admin</code> or <code>/panel</code> — Interactive Admin Control Hub\n"
+            "• <code>/status</code> — System health, runtime statistics &amp; uptime\n"
+            "• <code>/users</code> — List registered users, balances &amp; roles\n"
+            "• <code>/adduser &lt;id&gt; [tokens]</code> — Manually register new user into system\n"
+            "• <code>/deluser &lt;id&gt;</code> — Remove user from bot registry\n"
+            "• <code>/broadcast &lt;msg&gt;</code> — Send global broadcast announcement"
         )
+    text += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
-    b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
-    markup.add(b_back, b_home)
+    b_single = types.InlineKeyboardButton("⚡ Single Reg", callback_data="reg_single")
+    b_multi = types.InlineKeyboardButton("🔢 Multi Reg", callback_data="reg_multi")
+    b_tokens = types.InlineKeyboardButton("🎫 My Balance", callback_data="my_tokens")
+    b_export = types.InlineKeyboardButton("📋 Export Accounts", callback_data="export_txt")
+    markup.add(b_single, b_multi)
+    markup.add(b_tokens, b_export)
+
+    if is_adm:
+        b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin")
+        b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
+        markup.add(b_admin, b_back)
+    else:
+        b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
+        b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
+        markup.add(b_back, b_home)
 
     if message_id:
         try:
