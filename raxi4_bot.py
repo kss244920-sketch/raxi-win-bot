@@ -312,6 +312,7 @@ INDIAN_ISP_POOLS = [
 SESSION_RESOLVED_IPS = {}
 SESSION_LOCK = threading.Lock()
 DIRECT_HOST_RATE_LIMITED = {}
+DIRECT_HOST_LAST_REQ = {}
 DIRECT_HOST_LOCK = threading.Lock()
 
 def get_session_masked_ip(session_id: str, resolved_raw_ip: str = None) -> str:
@@ -1551,18 +1552,9 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         dev_ua = dev_profile["ua"]
         device_id = dev_profile["device_id"]
 
-        # 2. Acquire a 100% UNIQUE Indian residential IP (Zero IP Repeat Guarantee)
-        # Pre-flight check (~220 bytes) ensures IP has NEVER been used on this domain before!
-        active_proxy, verified_ip, account_session_id = proxy_manager.acquire_session_with_unique_ip(domain=domain)
-        if not active_proxy:
-            active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain, session_id=account_session_id)
-            verified_ip = proxy_manager._extract_clean_ip(active_proxy) if active_proxy else None
-
-        if active_proxy:
-            tried_proxies.add(active_proxy)
-        else:
-            tried_proxies.add("Direct")
-        proxy_label = verified_ip or active_proxy or "Direct"
+        active_proxy = None
+        verified_ip = None
+        account_session_id = session_id or secrets.token_hex(6)
 
         def _cleanup_in_flight(burn_ip=False):
             if verified_ip:
@@ -1571,8 +1563,6 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 else:
                     proxy_manager.release_in_flight_ip(verified_ip, domain=domain)
             release_in_flight_device(device_id)
-
-        log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'AR-SAAS' if is_arsaas else 'WEBAPI'}): phone={target_phone} dev='{dev_model}' id='{device_id[:8]}' ip={proxy_label}")
 
         base_headers = {
             "User-Agent": dev_ua,
@@ -1606,10 +1596,16 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 cap_url = f"{target_api}/api/webapi/Captcha"
                 cap_payload = signed_body({})
 
-            # Check if host IP is currently rate limited (429) on this domain
+            # Rate-limit guard & small mutex spacing to protect direct host IP from 429
             with DIRECT_HOST_LOCK:
                 blocked_until = DIRECT_HOST_RATE_LIMITED.get(target_cap_domain, 0)
                 is_direct_blocked = time.time() < blocked_until
+                if not is_direct_blocked:
+                    last_req = DIRECT_HOST_LAST_REQ.get(target_cap_domain, 0)
+                    now_t = time.time()
+                    if now_t - last_req < 0.22:
+                        time.sleep(0.22 - (now_t - last_req))
+                    DIRECT_HOST_LAST_REQ[target_cap_domain] = time.time()
 
             # Step 1A: Attempt direct fetch first (Zero residential proxy data consumed)
             if not is_direct_blocked:
@@ -1626,7 +1622,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                         sl_b64 = cdata.get("sliderImage")
                     elif r_cap.status_code == 429:
                         with DIRECT_HOST_LOCK:
-                            DIRECT_HOST_RATE_LIMITED[target_cap_domain] = time.time() + 45  # 45s short cooldown
+                            DIRECT_HOST_RATE_LIMITED[target_cap_domain] = time.time() + 30  # 30s short cooldown
                         log(f"[bot] Host IP rate limited (429) on {target_cap_domain}. Using datacenter proxies for captcha.")
                 except Exception:
                     pass
@@ -1687,7 +1683,23 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             container_x = random.randint(110, 210)
             track = make_track(container_x)
 
-        # 3. Submit Register POST (THE ONLY REQUEST THAT USES THE FRESH UNIQUE RESIDENTIAL IP ~4.5 KB)
+        # 3. LAZY RESIDENTIAL PROXY ACQUISITION:
+        # Strictly acquired only AFTER Captcha is 100% verified & slider solved.
+        # Zero proxy bandwidth wasted on failed captchas, timeouts, or empty responses!
+        active_proxy, verified_ip, account_session_id = proxy_manager.acquire_session_with_unique_ip(domain=domain)
+        if not active_proxy:
+            active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain, session_id=account_session_id)
+            verified_ip = proxy_manager._extract_clean_ip(active_proxy) if active_proxy else None
+
+        if active_proxy:
+            tried_proxies.add(active_proxy)
+        else:
+            tried_proxies.add("Direct")
+        proxy_label = verified_ip or active_proxy or "Direct"
+
+        log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'AR-SAAS' if is_arsaas else 'WEBAPI'}): phone={target_phone} dev='{dev_model}' id='{device_id[:8]}' ip={proxy_label}")
+
+        # 4. Submit Register POST (THE ONLY REQUEST THAT USES THE FRESH UNIQUE RESIDENTIAL IP ~4.5 KB)
         if is_arsaas:
             reg_url = f"{target_site}/api/Home/Register"
             reg_dict = {
@@ -5701,7 +5713,9 @@ def handle_callback_clicks(call):
 
 
 # ─── Cloud Health Check Server (Port 8080) for 24/7 Hosting ───
-def start_health_server(port=8080):
+def start_health_server(port=None):
+    if port is None:
+        port = int(os.environ.get("PORT", 8080))
     from http.server import HTTPServer, BaseHTTPRequestHandler
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -5741,8 +5755,8 @@ if __name__ == "__main__":
     except Exception as e:
         log(f"Channel Status: WARNING (Cannot access member list: {e}) ⚠️")
 
-    # Start Cloud Health Server on Port 8080
-    start_health_server(8080)
+    # Start Cloud Health Server (Respects cloud PORT env or 8080)
+    start_health_server(int(os.environ.get("PORT", 8080)))
 
     # SX.ORG Rotating Indian Residential Proxy Engine
     log("[ProxyEngine] SX.ORG Rotating Indian Residential Proxy Engine active! ✅")

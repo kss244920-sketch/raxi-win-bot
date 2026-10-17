@@ -545,10 +545,10 @@ class ProxyManager:
     def get_used_ips(self, domain: str = None) -> set:
         return self.get_used_proxies(domain=domain)
 
-    def acquire_session_with_unique_ip(self, domain: str = None, max_attempts: int = 8) -> tuple:
+    def acquire_session_with_unique_ip(self, domain: str = None, max_attempts: int = 3) -> tuple:
         """
-        Enforces 100% Zero-Repeat IP Condition:
-        Pre-resolves the IP of the session via lightweight plain HTTP (~200 bytes),
+        Enforces 100% Zero-Repeat IP Condition with minimal proxy bandwidth:
+        Pre-resolves the IP of the session via lightweight plain text HTTP (~15 bytes),
         verifies that the IP has NEVER been used on this domain in history,
         and atomically marks it in-flight so concurrent workers cannot collide.
         Returns: (proxy_str, verified_ip, session_id)
@@ -577,13 +577,13 @@ class ProxyManager:
             host = acc.get("proxy_host") or "185.100.235.113:9999"
             px_str = f"{login}:{pwd}@{host}"
 
-            # Lightweight plain HTTP pre-flight verification (~200 bytes)
+            # Ultra-lightweight plain HTTP pre-flight verification (~15 bytes text, no JSON overhead)
             assigned_ip = None
             try:
                 px_dict = {"http": f"http://{px_str}", "https": f"http://{px_str}"}
-                r_ip = requests.get("http://api.ipify.org?format=json", proxies=px_dict, timeout=3.5)
-                if r_ip.status_code == 200:
-                    assigned_ip = r_ip.json().get("ip")
+                r_ip = requests.get("http://api.ipify.org", proxies=px_dict, timeout=3.0)
+                if r_ip.status_code == 200 and r_ip.text:
+                    assigned_ip = self._extract_clean_ip(r_ip.text.strip())
             except Exception as e:
                 logger.warning(f"Pre-flight IP resolution error (attempt {attempt}): {e}")
                 continue
