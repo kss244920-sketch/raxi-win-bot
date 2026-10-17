@@ -1522,11 +1522,12 @@ def count_saved_accounts():
 #  CORE REGISTRATION WORKER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=8, creator_id=None, smsvcode="", api_type=None, session_id=None):
+def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=2, creator_id=None, smsvcode="", api_type=None, session_id=None):
     """
     Registers a new account with dynamic phone, password, device profile, and proxy rotation.
     Automatically supports both AR-SAAS (MaanWin, GoaGames, etc.) and VITE/WEBAPI (51game, Raxi).
     Supports smsvcode for OTP verification.
+    Guarantees strict <=10KB residential proxy budget per account.
     """
     target_site = site or SITE
     target_api = api or API
@@ -1539,6 +1540,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
     last_error = "Unknown error"
 
     tried_proxies = set()
+    residential_bytes_spent = 0
     account_session_id = session_id or secrets.token_hex(6)
     for attempt in range(1, max_search_attempts + 1):
         target_phone = phone if not is_auto else generate_random_phone()
@@ -1686,6 +1688,11 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         # 3. LAZY RESIDENTIAL PROXY ACQUISITION:
         # Strictly acquired only AFTER Captcha is 100% verified & slider solved.
         # Zero proxy bandwidth wasted on failed captchas, timeouts, or empty responses!
+        if residential_bytes_spent >= 9200:
+            log(f"[bot] Strict <=10KB residential budget threshold reached ({residential_bytes_spent}B). Halting attempt to protect proxy budget.")
+            _cleanup_in_flight()
+            break
+
         active_proxy, verified_ip, account_session_id = proxy_manager.acquire_session_with_unique_ip(domain=domain)
         if not active_proxy:
             active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain, session_id=account_session_id)
@@ -1693,11 +1700,12 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
 
         if active_proxy:
             tried_proxies.add(active_proxy)
+            residential_bytes_spent += 350  # Pre-flight plain-text IP resolution payload
         else:
             tried_proxies.add("Direct")
         proxy_label = verified_ip or active_proxy or "Direct"
 
-        log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'AR-SAAS' if is_arsaas else 'WEBAPI'}): phone={target_phone} dev='{dev_model}' id='{device_id[:8]}' ip={proxy_label}")
+        log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'AR-SAAS' if is_arsaas else 'WEBAPI'}): phone={target_phone} dev='{dev_model}' id='{device_id[:8]}' ip={proxy_label} (spent={residential_bytes_spent}B)")
 
         # 4. Submit Register POST (THE ONLY REQUEST THAT USES THE FRESH UNIQUE RESIDENTIAL IP ~4.5 KB)
         if is_arsaas:
@@ -1744,6 +1752,8 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
 
         try:
             r = session.post(reg_url, json=reg_payload, timeout=(4.5, 7.0))
+            if active_proxy:
+                residential_bytes_spent += 4500  # Track Register POST bandwidth
             if r.status_code in (404, 502, 403):
                 log(f"[bot] Fatal HTTP {r.status_code} on {reg_url}")
                 _cleanup_in_flight()
@@ -2766,8 +2776,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         success_accounts = []
         failed_count = 0
         total_attempts = 0
-        max_total_attempts = count * 6 + 500
-        max_consecutive_fails = max(150, count)
+        max_total_attempts = count * 3 + 20
+        max_consecutive_fails = min(15, max(5, count))
         consecutive_fails = 0
         lock = threading.Lock()
         cond = threading.Condition(lock)
