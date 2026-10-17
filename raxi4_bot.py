@@ -828,8 +828,10 @@ def mark_device_used(device_id: str, domain=None, model=None):
         }
         for dest in [USED_DEVICES_FILE, os.path.join(BASE_DIR, "used_devices.json")]:
             try:
-                with open(dest, "w", encoding="utf-8") as f:
+                tmp = dest + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(data_to_save, f)
+                os.replace(tmp, dest)
             except Exception:
                 pass
 
@@ -1307,6 +1309,9 @@ def save_account_to_file(phone, password, uid, token, invite, site="https://www.
             if dest in seen_dests:
                 continue
             seen_dests.add(dest)
+            parent = os.path.dirname(dest)
+            if parent and not os.path.exists(parent):
+                continue
             try:
                 with open(dest, "a", encoding="utf-8") as f:
                     f.write(entry)
@@ -1344,7 +1349,7 @@ def parse_account_records(lines):
         rec["password"] = pw_m.group(1).strip() if pw_m else ""
         dev_m = re.search(r"Device:\s*([^|]+)", l)
         rec["device"] = dev_m.group(1).strip() if dev_m else ""
-        ip_m = re.search(r"IP:\s*(\S+)", l)
+        ip_m = re.search(r"IP:\s*([^|]+)", l)
         rec["ip"] = ip_m.group(1).strip() if ip_m else ""
         inv_m = re.search(r"Invite:\s*(\S+)", l)
         rec["invite"] = inv_m.group(1).strip() if inv_m else ""
@@ -1658,9 +1663,10 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                             sl_b64 = cdata.get("sliderImage")
                             if cid and bg_b64 and sl_b64:
                                 break
-                        elif r_cap.status_code in (401, 403, 407):
+                        elif r_cap.status_code in (401, 403, 407) or r_cap.status_code >= 500:
                             proxy_manager.mark_proxy_dead(dc_px)
                     except Exception:
+                        proxy_manager.mark_proxy_dead(dc_px)
                         continue
         except Exception as e:
             log(f"[bot] Captcha fetch error: {e}")
@@ -1695,8 +1701,14 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
 
         active_proxy, verified_ip, account_session_id = proxy_manager.acquire_session_with_unique_ip(domain=domain)
         if not active_proxy:
+            if proxy_manager.is_sx_active():
+                log(f"[bot] Could not acquire verified unique residential IP for {domain} (attempt {attempt}/{max_search_attempts}). Retrying with fresh session...")
+                last_error = "Could not acquire unique residential IP"
+                _cleanup_in_flight()
+                time.sleep(0.3)
+                continue
             active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain, session_id=account_session_id)
-            verified_ip = proxy_manager._extract_clean_ip(active_proxy) if active_proxy else None
+            verified_ip = proxy_manager._extract_clean_ip(active_proxy) if (active_proxy and "@" not in active_proxy) else None
 
         if active_proxy:
             tried_proxies.add(active_proxy)

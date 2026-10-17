@@ -70,12 +70,14 @@ class ProxyManager:
         return {"active": False, "accounts": []}
 
     def save_sx_config(self, cfg: dict):
-        """Saves SX.ORG rotating residential configuration to persistent and local storage."""
+        """Saves SX.ORG rotating residential configuration to persistent and local storage using atomic writes."""
         for target_dir in [DATA_DIR, BASE_DIR]:
             try:
                 sx_file = os.path.join(target_dir, "sx_config.json")
-                with open(sx_file, "w", encoding="utf-8") as f:
+                tmp_file = sx_file + ".tmp"
+                with open(tmp_file, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, indent=2)
+                os.replace(tmp_file, sx_file)
             except Exception:
                 pass
         self.sx_config = cfg
