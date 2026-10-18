@@ -2030,6 +2030,54 @@ def show_force_join_screen(chat_id, user, message_id=None, del_incoming=None):
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
 
 
+def show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_id=None):
+    """
+    Renders professional Insufficient Tokens / Funds screen directing user to @OwAtom or @OwKarma.
+    Covers both 0 balance and partial balance shortage (e.g. need 10, have 5-6).
+    """
+    avail = admin_manager.get_tokens(user_id)
+    shortage = max(0, required_count - avail)
+
+    if avail <= 0:
+        headline = "❌ <b>Insufficient Tokens (0 Balance)!</b>"
+        detail = (
+            f"• 💰 <b>Current Balance:</b> <code>0 Tokens</code>\n"
+            f"• 🎯 <b>Required:</b> <code>{required_count} Token{'s' if required_count != 1 else ''}</code>\n"
+            f"• ⚡ <b>Rate:</b> <code>1 Token</code> = <code>1 Account Registration</code>\n\n"
+            f"Aapke account me <b>0 Tokens</b> bache hain. Registration karne ke liye tokens hona zaroori hai."
+        )
+    else:
+        headline = "❌ <b>Insufficient Tokens (Low Balance)!</b>"
+        detail = (
+            f"• 🎯 <b>Requested:</b> <code>{required_count} Accounts</code> (Needs <code>{required_count} Tokens</code>)\n"
+            f"• 💰 <b>Wallet Balance:</b> <code>{avail} Tokens</code>\n"
+            f"• ⚠️ <b>Shortage:</b> <code>{shortage} Tokens</code>\n\n"
+            f"Aapke wallet me requested <code>{required_count}</code> accounts create karne ke liye paryapt tokens nahi hain (Sirf <code>{avail} Tokens</code> bache hain)."
+        )
+
+    text = (
+        f"{headline}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{detail}\n\n"
+        f"💳 <b>Recharge Tokens / Add Balance:</b>\n"
+        f"Tokens add karwane ke liye hamare admins ko direct message karein:\n\n"
+        f"👉 <b>Admin 1:</b> @OwAtom\n"
+        f"👉 <b>Admin 2:</b> @OwKarma\n\n"
+        f"<i>Niche diye gaye buttons par click karke direct message bhejein:</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    b_atom = types.InlineKeyboardButton("💬 Message @OwAtom", url="https://t.me/OwAtom")
+    b_karma = types.InlineKeyboardButton("💬 Message @OwKarma", url="https://t.me/OwKarma")
+    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
+    b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
+    markup.add(b_atom, b_karma)
+    markup.add(b_back, b_home)
+
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
+
+
 def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
     """Displays the link prompt screen asking for the platform URL."""
     user_id = user.id if user else chat_id
@@ -2137,6 +2185,11 @@ def show_single_menu(chat_id, user, message_id=None):
     [🎲 Random Details] and [✍️ Custom Details]
     """
     user_id = user.id if user else chat_id
+    if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
+        if admin_manager.get_tokens(user_id) <= 0:
+            show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_id=message_id)
+            return
+
     tokens_disp = admin_manager.get_display_tokens(user_id)
     cfg = get_chat_config(chat_id)
     sms_req = cfg.get("sms_required", False)
@@ -2175,6 +2228,11 @@ def show_single_menu(chat_id, user, message_id=None):
 def show_multi_menu(chat_id, user, message_id=None):
     """Displays count selection for Multi-Registration."""
     user_id = user.id if user else chat_id
+    if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
+        if admin_manager.get_tokens(user_id) <= 0:
+            show_insufficient_tokens_screen(chat_id, user_id, required_count=5, message_id=message_id)
+            return
+
     tokens_disp = admin_manager.get_display_tokens(user_id)
     cfg = get_chat_config(chat_id)
     sms_req = cfg.get("sms_required", False)
@@ -2233,6 +2291,11 @@ def show_multi_menu(chat_id, user, message_id=None):
 def show_custom_amount_prompt(chat_id, user, message_id=None):
     """Displays prompt asking user to type custom bulk count."""
     user_id = user.id if user else chat_id
+    if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
+        if admin_manager.get_tokens(user_id) <= 0:
+            show_insufficient_tokens_screen(chat_id, user_id, required_count=5, message_id=message_id)
+            return
+
     tokens_disp = admin_manager.get_display_tokens(user_id)
     cfg = get_chat_config(chat_id)
 
@@ -2254,6 +2317,11 @@ def show_custom_amount_prompt(chat_id, user, message_id=None):
 def show_custom_scheduled_count_prompt(chat_id, user, message_id=None, default_count=20):
     """Step 1: Asks user how many accounts to create for scheduled registration."""
     user_id = user.id if hasattr(user, "id") else (user or chat_id)
+    if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
+        if admin_manager.get_tokens(user_id) <= 0:
+            show_insufficient_tokens_screen(chat_id, user_id, required_count=default_count, message_id=message_id)
+            return
+
     tokens_disp = admin_manager.get_display_tokens(user_id)
     cfg = get_chat_config(chat_id)
     CUSTOM_SCHEDULED_STATE[user_id] = {
@@ -2333,20 +2401,9 @@ def show_speed_selection_menu(chat_id, user, count, message_id=None):
     # Check token requirement for non-admins
     if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
         avail = admin_manager.get_tokens(user_id)
-        if avail <= 0:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options"))
-            send_or_edit(
-                chat_id,
-                "❌ <b>Insufficient Tokens!</b>\n\n"
-                "Aapke pass <code>0 Tokens</code> hain. Har account registration ke liye <code>1 Token</code> lagta hai.\n"
-                "Recharge karne ke liye Admin se contact karein.",
-                reply_markup=markup,
-                message_id=message_id
-            )
-            return
         if avail < count:
-            count = avail
+            show_insufficient_tokens_screen(chat_id, user_id, required_count=count, message_id=message_id)
+            return
 
     text = (
         f"⚡ <b>Select Registration Speed</b>\n\n"
@@ -2698,20 +2755,10 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
         return
 
     # Token Gatekeeper
-    if not admin_manager.has_enough_tokens(uid, 1):
-        cur_tok = admin_manager.get_tokens(uid)
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options"))
-        send_or_edit(
-            chat_id,
-            f"❌ <b>Insufficient Tokens!</b>\n\n"
-            f"• <b>Current Balance:</b> <code>{cur_tok} Tokens</code>\n"
-            f"• <b>Required:</b> <code>1 Token</code> per registration\n\n"
-            f"💡 Har account ke liye <code>1 Token</code> lagta hai. Recharge ke liye Admin se contact karein.",
-            reply_markup=markup,
-            message_id=message_id
-        )
-        return
+    if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
+        if not admin_manager.has_enough_tokens(uid, 1):
+            show_insufficient_tokens_screen(chat_id, uid, required_count=1, message_id=message_id)
+            return
 
     if not acquire_chat_lock(chat_id):
         log(f"[bot] Registration already in progress for chat {chat_id}, skipping duplicate run.")
@@ -2832,20 +2879,9 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
     # Token check: Admins (and Super Admin) have unlimited access; Free Mode is free; Regular Users check available tokens
     if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
         avail = admin_manager.get_tokens(uid)
-        if avail <= 0:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options"))
-            send_or_edit(
-                chat_id,
-                f"❌ <b>Insufficient Tokens!</b>\n\n"
-                f"Aapke pass <code>0 Tokens</code> bache hain. Har account registration ke liye <code>1 Token</code> lagta hai.\n"
-                f"Recharge karne ke liye Admin se contact karein.",
-                reply_markup=markup,
-                message_id=message_id
-            )
-            return
         if avail < count:
-            count = avail
+            show_insufficient_tokens_screen(chat_id, uid, required_count=count, message_id=message_id)
+            return
 
     if not acquire_chat_lock(chat_id):
         log(f"[bot] Bulk registration already in progress for chat {chat_id}, skipping duplicate run.")
@@ -3288,18 +3324,9 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
     # Check token requirement
     if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
         avail = admin_manager.get_tokens(uid)
-        if avail <= 0:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options"))
-            send_or_edit(
-                chat_id,
-                "❌ <b>Insufficient Tokens!</b>\n\nAapke pass <code>0 Tokens</code> bache hain. Recharge karne ke liye Admin se contact karein.",
-                reply_markup=markup,
-                message_id=message_id
-            )
-            return
         if avail < count:
-            count = avail
+            show_insufficient_tokens_screen(chat_id, uid, required_count=count, message_id=message_id)
+            return
 
     if not acquire_chat_lock(chat_id):
         log(f"[bot] Registration already running in chat {chat_id}, skipping duplicate scheduled run.")
@@ -3816,13 +3843,16 @@ def handle_tokens_cmd(message):
         f"• <b>Role:</b> {role_label}\n"
         f"• <b>Available Tokens:</b> <b>{tokens_disp}</b>\n"
         f"• <b>Registration Cost:</b> <code>1 Token</code> per account\n\n"
-        f"💡 <i>Tokens recharge karne ke liye Admin se contact karein.</i>"
+        f"💳 <i>Tokens recharge karne ke liye hamare admins @OwAtom ya @OwKarma se contact karein.</i>"
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
     b1 = types.InlineKeyboardButton("⚡ Single Registration", callback_data="reg_single")
     b2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi")
+    b_atom = types.InlineKeyboardButton("💬 Recharge: @OwAtom", url="https://t.me/OwAtom")
+    b_karma = types.InlineKeyboardButton("💬 Recharge: @OwKarma", url="https://t.me/OwKarma")
     b3 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
     markup.add(b1, b2)
+    markup.add(b_atom, b_karma)
     markup.add(b3)
     send_or_edit(message.chat.id, text, reply_markup=markup, del_incoming=message)
 
@@ -4329,7 +4359,7 @@ def handle_custom_scheduled_msg(message):
         if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
             avail = admin_manager.get_tokens(uid)
             if avail < val:
-                bot.send_message(chat_id, f"❌ <b>Insufficient Tokens:</b> Aapke pass sirf <code>{avail} Tokens</code> hain.", parse_mode="HTML")
+                show_insufficient_tokens_screen(chat_id, uid, required_count=val, message_id=target_mid)
                 return
         show_custom_scheduled_minutes_prompt(chat_id, user, count=val, message_id=target_mid)
 
@@ -5328,10 +5358,18 @@ def _handle_callback_clicks_inner(call):
 
     elif data == "my_tokens":
         tok_disp = admin_manager.get_display_tokens(user_id)
-        try:
-            bot.answer_callback_query(call.id, f"Your Balance: {tok_disp} (1 Token = 1 Account)", show_alert=True)
-        except Exception:
-            pass
+        avail = admin_manager.get_tokens(user_id)
+        if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()) and avail <= 0:
+            try:
+                bot.answer_callback_query(call.id, "❌ Balance: 0 Tokens")
+            except Exception:
+                pass
+            show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_id=msg_id)
+        else:
+            try:
+                bot.answer_callback_query(call.id, f"Your Balance: {tok_disp} (1 Token = 1 Account)", show_alert=True)
+            except Exception:
+                pass
 
     # ─── Single Registration ───
     elif data in ("reg_single", "single_menu"):
@@ -5361,17 +5399,14 @@ def _handle_callback_clicks_inner(call):
                 pass
             return
 
-        if not admin_manager.has_enough_tokens(user_id, 1):
-            cur_tok = admin_manager.get_tokens(user_id)
-            try:
-                bot.answer_callback_query(
-                    call.id,
-                    f"❌ Insufficient Tokens!\n\n💰 Your Balance: {cur_tok} Tokens\n🎟️ Required: 1 Token",
-                    show_alert=True
-                )
-            except Exception:
-                pass
-            return
+        if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
+            if not admin_manager.has_enough_tokens(user_id, 1):
+                try:
+                    bot.answer_callback_query(call.id, "❌ Insufficient Tokens!")
+                except Exception:
+                    pass
+                show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_id=msg_id)
+                return
         try:
             bot.answer_callback_query(call.id, "Starting random registration (1 🎫)...")
         except Exception:
@@ -5386,17 +5421,14 @@ def _handle_callback_clicks_inner(call):
                 pass
             return
 
-        if not admin_manager.has_enough_tokens(user_id, 1):
-            cur_tok = admin_manager.get_tokens(user_id)
-            try:
-                bot.answer_callback_query(
-                    call.id,
-                    f"❌ Insufficient Tokens!\n\n💰 Your Balance: {cur_tok} Tokens\n🎟️ Required: 1 Token",
-                    show_alert=True
-                )
-            except Exception:
-                pass
-            return
+        if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
+            if not admin_manager.has_enough_tokens(user_id, 1):
+                try:
+                    bot.answer_callback_query(call.id, "❌ Insufficient Tokens!")
+                except Exception:
+                    pass
+                show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_id=msg_id)
+                return
 
         try:
             bot.answer_callback_query(call.id)
@@ -5492,11 +5524,12 @@ def _handle_callback_clicks_inner(call):
 
         if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
             avail = admin_manager.get_tokens(user_id)
-            if avail <= 0:
+            if avail < count:
                 try:
-                    bot.answer_callback_query(call.id, "❌ 0 Tokens! Recharge to use Multi-Registration.", show_alert=True)
+                    bot.answer_callback_query(call.id, f"❌ Insufficient Tokens! (Needs {count}, Have {avail})")
                 except Exception:
                     pass
+                show_insufficient_tokens_screen(chat_id, user_id, required_count=count, message_id=msg_id)
                 return
 
         try:
@@ -5518,13 +5551,14 @@ def _handle_callback_clicks_inner(call):
         except Exception:
             pass
         cnt = int(data.split("_")[2])
-        if not (admin_manager.is_super_admin(user_id) or admin_manager.is_free_mode()):
+        if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
             avail = admin_manager.get_tokens(user_id)
             if avail < cnt:
                 try:
-                    bot.answer_callback_query(call.id, f"❌ Insufficient Tokens (Available: {avail})", show_alert=True)
+                    bot.answer_callback_query(call.id, f"❌ Insufficient Tokens (Available: {avail})")
                 except Exception:
                     pass
+                show_insufficient_tokens_screen(chat_id, user_id, required_count=cnt, message_id=msg_id)
                 return
         show_custom_scheduled_minutes_prompt(chat_id, user, count=cnt, message_id=msg_id)
 

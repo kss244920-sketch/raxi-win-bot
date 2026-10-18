@@ -98,6 +98,28 @@
       "last_active": 1791742660.0745351,
       "user_log_channel": null,
       "user_storage_channel": null
+    },
+    "9988001": {
+      "user_id": 9988001,
+      "username": "",
+      "first_name": "",
+      "role": "\u26aa Guest",
+      "tokens": 0,
+      "joined_at": 1792315614.0067422,
+      "last_active": 1792315614.0067422,
+      "user_log_channel": null,
+      "user_storage_channel": null
+    },
+    "9988002": {
+      "user_id": 9988002,
+      "username": "",
+      "first_name": "",
+      "role": "\u26aa Guest",
+      "tokens": 5,
+      "joined_at": 1792315614.0074408,
+      "last_active": 1792315614.0074408,
+      "user_log_channel": null,
+      "user_storage_channel": null
     }
   },
   "admin_daily_usage": {
