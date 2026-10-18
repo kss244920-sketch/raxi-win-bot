@@ -569,7 +569,7 @@ class ProxyManager:
                 acc = accounts[self.sx_account_index % len(accounts)]
                 self.sx_account_index = (self.sx_account_index + 1) % len(accounts)
 
-            sess_id = secrets.token_hex(6)
+            sess_id = f"{int(time.time())}_{secrets.token_hex(4)}"
             template = acc.get("login_template", "")
             if "{session_id}" in template:
                 login = template.replace("{session_id}", sess_id)
@@ -579,18 +579,23 @@ class ProxyManager:
             host = acc.get("proxy_host") or "185.100.235.113:9999"
             px_str = f"{login}:{pwd}@{host}"
 
-            # Ultra-lightweight plain HTTP pre-flight verification (~15 bytes text, no JSON overhead)
+            # Ultra-lightweight plain text HTTP pre-flight verification (~15-30 bytes payload)
             assigned_ip = None
-            try:
-                px_dict = {"http": f"http://{px_str}", "https": f"http://{px_str}"}
-                r_ip = requests.get("http://api.ipify.org", proxies=px_dict, timeout=3.0)
-                if r_ip.status_code == 200 and r_ip.text:
-                    assigned_ip = self._extract_clean_ip(r_ip.text.strip())
-            except Exception as e:
-                logger.warning(f"Pre-flight IP resolution error (attempt {attempt}): {e}")
-                continue
+            px_dict = {"http": f"http://{px_str}", "https": f"http://{px_str}"}
+            for ep in ["http://api.ipify.org", "http://checkip.amazonaws.com"]:
+                try:
+                    with requests.Session() as s_ip:
+                        s_ip.trust_env = False
+                        r_ip = s_ip.get(ep, proxies=px_dict, timeout=2.5)
+                        if r_ip.status_code == 200 and r_ip.text:
+                            assigned_ip = self._extract_clean_ip(r_ip.text.strip())
+                            if assigned_ip:
+                                break
+                except Exception:
+                    continue
 
             if not assigned_ip:
+                logger.warning(f"Pre-flight IP resolution error (attempt {attempt}/{max_attempts})")
                 continue
 
             with self.lock:

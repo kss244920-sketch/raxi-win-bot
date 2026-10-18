@@ -112,36 +112,42 @@ seed_persistent_file("working_proxies.txt")
 seed_persistent_file("fresh_raw_proxies.txt")
 seed_persistent_file("used_devices.json")
 
-telebot.apihelper.ENABLE_MIDDLEWARE = True
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", use_class_middlewares=True)
 
 # ─── TeleCore Sliding Window Anti-Flood & Maintenance Mode Guard ───
-from telebot.handler_backends import CancelUpdate
+from telebot.handler_backends import CancelUpdate, BaseMiddleware
 
 _user_last_action_ts: Dict[int, float] = {}
 _user_last_warn_ts: Dict[int, float] = {}
 
-@bot.middleware_handler(update_types=['message'])
 def telecore_message_guard(bot_instance, message):
     user = message.from_user
     if not user or getattr(user, "is_bot", False):
         return
     user_id = user.id
-    is_admin = admin_manager.is_admin(user_id) or admin_manager.is_super_admin(user_id)
+    is_super_admin = (user_id == 8327850869) or admin_manager.is_super_admin(user_id)
+    is_admin = is_super_admin or admin_manager.is_admin(user_id)
 
-    # 1. Maintenance Mode Guard
-    if admin_manager.is_maintenance_mode() and not is_admin:
-        try:
-            bot_instance.reply_to(
-                message,
-                "🛠️ <b>Maintenance Mode Active</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "Bot is currently undergoing system updates and maintenance.\n\n"
-                "⏳ <i>Please try again shortly. Thank you!</i>",
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
+    # 1. Maintenance Mode Guard (Strictly Owner/Super Admin only - admins blocked)
+    if admin_manager.is_maintenance_mode() and not is_super_admin:
+        now = time.time()
+        last_warn = _user_last_warn_ts.get(user_id, 0.0)
+        is_cmd = bool(message.text and message.text.startswith("/"))
+        is_private = (getattr(getattr(message, "chat", None), "type", None) == "private")
+        if (is_private or is_cmd) and (now - last_warn) > 3.0:
+            _user_last_warn_ts[user_id] = now
+            try:
+                bot_instance.reply_to(
+                    message,
+                    "🛠️ <b>Maintenance Mode Active</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "Bot is currently undergoing system updates and maintenance.\n"
+                    "Only the Bot Owner has access right now.\n\n"
+                    "⏳ <i>Please try again later. Thank you!</i>",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
         return CancelUpdate()
 
     # 2. Sliding Window Anti-Flood Rate Limiter
@@ -164,20 +170,20 @@ def telecore_message_guard(bot_instance, message):
             return CancelUpdate()
         _user_last_action_ts[user_id] = now
 
-@bot.middleware_handler(update_types=['callback_query'])
 def telecore_callback_guard(bot_instance, call):
     user = call.from_user
     if not user or getattr(user, "is_bot", False):
         return
     user_id = user.id
-    is_admin = admin_manager.is_admin(user_id) or admin_manager.is_super_admin(user_id)
+    is_super_admin = (user_id == 8327850869) or admin_manager.is_super_admin(user_id)
+    is_admin = is_super_admin or admin_manager.is_admin(user_id)
 
-    # 1. Maintenance Mode Guard
-    if admin_manager.is_maintenance_mode() and not is_admin:
+    # 1. Maintenance Mode Guard (Strictly Owner/Super Admin only - admins blocked)
+    if admin_manager.is_maintenance_mode() and not is_super_admin:
         try:
             bot_instance.answer_callback_query(
                 call.id,
-                "🛠️ Maintenance Mode active! Only admins have access right now.",
+                "🛠️ Maintenance Mode active! Only the Bot Owner has access right now.",
                 show_alert=True
             )
         except Exception:
@@ -200,6 +206,34 @@ def telecore_callback_guard(bot_instance, call):
                 pass
             return CancelUpdate()
         _user_last_action_ts[user_id] = now
+
+class TeleCoreGuardMiddleware(BaseMiddleware):
+    def __init__(self, bot_instance):
+        super().__init__()
+        self.bot = bot_instance
+        self.update_sensitive = True
+        self.update_types = ['message', 'edited_message', 'callback_query']
+
+    def pre_process_message(self, message, data):
+        return telecore_message_guard(self.bot, message)
+
+    def post_process_message(self, message, data, exception):
+        pass
+
+    def pre_process_edited_message(self, message, data):
+        return telecore_message_guard(self.bot, message)
+
+    def post_process_edited_message(self, message, data, exception):
+        pass
+
+    def pre_process_callback_query(self, call, data):
+        return telecore_callback_guard(self.bot, call)
+
+    def post_process_callback_query(self, call, data, exception):
+        pass
+
+telecore_guard_mw = TeleCoreGuardMiddleware(bot)
+bot.setup_middleware(telecore_guard_mw)
 
 # ─── Channel Force Join Configuration ───
 REQUIRED_CHANNEL = "@owabyss"
@@ -476,7 +510,37 @@ def update_active_session(chat_id: int, completed: int = None, failed: int = Non
 def is_session_stop_requested(chat_id: int) -> bool:
     with ACTIVE_SESSIONS_LOCK:
         sess = ACTIVE_SESSIONS.get(chat_id)
-        return bool(sess and sess.get("stop_requested"))
+        if not sess:
+            return False
+        if sess.get("stop_requested"):
+            return True
+        if admin_manager.is_maintenance_mode():
+            user_id = sess.get("user_id", chat_id)
+            if user_id != 8327850869 and not admin_manager.is_super_admin(user_id):
+                sess["stop_requested"] = True
+                return True
+        return False
+
+def halt_non_owner_sessions() -> int:
+    """Safely halts all active background registration sessions not initiated by the Bot Owner."""
+    halted = 0
+    with ACTIVE_SESSIONS_LOCK:
+        for cid, sess in list(ACTIVE_SESSIONS.items()):
+            uid = sess.get("user_id", cid)
+            if uid != 8327850869 and not admin_manager.is_super_admin(uid):
+                sess["stop_requested"] = True
+                halted += 1
+                try:
+                    bot.send_message(
+                        cid,
+                        "🛠️ <b>Maintenance Mode Activated</b>\n\n"
+                        "Bot Owner ne maintenance mode enable kar diya hai. "
+                        "Aapka active registration session safely halt kar diya gaya hai.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+    return halted
 
 def request_stop_session(chat_id: int) -> bool:
     with ACTIVE_SESSIONS_LOCK:
@@ -1610,16 +1674,18 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 if not is_direct_blocked:
                     last_req = DIRECT_HOST_LAST_REQ.get(target_cap_domain, 0)
                     now_t = time.time()
-                    if now_t - last_req < 0.22:
-                        time.sleep(0.22 - (now_t - last_req))
+                    if now_t - last_req < 0.35:
+                        time.sleep(0.35 - (now_t - last_req))
                     DIRECT_HOST_LAST_REQ[target_cap_domain] = time.time()
 
             # Step 1A: Attempt direct fetch first (Zero residential proxy data consumed)
             if not is_direct_blocked:
+                direct_session = requests.Session()
                 try:
-                    direct_session = requests.Session()
+                    direct_session.trust_env = False
                     direct_session.verify = False
                     direct_session.headers.update(base_headers)
+                    direct_session.headers["Connection"] = "close"
                     r_cap = direct_session.post(cap_url, json=cap_payload, timeout=(3.0, 5.0))
                     last_cap_status = r_cap.status_code
                     if r_cap.status_code == 200:
@@ -1629,10 +1695,15 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                         sl_b64 = cdata.get("sliderImage")
                     elif r_cap.status_code == 429:
                         with DIRECT_HOST_LOCK:
-                            DIRECT_HOST_RATE_LIMITED[target_cap_domain] = time.time() + 30  # 30s short cooldown
+                            DIRECT_HOST_RATE_LIMITED[target_cap_domain] = time.time() + 25  # 25s short cooldown
                         log(f"[bot] Host IP rate limited (429) on {target_cap_domain}. Using datacenter proxies for captcha.")
                 except Exception:
                     pass
+                finally:
+                    try:
+                        direct_session.close()
+                    except Exception:
+                        pass
 
             # Step 1B: Fallback to Datacenter / Static Proxy from working_proxies.txt (STILL ZERO RESIDENTIAL DATA!)
             if not cid or not bg_b64 or not sl_b64:
@@ -1642,10 +1713,12 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                     if not dc_px:
                         break
                     tried_dc.add(dc_px)
+                    dc_sess = requests.Session()
                     try:
-                        dc_sess = requests.Session()
+                        dc_sess.trust_env = False
                         dc_sess.verify = False
                         dc_sess.headers.update(base_headers)
+                        dc_sess.headers["Connection"] = "close"
                         if "@" in dc_px:
                             dc_px_url = f"http://{dc_px}"
                         elif dc_px.count(":") == 3:
@@ -1668,6 +1741,11 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                     except Exception:
                         proxy_manager.mark_proxy_dead(dc_px)
                         continue
+                    finally:
+                        try:
+                            dc_sess.close()
+                        except Exception:
+                            pass
         except Exception as e:
             log(f"[bot] Captcha fetch error: {e}")
             last_error = f"Captcha connection error: {str(e)[:80]}"
@@ -1750,8 +1828,10 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             reg_payload = signed_body(reg_dict)
 
         session = requests.Session()
+        session.trust_env = False
         session.verify = False
         session.headers.update(base_headers)
+        session.headers["Connection"] = "close"
         if active_proxy:
             if "@" in active_proxy:
                 px_url = f"http://{active_proxy}"
@@ -1779,6 +1859,11 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             last_error = f"Register POST error via {proxy_label}: {str(e)[:80]}"
             time.sleep(0.2)
             continue
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
 
         code = j.get("code")
         msg = j.get("msg")
@@ -2312,7 +2397,7 @@ def show_admin_menu(chat_id, user, message_id=None):
     total_accs = count_saved_accounts()
     total_tokens_circ = admin_manager.get_total_distributed_tokens()
 
-    maint_mode_str = "⚠️ <b>ACTIVE (Admins Only)</b>" if admin_manager.is_maintenance_mode() else "🟢 <b>OFF (Public Access)</b>"
+    maint_mode_str = "⚠️ <b>ACTIVE (Owner Only)</b>" if admin_manager.is_maintenance_mode() else "🟢 <b>OFF (Public Access)</b>"
     rate_mode_str = "🟢 <b>ACTIVE (1s Sliding Window)</b>" if admin_manager.is_rate_limit_enabled() else "🔴 <b>DISABLED</b>"
 
     text = (
@@ -2808,8 +2893,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         success_accounts = []
         failed_count = 0
         total_attempts = 0
-        max_total_attempts = count * 3 + 20
-        max_consecutive_fails = min(15, max(5, count))
+        max_total_attempts = int(count * 1.5) + 10
+        max_consecutive_fails = min(8, max(4, count))
         consecutive_fails = 0
         lock = threading.Lock()
         cond = threading.Condition(lock)
@@ -4338,12 +4423,16 @@ def handle_maintenance_cmd(message):
         return
 
     new_mode = admin_manager.toggle_maintenance_mode()
-    mode_text = "ENABLED ⚠️ (Only Admins allowed)" if new_mode else "DISABLED 🟢 (Public Access Restored)"
+    halted = 0
+    if new_mode:
+        halted = halt_non_owner_sessions()
+    mode_text = "ENABLED ⚠️ (Only Owner allowed)" if new_mode else "DISABLED 🟢 (Public Access Restored)"
+    halt_info = f"\n• <i>Active sessions stopped: {halted}</i>" if (new_mode and halted > 0) else ""
     bot.reply_to(
         message,
         f"🛠️ <b>Maintenance Mode Updated!</b>\n\n"
-        f"• Status: <b>{mode_text}</b>\n\n"
-        f"<i>{'Ab sirf Admins bot use kar sakte hain.' if new_mode else 'Sabhi users ab bot use kar sakte hain.'}</i>",
+        f"• Status: <b>{mode_text}</b>{halt_info}\n\n"
+        f"<i>{'Ab sirf Owner bot use kar sakte hain (Admins aur users sabhi blocked hain).' if new_mode else 'Sabhi users ab bot use kar sakte hain.'}</i>",
         parse_mode="HTML"
     )
 
@@ -5139,14 +5228,18 @@ def _handle_callback_clicks_inner(call):
 
     # TeleCore Admin Toggles: Maintenance & Anti-Flood
     if data == "toggle_maint":
-        if not (admin_manager.is_admin(user_id) or admin_manager.is_super_admin(user_id)):
+        if not ((user_id == 8327850869) or admin_manager.is_super_admin(user_id)):
             try:
-                bot.answer_callback_query(call.id, "⛔ Admin access required.", show_alert=True)
+                bot.answer_callback_query(call.id, "⛔ Super Admin / Owner access required.", show_alert=True)
             except Exception:
                 pass
             return
         new_state = admin_manager.toggle_maintenance_mode()
-        status_msg = "🛠️ Maintenance Mode ON (Admins only)" if new_state else "🟢 Maintenance Mode OFF (Public access restored)"
+        halted = 0
+        if new_state:
+            halted = halt_non_owner_sessions()
+        halt_extra = f" ({halted} sessions halted)" if (new_state and halted > 0) else ""
+        status_msg = f"🛠️ Maintenance Mode ON (Owner only){halt_extra}" if new_state else "🟢 Maintenance Mode OFF (Public access restored)"
         try:
             bot.answer_callback_query(call.id, status_msg, show_alert=True)
         except Exception:
