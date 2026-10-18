@@ -612,6 +612,8 @@ class AdminManager:
             return 0
         if self.is_super_admin(uid):
             return 999999
+        if self.is_admin(uid):
+            return 999999
         self.check_and_refresh_admin_quotas()
         with self._lock:
             uid_str = str(uid)
@@ -625,9 +627,9 @@ class AdminManager:
             return "0 Tokens"
         if self.is_super_admin(uid):
             return "👑 Unlimited (Owner / Super Admin)"
+        if self.is_admin(uid):
+            return "🛡️ Unlimited (Admin)"
         tokens = self.get_tokens(uid)
-        if uid in self.admin_user_ids:
-            return f"{tokens:,} Tokens <i>(🛡️ Admin)</i>"
         if self.is_free_mode():
             return f"{tokens:,} Token{'s' if tokens != 1 else ''} <i>(🆓 Free Mode)</i>"
         return f"{tokens:,} Token{'s' if tokens != 1 else ''}"
@@ -636,7 +638,7 @@ class AdminManager:
         uid = self._to_int(user_id)
         if not uid:
             return False
-        if self.is_super_admin(uid):
+        if self.is_super_admin(uid) or self.is_admin(uid):
             return True
         if self.is_free_mode():
             return True
@@ -665,7 +667,7 @@ class AdminManager:
         uid = self._to_int(user_id)
         if not uid:
             return 0
-        if self.is_super_admin(uid) and not force:
+        if (self.is_super_admin(uid) or self.is_admin(uid)) and not force:
             return 999999
         if self.is_free_mode() and not force:
             return self.get_tokens(uid)

@@ -547,7 +547,7 @@ class ProxyManager:
     def get_used_ips(self, domain: str = None) -> set:
         return self.get_used_proxies(domain=domain)
 
-    def acquire_session_with_unique_ip(self, domain: str = None, max_attempts: int = 3) -> tuple:
+    def acquire_session_with_unique_ip(self, domain: str = None, max_attempts: int = 4) -> tuple:
         """
         Enforces 100% Zero-Repeat IP Condition with minimal proxy bandwidth:
         Pre-resolves the IP of the session via lightweight plain text HTTP (~15 bytes),
@@ -586,6 +586,7 @@ class ProxyManager:
                 try:
                     with requests.Session() as s_ip:
                         s_ip.trust_env = False
+                        s_ip.headers["Connection"] = "close"
                         r_ip = s_ip.get(ep, proxies=px_dict, timeout=2.5)
                         if r_ip.status_code == 200 and r_ip.text:
                             assigned_ip = self._extract_clean_ip(r_ip.text.strip())

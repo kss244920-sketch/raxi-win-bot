@@ -2829,18 +2829,17 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         show_force_join_screen(chat_id, type('UserObj', (), {'id': uid, 'first_name': 'User'})(), message_id=message_id)
         return
 
-    # Token check: Super Admin is unlimited; Free Mode is free; Client Admins (1k daily quota) and Users check available tokens
-    if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
+    # Token check: Admins (and Super Admin) have unlimited access; Free Mode is free; Regular Users check available tokens
+    if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
         avail = admin_manager.get_tokens(uid)
         if avail <= 0:
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options"))
-            msg_quota = "Admin daily quota (1,000) exhaust ho gaya hai. 24h baad reset hoga." if admin_manager.is_admin(uid) else "Recharge karne ke liye Admin se contact karein."
             send_or_edit(
                 chat_id,
                 f"❌ <b>Insufficient Tokens!</b>\n\n"
                 f"Aapke pass <code>0 Tokens</code> bache hain. Har account registration ke liye <code>1 Token</code> lagta hai.\n"
-                f"{msg_quota}",
+                f"Recharge karne ke liye Admin se contact karein.",
                 reply_markup=markup,
                 message_id=message_id
             )
@@ -2893,8 +2892,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         success_accounts = []
         failed_count = 0
         total_attempts = 0
-        max_total_attempts = int(count * 1.5) + 10
-        max_consecutive_fails = min(8, max(4, count))
+        max_total_attempts = int(count * 1.8) + 15
+        max_consecutive_fails = max(12, min(25, count * 2))
         consecutive_fails = 0
         lock = threading.Lock()
         cond = threading.Condition(lock)
@@ -2934,7 +2933,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                             return
                         if consecutive_fails >= max_consecutive_fails:
                             return
-                        if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
+                        if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
                             if admin_manager.get_tokens(uid) <= 0:
                                 return
 
@@ -3287,7 +3286,7 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
         return
 
     # Check token requirement
-    if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
+    if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
         avail = admin_manager.get_tokens(uid)
         if avail <= 0:
             markup = types.InlineKeyboardMarkup()
@@ -3366,7 +3365,7 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
                     break
                 if len(success_accounts) >= count:
                     break
-                if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
+                if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
                     if not admin_manager.has_enough_tokens(uid, 1):
                         log(f"[bot] Scheduled run stopped: insufficient tokens for user {uid}")
                         was_stopped = True
@@ -4327,7 +4326,7 @@ def handle_custom_scheduled_msg(message):
         if val <= 0 or val > 1000:
             bot.send_message(chat_id, "❌ Accounts count 1 se 1000 ke beech hona chahiye.", parse_mode="HTML")
             return
-        if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
+        if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
             avail = admin_manager.get_tokens(uid)
             if avail < val:
                 bot.send_message(chat_id, f"❌ <b>Insufficient Tokens:</b> Aapke pass sirf <code>{avail} Tokens</code> hain.", parse_mode="HTML")
