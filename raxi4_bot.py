@@ -2030,6 +2030,30 @@ def show_force_join_screen(chat_id, user, message_id=None, del_incoming=None):
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
 
 
+def get_recharge_contact_url(admin_username: str, user_id: int, user=None, required_count: int = 0) -> str:
+    """
+    Constructs a direct Telegram t.me link with prefilled text so that when the user
+    clicks on the button, Telegram automatically opens the chat with the admin and pre-fills
+    a message requesting tokens along with their user ID and username.
+    """
+    uid_str = str(user_id or "")
+    username = ""
+    if user and getattr(user, "username", None):
+        username = f" (@{user.username})"
+    elif user_id:
+        reg = admin_manager.user_registry.get(str(user_id), {})
+        if reg.get("username"):
+            username = f" (@{reg['username']})"
+
+    if required_count and required_count > 1:
+        msg = f"Hello Admin, please add tokens to my account.\nUser ID: {uid_str}{username}\nRequired: {required_count} tokens"
+    else:
+        msg = f"Hello Admin, please add tokens to my account.\nUser ID: {uid_str}{username}"
+
+    encoded = urllib.parse.quote(msg)
+    return f"https://t.me/{admin_username}?text={encoded}"
+
+
 def show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_id=None):
     """
     Renders professional Insufficient Tokens / Funds screen directing user to @OwAtom or @OwKarma.
@@ -2063,13 +2087,16 @@ def show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_
         f"Tokens add karwane ke liye hamare admins ko direct message karein:\n\n"
         f"👉 <b>Admin 1:</b> @OwAtom\n"
         f"👉 <b>Admin 2:</b> @OwKarma\n\n"
-        f"<i>Niche diye gaye buttons par click karke direct message bhejein:</i>\n"
+        f"<i>Niche diye gaye buttons par click karke direct message bhejein (Aapka User ID automatically message me attach ho jayega):</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
 
+    url_atom = get_recharge_contact_url("OwAtom", user_id, required_count=required_count)
+    url_karma = get_recharge_contact_url("OwKarma", user_id, required_count=required_count)
+
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_atom = types.InlineKeyboardButton("💬 Message @OwAtom", url="https://t.me/OwAtom")
-    b_karma = types.InlineKeyboardButton("💬 Message @OwKarma", url="https://t.me/OwKarma")
+    b_atom = types.InlineKeyboardButton("💬 Message @OwAtom", url=url_atom)
+    b_karma = types.InlineKeyboardButton("💬 Message @OwKarma", url=url_karma)
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
     b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
     markup.add(b_atom, b_karma)
@@ -3845,11 +3872,13 @@ def handle_tokens_cmd(message):
         f"• <b>Registration Cost:</b> <code>1 Token</code> per account\n\n"
         f"💳 <i>Tokens recharge karne ke liye hamare admins @OwAtom ya @OwKarma se contact karein.</i>"
     )
+    url_atom = get_recharge_contact_url("OwAtom", user.id, user=user)
+    url_karma = get_recharge_contact_url("OwKarma", user.id, user=user)
     markup = types.InlineKeyboardMarkup(row_width=2)
     b1 = types.InlineKeyboardButton("⚡ Single Registration", callback_data="reg_single")
     b2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi")
-    b_atom = types.InlineKeyboardButton("💬 Recharge: @OwAtom", url="https://t.me/OwAtom")
-    b_karma = types.InlineKeyboardButton("💬 Recharge: @OwKarma", url="https://t.me/OwKarma")
+    b_atom = types.InlineKeyboardButton("💬 Recharge: @OwAtom", url=url_atom)
+    b_karma = types.InlineKeyboardButton("💬 Recharge: @OwKarma", url=url_karma)
     b3 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
     markup.add(b1, b2)
     markup.add(b_atom, b_karma)
