@@ -1352,10 +1352,25 @@ def generate_random_password():
     return f"{p_letters}{p_digits}"
 
 ACCOUNT_SAVE_LOCK = threading.Lock()
+_ACCOUNT_CACHE = {"mtime": 0, "size": 0, "path": "", "records": []}
+_CACHE_LOCK = threading.Lock()
+
+# Pre-compiled regex patterns for blazing fast parsing
+RE_TS = re.compile(r"\[(.*?)\]")
+RE_UID = re.compile(r"UID:\s*(\S+)")
+RE_PH = re.compile(r"Phone:\s*(\S+)")
+RE_PW = re.compile(r"Password:\s*(\S+)")
+RE_DEV = re.compile(r"Device:\s*([^|]+)")
+RE_IP = re.compile(r"IP:\s*([^|]+)")
+RE_INV = re.compile(r"Invite:\s*(\S+)")
+RE_SITE = re.compile(r"Site:\s*([^|]+)")
+RE_USR = re.compile(r"User:\s*(\S+)")
+RE_TOK = re.compile(r"Token:\s*(\S+)")
 
 def save_account_to_file(phone, password, uid, token, invite, site="https://www.raxi4.com", device=None, proxy=None, creator_id=None):
-    """Saves successfully created account to raxi_accounts.txt with creator isolation and thread safety."""
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """Saves successfully created account to raxi_accounts.txt with creator isolation, IST timestamp, and thread safety."""
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    ts = datetime.now(ist_tz).strftime("%Y-%m-%d %H:%M:%S")
     dev = device or "Generic Android"
     ip = proxy or "Direct"
     c_str = f" | User: {creator_id}" if creator_id else ""
@@ -1381,6 +1396,8 @@ def save_account_to_file(phone, password, uid, token, invite, site="https://www.
                     f.write(entry)
             except Exception:
                 pass
+        with _CACHE_LOCK:
+            _ACCOUNT_CACHE["mtime"] = 0
 
 def get_accounts_file():
     """Finds the active accounts file from candidate paths."""
@@ -1397,45 +1414,70 @@ def get_accounts_file():
     return None
 
 def parse_account_records(lines):
-    """Parses raw account log lines into structured account dictionaries."""
+    """Parses raw account log lines into structured account dictionaries at high speed."""
     records = []
     for l in lines:
-        if not l.strip() or l.startswith("#"):
+        if not l or l.startswith("#") or "Phone:" not in l:
             continue
         rec = {}
-        ts_m = re.search(r"\[(.*?)\]", l)
+        ts_m = RE_TS.search(l)
         rec["time"] = ts_m.group(1).strip() if ts_m else ""
-        uid_m = re.search(r"UID:\s*(\S+)", l)
+        uid_m = RE_UID.search(l)
         rec["uid"] = uid_m.group(1).strip() if uid_m else ""
-        ph_m = re.search(r"Phone:\s*(\S+)", l)
+        ph_m = RE_PH.search(l)
         rec["phone"] = ph_m.group(1).strip() if ph_m else ""
-        pw_m = re.search(r"Password:\s*(\S+)", l)
+        pw_m = RE_PW.search(l)
         rec["password"] = pw_m.group(1).strip() if pw_m else ""
-        dev_m = re.search(r"Device:\s*([^|]+)", l)
+        dev_m = RE_DEV.search(l)
         rec["device"] = dev_m.group(1).strip() if dev_m else ""
-        ip_m = re.search(r"IP:\s*([^|]+)", l)
+        ip_m = RE_IP.search(l)
         rec["ip"] = ip_m.group(1).strip() if ip_m else ""
-        inv_m = re.search(r"Invite:\s*(\S+)", l)
+        inv_m = RE_INV.search(l)
         rec["invite"] = inv_m.group(1).strip() if inv_m else ""
-        site_m = re.search(r"Site:\s*([^|]+)", l)
+        site_m = RE_SITE.search(l)
         rec["site"] = site_m.group(1).strip() if site_m else ""
-        usr_m = re.search(r"User:\s*(\S+)", l)
+        usr_m = RE_USR.search(l)
         rec["user"] = usr_m.group(1).strip() if usr_m else ""
-        tok_m = re.search(r"Token:\s*(\S+)", l)
+        tok_m = RE_TOK.search(l)
         rec["token"] = tok_m.group(1).strip() if tok_m else ""
         if rec["phone"] and rec["password"]:
             records.append(rec)
     return records
 
-def get_user_account_records(user_id, chat_id=None):
-    """Retrieves and parses account records accessible to this user."""
+def get_cached_account_records():
+    """Returns memory-cached account records, invalidating automatically when file changes."""
     acc_file = get_accounts_file()
-    if not acc_file:
+    if not acc_file or not os.path.exists(acc_file):
         return []
     try:
-        with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
-            lines = [l for l in f if l.strip()]
-        all_recs = parse_account_records(lines)
+        st = os.stat(acc_file)
+        with _CACHE_LOCK:
+            if (
+                _ACCOUNT_CACHE["records"]
+                and _ACCOUNT_CACHE["path"] == acc_file
+                and _ACCOUNT_CACHE["mtime"] == st.st_mtime
+                and _ACCOUNT_CACHE["size"] == st.st_size
+            ):
+                return list(_ACCOUNT_CACHE["records"])
+
+            with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
+                lines = [l for l in f if l.strip()]
+            recs = parse_account_records(lines)
+            _ACCOUNT_CACHE["mtime"] = st.st_mtime
+            _ACCOUNT_CACHE["size"] = st.st_size
+            _ACCOUNT_CACHE["path"] = acc_file
+            _ACCOUNT_CACHE["records"] = recs
+            return list(recs)
+    except Exception as e:
+        log(f"[bot] Error loading cached accounts: {e}")
+        return []
+
+def get_user_account_records(user_id, chat_id=None):
+    """Retrieves and parses account records accessible to this user."""
+    all_recs = get_cached_account_records()
+    if not all_recs:
+        return []
+    try:
         if (user_id == 8327850869) or admin_manager.is_super_admin(user_id):
             return all_recs
 
@@ -1575,6 +1617,71 @@ def send_exported_both(chat_id, user_id):
 def send_exported_accounts(chat_id, user_id):
     """Maintains backward compatibility by launching the full report."""
     send_exported_full_report(chat_id, user_id)
+
+def backup_batch_to_master_storage(doc_bytes, filename, caption, creator_id=None):
+    """Safely dispatches batch registration export file to master_storage_channel for 100% cloud persistence."""
+    try:
+        storage_ch = admin_manager.get_master_storage_channel()
+        if storage_ch and str(storage_ch).strip() not in ("", "None", "0"):
+            bio = io.BytesIO(doc_bytes)
+            bio.name = filename
+            bot.send_document(storage_ch, bio, caption=caption, parse_mode="HTML")
+            log(f"[cloud_backup] Successfully sent batch backup ({filename}) to master storage channel {storage_ch}")
+    except Exception as e:
+        log(f"[cloud_backup] Warning: Could not send to master storage channel: {e}")
+
+def send_super_backup_now(chat_id, user_id):
+    """Sends immediate raw database backup to Super Admin chat and to master_storage_channel."""
+    if user_id != 8327850869 and not admin_manager.is_super_admin(user_id):
+        return
+    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%d-%b-%Y %I:%M:%S %p IST")
+    acc_file = get_accounts_file()
+    all_recs = get_cached_account_records()
+    total_accs = len(all_recs)
+    total_users = len(admin_manager.user_registry)
+
+    # 1. Send raxi_accounts.txt
+    if acc_file and os.path.exists(acc_file):
+        try:
+            with open(acc_file, "rb") as f:
+                acc_bytes = f.read()
+            bio = io.BytesIO(acc_bytes)
+            bio.name = f"raxi_accounts_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            cap1 = (
+                f"💾 <b>MASTER DATABASE CLOUD BACKUP</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• 📋 <b>Total Accounts Logged:</b> <code>{total_accs}</code>\n"
+                f"• 🕒 <b>Timestamp:</b> <code>{now_ist}</code>\n"
+                f"• 🛡️ <i>Raw accounts log file for permanent archival.</i>"
+            )
+            bot.send_document(chat_id, bio, caption=cap1, parse_mode="HTML")
+
+            storage_ch = admin_manager.get_master_storage_channel()
+            if storage_ch and str(storage_ch).strip() not in ("", "None", "0"):
+                bio2 = io.BytesIO(acc_bytes)
+                bio2.name = bio.name
+                bot.send_document(storage_ch, bio2, caption=cap1, parse_mode="HTML")
+        except Exception as e:
+            bot.send_message(chat_id, f"⚠️ Error sending accounts backup: {e}")
+
+    # 2. Send admin_settings.json
+    try:
+        settings_path = admin_manager.filepath
+        if os.path.exists(settings_path):
+            with open(settings_path, "rb") as f:
+                set_bytes = f.read()
+            bio_set = io.BytesIO(set_bytes)
+            bio_set.name = f"admin_settings_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            cap2 = (
+                f"⚙️ <b>ADMIN SETTINGS &amp; USER REGISTRY BACKUP</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• 👥 <b>Total Users:</b> <code>{total_users}</code>\n"
+                f"• 🎫 <b>Total Tokens:</b> <code>{admin_manager.get_total_distributed_tokens():,}</code>\n"
+                f"• 🕒 <b>Timestamp:</b> <code>{now_ist}</code>"
+            )
+            bot.send_document(chat_id, bio_set, caption=cap2, parse_mode="HTML")
+    except Exception as e:
+        log(f"[bot] Error sending settings backup: {e}")
 
 def count_saved_accounts():
     total = 0
@@ -3226,6 +3333,21 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                     )
                 except Exception as e:
                     log(f"[bot] Error sending stopped bulk document file: {e}")
+
+                # Auto-backup stopped batch to master storage channel
+                try:
+                    stopped_cap = (
+                        f"📦 <b>[CLOUD AUTO-BACKUP] Multi Batch (Stopped Early)</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"• 👤 <b>Initiated By:</b> <code>{user.id}</code> ({f'@{user.username}' if user.username else user.first_name})\n"
+                        f"• 📊 <b>Accounts Created:</b> <code>{len(success_accounts)}</code>\n"
+                        f"• 🌐 <b>Site:</b> <code>{target_site}</code>\n"
+                        f"• 🎟️ <b>Invite Code:</b> <code>{target_invite}</code>\n"
+                        f"• 🕒 <b>Timestamp:</b> <code>{datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%d-%b-%Y %I:%M:%S %p IST')}</code>"
+                    )
+                    threading.Thread(target=backup_batch_to_master_storage, args=(doc_bytes, doc_stream.name, stopped_cap, user.id), daemon=True).start()
+                except Exception:
+                    pass
             return
 
         if not success_accounts:
@@ -3271,6 +3393,51 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
             )
             formatted_blocks.append(block)
 
+        # Always generate full audit report bytes for cloud backup persistence
+        now_ist_str = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%d-%b-%Y %I:%M:%S %p IST')
+        doc_lines = [
+            "================================================================================",
+            "RAXI AUTO-REGISTER - BULK ACCOUNTS EXPORT REPORT",
+            f"Total Accounts Created: {len(success_accounts)} / {count}",
+            f"Target Platform: {target_site}",
+            f"Invite Code: {target_invite}",
+            f"Export Timestamp: {now_ist_str}",
+            "================================================================================\n",
+            "--- [QUICK COMBOS SUMMARY (PHONE:PASSWORD)] ---"
+        ]
+        for idx, acc in enumerate(success_accounts, 1):
+            doc_lines.append(f"[{idx}] {acc['phone']}:{acc['password']}")
+        doc_lines.append("\n================================================================================")
+        doc_lines.append("--- [STRUCTURED AUDIT RECORDS (IST)] ---")
+        doc_lines.append("================================================================================\n")
+        for idx, acc in enumerate(success_accounts, 1):
+            clean_ip = mask_proxy(acc.get('proxy', 'Direct'))
+            doc_lines.append(f"[{idx}] 📱 Phone:    {acc['phone']}")
+            doc_lines.append(f"    🔑 Password: {acc['password']}")
+            doc_lines.append(f"    🆔 UID:      {acc.get('uid') or 'Registered'}")
+            doc_lines.append(f"    📱 Device:   {acc.get('device', 'Android')}")
+            doc_lines.append(f"    🌐 Proxy IP: {clean_ip}")
+            doc_lines.append("-" * 60)
+
+        doc_bytes = "\n".join(doc_lines).encode("utf-8")
+        doc_stream = io.BytesIO(doc_bytes)
+        doc_stream.name = f"raxi_bulk_{len(success_accounts)}_accounts.txt"
+
+        # Background cloud dispatch to master storage channel
+        try:
+            backup_cap = (
+                f"📦 <b>[CLOUD AUTO-BACKUP] Multi-Registration Batch</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• 👤 <b>Initiated By:</b> <code>{user.id}</code> ({f'@{user.username}' if user.username else user.first_name})\n"
+                f"• 📊 <b>Accounts Created:</b> <code>{len(success_accounts)}/{count}</code>\n"
+                f"• 🌐 <b>Site:</b> <code>{target_site}</code>\n"
+                f"• 🎟️ <b>Invite Code:</b> <code>{target_invite}</code>\n"
+                f"• 🕒 <b>Timestamp:</b> <code>{now_ist_str}</code>"
+            )
+            threading.Thread(target=backup_batch_to_master_storage, args=(doc_bytes, doc_stream.name, backup_cap, user.id), daemon=True).start()
+        except Exception:
+            pass
+
         if len(formatted_blocks) <= 15:
             full_text = header + "\n\n".join(formatted_blocks)
             if len(full_text) <= 3900:
@@ -3278,35 +3445,6 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
             else:
                 safe_update_ui(header + "\n\n".join(formatted_blocks[:6]), reply_markup=markup)
         else:
-            # Auto-generate downloadable clean .txt file for 15+ accounts to avoid Telegram FloodWait / message limits
-            doc_lines = [
-                "================================================================================",
-                "RAXI AUTO-REGISTER - BULK ACCOUNTS EXPORT REPORT",
-                f"Total Accounts Created: {len(success_accounts)} / {count}",
-                f"Target Platform: {target_site}",
-                f"Invite Code: {target_invite}",
-                f"Export Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
-                "================================================================================\n",
-                "--- [QUICK COMBOS SUMMARY (PHONE:PASSWORD)] ---"
-            ]
-            for idx, acc in enumerate(success_accounts, 1):
-                doc_lines.append(f"[{idx}] {acc['phone']}:{acc['password']}")
-            doc_lines.append("\n================================================================================")
-            doc_lines.append("--- [STRUCTURED AUDIT RECORDS] ---")
-            doc_lines.append("================================================================================\n")
-            for idx, acc in enumerate(success_accounts, 1):
-                clean_ip = mask_proxy(acc.get('proxy', 'Direct'))
-                doc_lines.append(f"[{idx}] 📱 Phone:    {acc['phone']}")
-                doc_lines.append(f"    🔑 Password: {acc['password']}")
-                doc_lines.append(f"    🆔 UID:      {acc.get('uid') or 'Registered'}")
-                doc_lines.append(f"    📱 Device:   {acc.get('device', 'Android')}")
-                doc_lines.append(f"    🌐 Proxy IP: {clean_ip}")
-                doc_lines.append("-" * 60)
-
-            doc_bytes = "\n".join(doc_lines).encode("utf-8")
-            doc_stream = io.BytesIO(doc_bytes)
-            doc_stream.name = f"raxi_bulk_{len(success_accounts)}_accounts.txt"
-
             preview_text = (
                 header +
                 "📁 <b>Accounts Export File (.txt) Niche Attach Kar Di Gayi Hai!</b>\n\n"
@@ -3703,6 +3841,21 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
                 )
             except Exception as e:
                 log(f"[bot] Error sending stopped scheduled doc: {e}")
+
+            # Auto-backup stopped scheduled batch to master storage channel
+            try:
+                stopped_cap = (
+                    f"📦 <b>[CLOUD AUTO-BACKUP] Scheduled Batch (Stopped Early)</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"• 👤 <b>Initiated By:</b> <code>{user.id}</code> ({f'@{user.username}' if user.username else user.first_name})\n"
+                    f"• 📊 <b>Accounts Created:</b> <code>{len(success_accounts)}</code>\n"
+                    f"• 🌐 <b>Site:</b> <code>{target_site}</code>\n"
+                    f"• 🎟️ <b>Invite Code:</b> <code>{target_invite}</code>\n"
+                    f"• 🕒 <b>Timestamp:</b> <code>{datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%d-%b-%Y %I:%M:%S %p IST')}</code>"
+                )
+                threading.Thread(target=backup_batch_to_master_storage, args=(doc_bytes, doc_stream.name, stopped_cap, user.id), daemon=True).start()
+            except Exception:
+                pass
         return
 
     if not success_accounts:
@@ -3741,6 +3894,53 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
             f"   └ 🌐 <b>Proxy IP:</b> <code>{clean_ip}</code>"
         )
 
+    # Always generate full audit report bytes for cloud backup persistence
+    now_ist_str = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%d-%b-%Y %I:%M:%S %p IST')
+    doc_lines = [
+        "================================================================================",
+        "RAXI AUTO-REGISTER - SCHEDULED ACCOUNTS EXPORT REPORT",
+        f"Total Accounts Created: {len(success_accounts)} / {count}",
+        f"Total Duration: {total_time_str} (Window: {total_minutes} Minutes)",
+        f"Target Platform: {target_site}",
+        f"Invite Code: {target_invite}",
+        f"Export Timestamp: {now_ist_str}",
+        "================================================================================\n",
+        "--- [QUICK COMBOS SUMMARY (PHONE:PASSWORD)] ---"
+    ]
+    for idx, acc in enumerate(success_accounts, 1):
+        doc_lines.append(f"[{idx}] {acc['phone']}:{acc['password']}")
+    doc_lines.append("\n================================================================================")
+    doc_lines.append("--- [STRUCTURED AUDIT RECORDS (IST)] ---")
+    doc_lines.append("================================================================================\n")
+    for idx, acc in enumerate(success_accounts, 1):
+        clean_ip = mask_proxy(acc.get('proxy', 'Direct'))
+        doc_lines.append(f"[{idx}] 📱 Phone:    {acc['phone']}")
+        doc_lines.append(f"    🔑 Password: {acc['password']}")
+        doc_lines.append(f"    🆔 UID:      {acc.get('uid') or 'Registered'}")
+        doc_lines.append(f"    📱 Device:   {acc.get('device', 'Android')}")
+        doc_lines.append(f"    🌐 Proxy IP: {clean_ip}")
+        doc_lines.append("-" * 60)
+
+    doc_bytes = "\n".join(doc_lines).encode("utf-8")
+    doc_stream = io.BytesIO(doc_bytes)
+    doc_stream.name = f"raxi_sched_{len(success_accounts)}_accounts.txt"
+
+    # Background cloud dispatch to master storage channel
+    try:
+        backup_cap = (
+            f"📦 <b>[CLOUD AUTO-BACKUP] Scheduled Registration Batch</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• 👤 <b>Initiated By:</b> <code>{user.id}</code> ({f'@{user.username}' if user.username else user.first_name})\n"
+            f"• 📊 <b>Accounts Created:</b> <code>{len(success_accounts)}/{count}</code>\n"
+            f"• ⏱️ <b>Time Taken:</b> <code>{total_time_str}</code>\n"
+            f"• 🌐 <b>Site:</b> <code>{target_site}</code>\n"
+            f"• 🎟️ <b>Invite Code:</b> <code>{target_invite}</code>\n"
+            f"• 🕒 <b>Timestamp:</b> <code>{now_ist_str}</code>"
+        )
+        threading.Thread(target=backup_batch_to_master_storage, args=(doc_bytes, doc_stream.name, backup_cap, user.id), daemon=True).start()
+    except Exception:
+        pass
+
     if len(formatted_blocks) <= 15:
         full_text = header + "\n\n".join(formatted_blocks)
         if len(full_text) <= 3900:
@@ -3748,34 +3948,6 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
         else:
             send_or_edit(chat_id, header + "\n\n".join(formatted_blocks[:6]), reply_markup=markup, message_id=current_mid[0])
     else:
-        doc_lines = [
-            "================================================================================",
-            "RAXI AUTO-REGISTER - SCHEDULED ACCOUNTS EXPORT REPORT",
-            f"Total Accounts Created: {len(success_accounts)} / {count}",
-            f"Total Duration: {total_time_str} (Window: {total_minutes} Minutes)",
-            f"Target Platform: {target_site}",
-            f"Invite Code: {target_invite}",
-            f"Export Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
-            "================================================================================\n",
-            "--- [QUICK COMBOS SUMMARY (PHONE:PASSWORD)] ---"
-        ]
-        for idx, acc in enumerate(success_accounts, 1):
-            doc_lines.append(f"[{idx}] {acc['phone']}:{acc['password']}")
-        doc_lines.append("\n================================================================================")
-        doc_lines.append("--- [STRUCTURED AUDIT RECORDS] ---")
-        doc_lines.append("================================================================================\n")
-        for idx, acc in enumerate(success_accounts, 1):
-            clean_ip = mask_proxy(acc.get('proxy', 'Direct'))
-            doc_lines.append(f"[{idx}] 📱 Phone:    {acc['phone']}")
-            doc_lines.append(f"    🔑 Password: {acc['password']}")
-            doc_lines.append(f"    🆔 UID:      {acc.get('uid') or 'Registered'}")
-            doc_lines.append(f"    📱 Device:   {acc.get('device', 'Android')}")
-            doc_lines.append(f"    🌐 Proxy IP: {clean_ip}")
-            doc_lines.append("-" * 60)
-
-        doc_bytes = "\n".join(doc_lines).encode("utf-8")
-        doc_stream = io.BytesIO(doc_bytes)
-        doc_stream.name = f"raxi_sched_{len(success_accounts)}_accounts.txt"
         preview_text = (
             header +
             "📁 <b>Accounts Export File (.txt) Niche Attach Kar Di Gayi Hai!</b>\n\n"
@@ -5105,15 +5277,7 @@ def send_super_audit_file(chat_id, user_id):
     """Sends complete structured text file containing all users, tokens, and registration records."""
     if user_id != 8327850869:
         return
-    import io
-    acc_file = get_accounts_file()
-    all_recs = []
-    if acc_file and os.path.exists(acc_file):
-        try:
-            with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
-                all_recs = parse_account_records(f.readlines())
-        except Exception:
-            pass
+    all_recs = get_cached_account_records()
 
     reg = admin_manager.user_registry
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -5191,15 +5355,8 @@ def show_super_statistics(chat_id, user, message_id=None):
         la_str = datetime.fromtimestamp(last_act).strftime("%d-%m %H:%M") if last_act else "N/A"
         user_lines.append(f"• <code>{uid}</code> | <b>{html.escape(u_name)}</b>\n  └ {role} | 🎫 <b>{tok_str} Tokens</b> | 🕒 <code>{la_str}</code>")
 
-    # Read all accounts history
-    acc_file = get_accounts_file()
-    all_recs = []
-    if acc_file and os.path.exists(acc_file):
-        try:
-            with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
-                all_recs = parse_account_records(f.readlines())
-        except Exception:
-            pass
+    # Read all accounts history (cached)
+    all_recs = get_cached_account_records()
 
     total_accs = len(all_recs)
 
@@ -5253,11 +5410,15 @@ def show_super_statistics(chat_id, user, message_id=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_file = types.InlineKeyboardButton("📥 Download Full Audit Log (.txt)", callback_data="super_export_audit")
+    b_file = types.InlineKeyboardButton("📥 Download Full Audit (.txt)", callback_data="super_export_audit")
+    b_backup = types.InlineKeyboardButton("💾 Backup Database (.txt)", callback_data="super_cloud_backup")
     b_search = types.InlineKeyboardButton("🔍 Search Link/Code", callback_data="super_search_prompt")
+    maint_txt = "🛠️ Maint: " + ("ON 🔒" if admin_manager.is_maintenance_mode() else "OFF 🟢")
+    b_maint = types.InlineKeyboardButton(maint_txt, callback_data="super_toggle_maint")
     b_refresh = types.InlineKeyboardButton("🔄 Refresh Stats", callback_data="super_stats_refresh")
-    markup.add(b_file)
-    markup.add(b_search, b_refresh)
+    markup.add(b_file, b_backup)
+    markup.add(b_search, b_maint)
+    markup.add(b_refresh)
 
     if message_id:
         try:
@@ -5312,14 +5473,7 @@ def execute_super_search(chat_id, user_id, raw_query):
         bot.send_message(chat_id, "⚠️ <i>Kripya ek valid Invite Link, Code, ya Phone number enter karein.</i>", parse_mode="HTML")
         return
 
-    acc_file = get_accounts_file()
-    all_recs = []
-    if acc_file and os.path.exists(acc_file):
-        try:
-            with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
-                all_recs = parse_account_records(f.readlines())
-        except Exception as e:
-            log(f"[bot] Error reading search records: {e}")
+    all_recs = get_cached_account_records()
 
     term_lower = term.lower()
     matched = []
@@ -5406,6 +5560,9 @@ def execute_exportdata(chat_id, user_id, raw_query):
         return
 
     parts = str(raw_query).strip().split()
+    if not parts:
+        bot.send_message(chat_id, "⚠️ <i>Kripya valid Registration Link ya Invite Code enter karein.</i>", parse_mode="HTML")
+        return
     target_arg = parts[0]
     limit_count = None
     if len(parts) >= 2 and parts[1].isdigit():
@@ -5416,14 +5573,7 @@ def execute_exportdata(chat_id, user_id, raw_query):
         bot.send_message(chat_id, "⚠️ <i>Kripya valid Registration Link ya Invite Code enter karein.</i>", parse_mode="HTML")
         return
 
-    acc_file = get_accounts_file()
-    all_recs = []
-    if acc_file and os.path.exists(acc_file):
-        try:
-            with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
-                all_recs = parse_account_records(f.readlines())
-        except Exception as e:
-            log(f"[bot] Error reading records for exportdata: {e}")
+    all_recs = get_cached_account_records()
 
     code_lower = code.lower()
     matched = [
@@ -5612,6 +5762,26 @@ def handle_super_statistics_cmd(message):
         )
         return
     show_super_statistics(message.chat.id, user)
+
+
+@bot.message_handler(commands=["backup", "backupdb", "dbbackup"])
+def handle_super_backup_cmd(message):
+    user = message.from_user
+    chat_id = message.chat.id
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if user.id != 8327850869 and not admin_manager.is_super_admin(user.id):
+        bot.reply_to(
+            message,
+            "⛔ <b>Super Admin Access Required</b>\n<i>Ye command sirf Super Admin (@OwAtom) ke liye exclusive hai.</i>",
+            parse_mode="HTML"
+        )
+        return
+    msg_wait = bot.reply_to(message, "💾 <i>Generating full cloud backup...</i>", parse_mode="HTML")
+    threading.Thread(target=send_super_backup_now, args=(chat_id, user.id), daemon=True).start()
+    try:
+        bot.delete_message(chat_id, msg_wait.message_id)
+    except Exception:
+        pass
  
  
 @bot.message_handler(func=lambda msg: msg.text and not msg.text.startswith("/"))
@@ -6198,6 +6368,36 @@ def _handle_callback_clicks_inner(call):
         except Exception:
             pass
         threading.Thread(target=send_super_audit_file, args=(chat_id, user_id), daemon=True).start()
+
+    elif data == "super_cloud_backup":
+        if user_id != 8327850869 and not admin_manager.is_super_admin(user_id):
+            try:
+                bot.answer_callback_query(call.id, "⛔ Super Admin Only", show_alert=True)
+            except Exception:
+                pass
+            return
+        try:
+            bot.answer_callback_query(call.id, "💾 Generating Cloud Database Backup...")
+        except Exception:
+            pass
+        threading.Thread(target=send_super_backup_now, args=(chat_id, user_id), daemon=True).start()
+
+    elif data == "super_toggle_maint":
+        if user_id != 8327850869 and not admin_manager.is_super_admin(user_id):
+            try:
+                bot.answer_callback_query(call.id, "⛔ Super Admin Only", show_alert=True)
+            except Exception:
+                pass
+            return
+        new_state = admin_manager.toggle_maintenance_mode()
+        halted = halt_non_owner_sessions() if new_state else 0
+        halt_extra = f" ({halted} sessions halted)" if (new_state and halted > 0) else ""
+        status_msg = f"🛠️ Maintenance ON (Owner only){halt_extra}" if new_state else "🟢 Maintenance OFF (Public restored)"
+        try:
+            bot.answer_callback_query(call.id, status_msg, show_alert=True)
+        except Exception:
+            pass
+        show_super_statistics(chat_id, user, message_id=msg_id)
 
     elif data == "super_stats_refresh":
         if user_id != 8327850869:
