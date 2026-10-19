@@ -5646,6 +5646,19 @@ def _handle_callback_clicks_inner(call):
     admin_manager.record_user(user_id, user.username or "", user.first_name or "")
     log(f"[bot] Callback: user={user_id} ({user.first_name or 'User'}) action='{data}'")
 
+    # Maintenance Mode direct guard (allows only Owner 8327850869)
+    if admin_manager.is_maintenance_mode() and data != "btn_my_id":
+        if user_id != 8327850869 and not admin_manager.is_super_admin(user_id):
+            try:
+                bot.answer_callback_query(
+                    call.id,
+                    "🛠️ Maintenance Mode Active!\nOnly Bot Owner (@OwAtom) can use the bot right now.",
+                    show_alert=True
+                )
+            except Exception:
+                pass
+            return
+
     # Identity button
     if data == "btn_my_id":
         try:
