@@ -1,6 +1,6 @@
 {
   "free_mode": false,
-  "maintenance_mode": false,
+  "maintenance_mode": true,
   "rate_limit_enabled": true,
   "rate_limit_seconds": 0.5,
   "master_log_channel": "-1003946923981",
