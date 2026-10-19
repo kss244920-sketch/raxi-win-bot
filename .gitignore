@@ -5,3 +5,5 @@ keep_alive.log
 .DS_Store
 mcp.json
 dmfirst_14_accounts.txt
+render_config.json
+keep_alive_render.log

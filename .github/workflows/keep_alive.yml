@@ -1,22 +1,31 @@
-name: 24/7 Autonomous Bot Keep-Alive
+name: 24/7 Render Keep-Alive (Zero-Sleep)
 
 on:
   schedule:
-    - cron: '15,45 * * * *'
+    # Runs every 12 minutes to keep Render Web Service permanently awake (bypasses 15-min idle spin-down)
+    - cron: '*/12 * * * *'
   workflow_dispatch:
 
 jobs:
   keep-alive:
-    name: Cloud Keep-Alive
+    name: Ping Render 24/7
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install requests urllib3
-      - name: Run Cloud Keep-Alive
+
+      - name: Install Dependencies
+        run: pip install requests urllib3
+
+      - name: Run Render Anti-Sleep Ping & Auto-Healer
         env:
-          JRNM_IDENTITY: ${{ secrets.JRNM_IDENTITY }}
-        run: python scripts/keep_alive.py
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY || 'rnd_qf5fBsSCW0hbQxFaVMAbdVUBSbjH' }}
+          RENDER_OWNER_ID: ${{ secrets.RENDER_OWNER_ID || 'tea-dbau9i3rjlhs73anf3og' }}
+          RENDER_SERVICE_NAME: 'raxi-bot'
+        run: python scripts/keep_alive_render.py
