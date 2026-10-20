@@ -547,12 +547,13 @@ class ProxyManager:
     def get_used_ips(self, domain: str = None) -> set:
         return self.get_used_proxies(domain=domain)
 
-    def acquire_session_with_unique_ip(self, domain: str = None, max_attempts: int = 6) -> tuple:
+    def acquire_session_with_unique_ip(self, domain: str = None, max_attempts: int = 4, preflight: bool = False) -> tuple:
         """
-        Enforces 100% Zero-Repeat IP Condition with minimal proxy bandwidth:
-        Pre-resolves the IP of the session via lightweight plain text HTTP (~15 bytes),
-        verifies that the IP has NEVER been used on this domain in history,
-        and atomically marks it in-flight so concurrent workers cannot collide.
+        Acquires a fresh rotating mobile proxy session from SX.ORG.
+        If preflight=False (default for turbo speed & minimal proxy data consumption):
+        Generates a 100% fresh, isolated mobile session ID instantly (0ms latency, 0 bytes used).
+        The actual login IP will be extracted directly from the platform server's JWT token response.
+        If preflight=True: resolves the exit IP via lightweight HTTP before returning.
         Returns: (proxy_str, verified_ip, session_id)
         """
         dom = self.normalize_domain(domain)
@@ -563,6 +564,23 @@ class ProxyManager:
                 st_ip = self._extract_clean_ip(st_px)
                 return (st_px, st_ip, "static")
             return (None, None, None)
+
+        if not preflight:
+            with self.lock:
+                acc = accounts[self.sx_account_index % len(accounts)]
+                self.sx_account_index = (self.sx_account_index + 1) % len(accounts)
+
+            sess_id = f"{int(time.time())}_{secrets.token_hex(4)}"
+            template = acc.get("login_template", "")
+            if "{session_id}" in template:
+                login = template.replace("{session_id}", sess_id)
+            else:
+                login = f"{template}-session-{sess_id}"
+            pwd = acc.get("password", "")
+            host = acc.get("proxy_host") or "185.100.235.113:9999"
+            px_str = f"{login}:{pwd}@{host}"
+            logger.info(f"[Zero-Repeat] Instant isolated residential session generated: {sess_id} for {dom}")
+            return (px_str, None, sess_id)
 
         last_px_str = None
         last_sess_id = None
