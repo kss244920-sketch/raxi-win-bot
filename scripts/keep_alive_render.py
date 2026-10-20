@@ -110,7 +110,7 @@ def restart_service(api_key, service_id):
     return False
 
 
-def main():
+def ping_once():
     log("Running Render 24/7 Keep-Alive & Health Ping Check...")
     cfg = load_config()
     api_key = cfg.get("api_key")
@@ -120,7 +120,7 @@ def main():
 
     if not api_key:
         log("ERROR: No RENDER_API_KEY found in config or environment.")
-        sys.exit(1)
+        return False
 
     if not service_url or not service_id:
         log(f"Discovering service info for '{service_name}' via Render API...")
@@ -137,7 +137,7 @@ def main():
 
     if not service_url:
         log(f"Notice: No active Render service URL found yet for '{service_name}'. Service needs to be provisioned first.")
-        return
+        return False
 
     # Ping the service health endpoint to keep it alive
     ping_url = service_url.rstrip("/") + "/"
@@ -146,7 +146,7 @@ def main():
         r = requests.get(ping_url, timeout=25)
         if r.status_code == 200:
             log(f"✅ Service is 100% HEALTHY & ALIVE! (HTTP {r.status_code}) - Inactivity timer reset.")
-            return
+            return True
         else:
             log(f"⚠️ Health ping returned unexpected status: {r.status_code}")
     except requests.exceptions.RequestException as e:
@@ -156,6 +156,30 @@ def main():
     if service_id:
         log("Attempting automatic service revival via Render API restart...")
         restart_service(api_key, service_id)
+    return False
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Render 24/7 Keep-Alive & Auto-Healer")
+    parser.add_argument("--loop", type=int, default=0, help="Run continuously for N minutes (pings every 4 mins)")
+    parser.add_argument("--interval", type=int, default=240, help="Interval between pings in seconds (default 240)")
+    args = parser.parse_args()
+
+    if args.loop <= 0:
+        ping_once()
+        return
+
+    end_time = time.time() + (args.loop * 60)
+    log(f"🚀 Starting continuous Keep-Alive loop for {args.loop} minutes (ping interval: {args.interval}s)...")
+    while time.time() < end_time:
+        ping_once()
+        remaining = end_time - time.time()
+        if remaining <= 0:
+            break
+        sleep_dur = min(args.interval, remaining)
+        time.sleep(sleep_dur)
+    log("🏁 Continuous keep-alive session ended.")
 
 
 if __name__ == "__main__":

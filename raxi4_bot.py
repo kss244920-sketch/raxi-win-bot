@@ -112,7 +112,7 @@ seed_persistent_file("working_proxies.txt")
 seed_persistent_file("fresh_raw_proxies.txt")
 seed_persistent_file("used_devices.json")
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", use_class_middlewares=True)
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True, num_threads=24, use_class_middlewares=True)
 
 # ─── TeleCore Sliding Window Anti-Flood & Maintenance Mode Guard ───
 from telebot.handler_backends import CancelUpdate, BaseMiddleware
@@ -128,8 +128,8 @@ def telecore_message_guard(bot_instance, message):
     is_super_admin = (user_id == 8327850869) or admin_manager.is_super_admin(user_id)
     is_admin = is_super_admin or admin_manager.is_admin(user_id)
 
-    # 1. Maintenance Mode Guard (Strictly Owner/Super Admin only - admins blocked)
-    if admin_manager.is_maintenance_mode() and not is_super_admin:
+    # 1. Maintenance Mode Guard (Allows Owner & Admins)
+    if admin_manager.is_maintenance_mode() and not is_admin:
         now = time.time()
         last_warn = _user_last_warn_ts.get(user_id, 0.0)
         is_cmd = bool(message.text and message.text.startswith("/"))
@@ -178,8 +178,8 @@ def telecore_callback_guard(bot_instance, call):
     is_super_admin = (user_id == 8327850869) or admin_manager.is_super_admin(user_id)
     is_admin = is_super_admin or admin_manager.is_admin(user_id)
 
-    # 1. Maintenance Mode Guard (Strictly Owner/Super Admin only - admins blocked)
-    if admin_manager.is_maintenance_mode() and not is_super_admin:
+    # 1. Maintenance Mode Guard (Allows Owner & Admins)
+    if admin_manager.is_maintenance_mode() and not is_admin:
         try:
             bot_instance.answer_callback_query(
                 call.id,
@@ -5816,9 +5816,11 @@ def _handle_callback_clicks_inner(call):
     admin_manager.record_user(user_id, user.username or "", user.first_name or "")
     log(f"[bot] Callback: user={user_id} ({user.first_name or 'User'}) action='{data}'")
 
-    # Maintenance Mode direct guard (allows only Owner 8327850869)
+    # Maintenance Mode direct guard (allows Owner and Admins)
+    is_super_admin = (user_id == 8327850869) or admin_manager.is_super_admin(user_id)
+    is_admin = is_super_admin or admin_manager.is_admin(user_id)
     if admin_manager.is_maintenance_mode() and data != "btn_my_id":
-        if user_id != 8327850869 and not admin_manager.is_super_admin(user_id):
+        if not is_admin:
             try:
                 bot.answer_callback_query(
                     call.id,
