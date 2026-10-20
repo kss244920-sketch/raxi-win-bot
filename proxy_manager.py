@@ -512,7 +512,8 @@ class ProxyManager:
                 self.in_flight_ips[dom].discard(clean_ip)
 
             entry = f"{clean_ip}|{dom}\n"
-            for target_dir in [DATA_DIR, BASE_DIR]:
+            target_dirs = [DATA_DIR] if os.path.realpath(DATA_DIR) == os.path.realpath(BASE_DIR) else [DATA_DIR, BASE_DIR]
+            for target_dir in target_dirs:
                 try:
                     fpath = os.path.join(target_dir, "used_proxies.txt")
                     with open(fpath, "a", encoding="utf-8") as f:
