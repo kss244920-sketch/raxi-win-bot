@@ -2328,6 +2328,44 @@ def show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
 
+def get_main_reply_keyboard(user_id=None):
+    """
+    Returns the persistent 2x2 ReplyKeyboardMarkup docked directly beneath the chat input box,
+    matching the user reference screenshot layout.
+    """
+    is_adm = False
+    if user_id:
+        try:
+            is_adm = bool(user_id == 8327850869 or admin_manager.is_admin(user_id))
+        except Exception:
+            pass
+
+    kb = types.ReplyKeyboardMarkup(
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Select action or paste link..."
+    )
+
+    b1 = types.KeyboardButton("⚡ Single Registration", style="primary")
+    b2 = types.KeyboardButton("🔢 Multi-Registration", style="primary")
+    kb.row(b1, b2)
+
+    b3 = types.KeyboardButton("🎫 My Balance & ID", style="primary")
+    b4 = types.KeyboardButton("📋 Export Accounts", style="primary")
+    kb.row(b3, b4)
+
+    if is_adm:
+        b5 = types.KeyboardButton("👑 Admin Panel", style="primary")
+        b6 = types.KeyboardButton("❓ Help & Guide", style="primary")
+        kb.row(b5, b6)
+    else:
+        b5 = types.KeyboardButton("💬 Support (@OwAtom)", style="primary")
+        b6 = types.KeyboardButton("❓ Help & Guide", style="primary")
+        kb.row(b5, b6)
+
+    return kb
+
+
 def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
     """Displays the streamlined link prompt screen with colored 1-tap action buttons."""
     user_id = user.id if user else chat_id
@@ -4174,6 +4212,17 @@ def handle_start(message):
             bot.delete_message(chat_id, old_mid)
         except Exception:
             pass
+
+    # Ensure persistent 2x2 action dock is mounted under the chat input box
+    try:
+        bot.send_message(
+            chat_id,
+            "⚡ <b>Raxi Control Hub Active</b>\n<i>Docked actions are available below your chat input:</i>",
+            reply_markup=get_main_reply_keyboard(user.id),
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
 
     if not is_user_member(user.id):
         show_force_join_screen(chat_id, user, del_incoming=message)
@@ -6038,8 +6087,93 @@ def handle_super_backup_cmd(message):
         bot.delete_message(chat_id, msg_wait.message_id)
     except Exception:
         pass
- 
- 
+
+
+@bot.message_handler(commands=["dock", "keyboard", "menu"])
+def handle_dock_cmd(message):
+    user = message.from_user
+    chat_id = message.chat.id
+    if not check_maintenance_guard(chat_id, user.id):
+        return
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception:
+        pass
+    try:
+        bot.send_message(
+            chat_id,
+            "⚡ <b>Action dock re-mounted below:</b>",
+            reply_markup=get_main_reply_keyboard(user.id),
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    if not is_user_member(user.id):
+        show_force_join_screen(chat_id, user)
+        return
+    show_link_prompt(chat_id, user)
+
+
+@bot.message_handler(func=lambda msg: msg.text and any(
+    btn in msg.text for btn in [
+        "Single Registration", "Single Reg",
+        "Multi-Registration", "Multi Reg",
+        "My Balance", "Balance & ID",
+        "Export Accounts", "Export .txt",
+        "Admin Panel", "Admin Hub", "Admin Control",
+        "Support (@OwAtom)", "Support",
+        "Help & Guide"
+    ]
+))
+def handle_bottom_dock_action(message):
+    user = message.from_user
+    chat_id = message.chat.id
+    if not check_maintenance_guard(chat_id, user.id):
+        return
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    txt = (message.text or "").strip()
+
+    # Clean incoming bottom button click message from chat history
+    try:
+        bot.delete_message(chat_id, message.message_id)
+    except Exception:
+        pass
+
+    if not is_user_member(user.id):
+        show_force_join_screen(chat_id, user)
+        return
+
+    if "Single" in txt:
+        show_single_menu(chat_id, user)
+    elif "Multi" in txt:
+        show_multi_menu(chat_id, user)
+    elif "Balance" in txt or "ID" in txt:
+        handle_tokens_cmd(message)
+    elif "Export" in txt:
+        show_export_menu(chat_id, user)
+    elif "Admin" in txt:
+        if admin_manager.is_admin(user.id) or user.id == 8327850869:
+            show_admin_menu(chat_id, user)
+        else:
+            bot.send_message(chat_id, "❌ Unauthorized access.")
+    elif "Support" in txt:
+        url_atom = get_recharge_contact_url("OwAtom", user.id, user=user)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("💬 Open Chat with @OwAtom", url=url_atom, style="primary"))
+        markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger"))
+        send_or_edit(
+            chat_id,
+            "💬 <b>Official Master Support:</b>\n\n"
+            "• <b>Master Owner:</b> @OwAtom\n"
+            "• <b>Admin:</b> @OwKarma\n\n"
+            "Niche button click karke direct chat open karein:",
+            reply_markup=markup
+        )
+    elif "Help" in txt:
+        show_help_menu(chat_id, user)
+
+
 @bot.message_handler(func=lambda msg: msg.text and not msg.text.startswith("/"))
 def handle_general_text_fallback(message):
     user = message.from_user
