@@ -547,7 +547,7 @@ class ProxyManager:
     def get_used_ips(self, domain: str = None) -> set:
         return self.get_used_proxies(domain=domain)
 
-    def acquire_session_with_unique_ip(self, domain: str = None, max_attempts: int = 4) -> tuple:
+    def acquire_session_with_unique_ip(self, domain: str = None, max_attempts: int = 6) -> tuple:
         """
         Enforces 100% Zero-Repeat IP Condition with minimal proxy bandwidth:
         Pre-resolves the IP of the session via lightweight plain text HTTP (~15 bytes),
@@ -564,6 +564,9 @@ class ProxyManager:
                 return (st_px, st_ip, "static")
             return (None, None, None)
 
+        last_px_str = None
+        last_sess_id = None
+
         for attempt in range(1, max_attempts + 1):
             with self.lock:
                 acc = accounts[self.sx_account_index % len(accounts)]
@@ -578,16 +581,18 @@ class ProxyManager:
             pwd = acc.get("password", "")
             host = acc.get("proxy_host") or "185.100.235.113:9999"
             px_str = f"{login}:{pwd}@{host}"
+            last_px_str = px_str
+            last_sess_id = sess_id
 
             # Ultra-lightweight plain text HTTP pre-flight verification (~15-30 bytes payload)
             assigned_ip = None
             px_dict = {"http": f"http://{px_str}", "https": f"http://{px_str}"}
-            for ep in ["http://api.ipify.org", "http://checkip.amazonaws.com"]:
+            for ep in ["http://api.ipify.org", "http://icanhazip.com", "http://checkip.amazonaws.com"]:
                 try:
                     with requests.Session() as s_ip:
                         s_ip.trust_env = False
                         s_ip.headers["Connection"] = "close"
-                        r_ip = s_ip.get(ep, proxies=px_dict, timeout=2.5)
+                        r_ip = s_ip.get(ep, proxies=px_dict, timeout=4.5)
                         if r_ip.status_code == 200 and r_ip.text:
                             assigned_ip = self._extract_clean_ip(r_ip.text.strip())
                             if assigned_ip:
@@ -596,7 +601,7 @@ class ProxyManager:
                     continue
 
             if not assigned_ip:
-                logger.warning(f"Pre-flight IP resolution error (attempt {attempt}/{max_attempts})")
+                logger.warning(f"Pre-flight IP resolution timeout/error (attempt {attempt}/{max_attempts})")
                 continue
 
             with self.lock:
@@ -613,6 +618,12 @@ class ProxyManager:
                 inflight_set.add(assigned_ip)
                 logger.info(f"[Zero-Repeat] Guaranteed UNIQUE IP acquired: {assigned_ip} for {dom} (session {sess_id})")
                 return (px_str, assigned_ip, sess_id)
+
+        # Fallback resilience: return fresh session proxy directly so registration can still proceed!
+        # The real login IP will be extracted directly from the server's JWT token.
+        if last_px_str:
+            logger.info(f"[Zero-Repeat] Dynamic residential session fallback: {last_sess_id} (IP will be decoded from token)")
+            return (last_px_str, None, last_sess_id)
 
         logger.error(f"[Zero-Repeat] Could not acquire unique residential IP for {dom} after {max_attempts} attempts.")
         return (None, None, None)

@@ -1698,7 +1698,7 @@ def count_saved_accounts():
 #  CORE REGISTRATION WORKER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=2, creator_id=None, smsvcode="", api_type=None, session_id=None):
+def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=3, creator_id=None, smsvcode="", api_type=None, session_id=None):
     """
     Registers a new account with dynamic phone, password, device profile, and proxy rotation.
     Automatically supports both AR-SAAS (MaanWin, GoaGames, etc.) and VITE/WEBAPI (51game, Raxi).
@@ -2926,7 +2926,8 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
                 api=target_api,
                 creator_id=uid,
                 smsvcode=smsvcode,
-                api_type=cfg.get("api_type")
+                api_type=cfg.get("api_type"),
+                max_search_attempts=4
             )
 
             if not res.get("ok"):
