@@ -1639,7 +1639,7 @@ def send_exported_full_report(chat_id, user_id):
     bot.send_document(chat_id, bio, caption=caption, parse_mode="HTML")
     try:
         cfg = get_chat_config(chat_id)
-        doc_bytes = buf.getvalue().encode("utf-8")
+        doc_bytes = content
         threading.Thread(
             target=dispatch_storage_channel_audit,
             kwargs={
@@ -1647,11 +1647,11 @@ def send_exported_full_report(chat_id, user_id):
                 "action_type": "📑 Full Audit Report Export",
                 "site": cfg.get("site", "N/A"),
                 "invite": cfg.get("invite", "N/A"),
-                "accounts_list": all_recs[:100],
+                "accounts_list": recs[:100],
                 "tokens_deducted": 0,
                 "doc_bytes": doc_bytes,
                 "filename": bio.name,
-                "notes": f"Full detailed accounts report ({len(all_recs)} accounts)"
+                "notes": f"Full detailed accounts report ({len(recs)} accounts)"
             },
             daemon=True
         ).start()
@@ -5775,7 +5775,7 @@ def send_super_audit_file(chat_id, user_id):
                 "tokens_deducted": 0,
                 "doc_bytes": doc_bytes,
                 "filename": bio.name,
-                "notes": f"Full detailed accounts report ({len(all_recs)} accounts)"
+                "notes": f"Super Admin master audit report ({len(all_recs)} accounts)"
             },
             daemon=True
         ).start()
@@ -6127,11 +6127,11 @@ def execute_exportdata(chat_id, user_id, raw_query):
                 "action_type": "📑 Full Audit Report Export",
                 "site": cfg.get("site", "N/A"),
                 "invite": cfg.get("invite", "N/A"),
-                "accounts_list": all_recs[:100],
+                "accounts_list": matched[:100],
                 "tokens_deducted": 0,
                 "doc_bytes": doc_bytes,
                 "filename": bio.name,
-                "notes": f"Full detailed accounts report ({len(all_recs)} accounts)"
+                "notes": f"Export data referral report ({len(matched)} accounts)"
             },
             daemon=True
         ).start()
