@@ -68,7 +68,23 @@ from raxi4_register import (
 )
 
 # ─── Configuration ───
-BOT_TOKEN = "8069923292:AAEAYSJPllY-UmxJzMqubde1NapwFyi0zgs"
+def load_env_file():
+    for env_path in [os.path.join(BASE_DIR, ".env"), os.path.join(os.getcwd(), ".env")]:
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            except Exception:
+                pass
+
+load_env_file()
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+if not BOT_TOKEN:
+    raise ValueError("CRITICAL: BOT_TOKEN environment variable is not set!")
 
 def get_persistent_data_dir() -> str:
     jrnm_vol = "/app/data"
