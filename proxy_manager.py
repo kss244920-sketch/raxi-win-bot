@@ -292,7 +292,7 @@ class ProxyManager:
                 self.sx_account_index = (self.sx_account_index + 1) % len(accounts)
 
             sess = session_id or secrets.token_hex(6)
-            template = acc.get("login_template", "")
+            template = acc.get("login_template", "").replace("mode-hold", "mode-rotate")
             if "{session_id}" in template:
                 login = template.replace("{session_id}", sess)
             else:
@@ -571,8 +571,8 @@ class ProxyManager:
                 acc = accounts[self.sx_account_index % len(accounts)]
                 self.sx_account_index = (self.sx_account_index + 1) % len(accounts)
 
-            sess_id = f"{int(time.time())}_{secrets.token_hex(4)}"
-            template = acc.get("login_template", "")
+            sess_id = f"{int(time.time())}_{secrets.token_hex(6)}"
+            template = acc.get("login_template", "").replace("mode-hold", "mode-rotate")
             if "{session_id}" in template:
                 login = template.replace("{session_id}", sess_id)
             else:
@@ -591,8 +591,8 @@ class ProxyManager:
                 acc = accounts[self.sx_account_index % len(accounts)]
                 self.sx_account_index = (self.sx_account_index + 1) % len(accounts)
 
-            sess_id = f"{int(time.time())}_{secrets.token_hex(4)}"
-            template = acc.get("login_template", "")
+            sess_id = f"{int(time.time())}_{secrets.token_hex(6)}"
+            template = acc.get("login_template", "").replace("mode-hold", "mode-rotate")
             if "{session_id}" in template:
                 login = template.replace("{session_id}", sess_id)
             else:

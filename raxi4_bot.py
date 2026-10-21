@@ -445,6 +445,10 @@ BUSY_CHATS = {}  # chat_id -> timestamp
 CUSTOM_REG_STATE = {}  # user_id -> {"step": "phone"|"password", "phone": str, "chat_id": int, "mid": int}
 CUSTOM_SPEED_STATE = {}  # user_id -> {"count": int, "chat_id": int, "mid": int, "time": float}
 CUSTOM_SCHEDULED_STATE = {}  # user_id -> {"step": "awaiting_count"|"awaiting_minutes", "chat_id": int, "mid": int, "count": int, "time": float}
+SINGLE_REG_CANCEL_EVENTS: Dict[int, threading.Event] = {}  # chat_id -> Event for 5s countdown cancellation
+# Global Concurrency Semaphore: Max 8 simultaneous registrations across the entire bot
+# Prevents RAM spikes, OOM crashes, and socket starvation on Render (512MB RAM guard)
+GLOBAL_REG_SEMAPHORE = threading.Semaphore(8)
 
 def is_chat_busy(chat_id: int) -> bool:
     with BUSY_CHATS_LOCK:
@@ -508,6 +512,8 @@ def update_active_session(chat_id: int, completed: int = None, failed: int = Non
                 sess["message_id"] = mid
 
 def is_session_stop_requested(chat_id: int) -> bool:
+    if chat_id in SINGLE_REG_CANCEL_EVENTS and SINGLE_REG_CANCEL_EVENTS[chat_id].is_set():
+        return True
     with ACTIVE_SESSIONS_LOCK:
         sess = ACTIVE_SESSIONS.get(chat_id)
         if not sess:
@@ -543,12 +549,16 @@ def halt_non_owner_sessions() -> int:
     return halted
 
 def request_stop_session(chat_id: int) -> bool:
+    stopped = False
+    if chat_id in SINGLE_REG_CANCEL_EVENTS:
+        SINGLE_REG_CANCEL_EVENTS[chat_id].set()
+        stopped = True
     with ACTIVE_SESSIONS_LOCK:
         sess = ACTIVE_SESSIONS.get(chat_id)
         if sess:
             sess["stop_requested"] = True
-            return True
-        return False
+            stopped = True
+    return stopped
 
 def request_stop_all_sessions() -> int:
     with ACTIVE_SESSIONS_LOCK:
@@ -1815,13 +1825,19 @@ def count_saved_accounts():
 #  CORE REGISTRATION WORKER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=3, creator_id=None, smsvcode="", api_type=None, session_id=None):
+def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=2, creator_id=None, smsvcode="", api_type=None, session_id=None):
     """
     Registers a new account with dynamic phone, password, device profile, and proxy rotation.
-    Automatically supports both AR-SAAS (MaanWin, GoaGames, etc.) and VITE/WEBAPI (51game, Raxi).
-    Supports smsvcode for OTP verification.
-    Guarantees strict <=10KB residential proxy budget per account.
+    Protected by GLOBAL_REG_SEMAPHORE to ensure max 8 parallel workers across all users (RAM/CPU safe).
     """
+    with GLOBAL_REG_SEMAPHORE:
+        return _auto_register_account_impl(
+            phone=phone, password=password, invite=invite, site=site,
+            api=api, max_search_attempts=max_search_attempts, creator_id=creator_id,
+            smsvcode=smsvcode, api_type=api_type, session_id=session_id
+        )
+
+def _auto_register_account_impl(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=2, creator_id=None, smsvcode="", api_type=None, session_id=None):
     target_site = site or SITE
     target_api = api or API
     target_invite = invite or INVITE
@@ -2002,20 +2018,14 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
         if not active_proxy:
             active_proxy, verified_ip, account_session_id = proxy_manager.acquire_session_with_unique_ip(domain=domain, preflight=False)
         if not active_proxy:
-            if proxy_manager.is_sx_active():
-                log(f"[bot] Could not acquire residential proxy session for {domain} (attempt {attempt}/{max_search_attempts}). Retrying with fresh session...")
-                last_error = "Could not acquire residential proxy session"
-                _cleanup_in_flight()
-                time.sleep(0.1)
-                continue
-            active_proxy = get_next_proxy(exclude=tried_proxies, domain=domain, session_id=account_session_id)
-            verified_ip = proxy_manager._extract_clean_ip(active_proxy) if (active_proxy and "@" not in active_proxy) else None
+            log(f"[bot] Could not acquire residential proxy session for {domain} (attempt {attempt}/{max_search_attempts}). Retrying with fresh session...")
+            last_error = "Could not acquire residential proxy session"
+            _cleanup_in_flight()
+            time.sleep(0.2)
+            continue
 
-        if active_proxy:
-            tried_proxies.add(active_proxy)
-        else:
-            tried_proxies.add("Direct")
-        proxy_label = verified_ip or active_proxy or "Direct"
+        tried_proxies.add(active_proxy)
+        proxy_label = verified_ip or active_proxy
 
         log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'AR-SAAS' if is_arsaas else 'WEBAPI'}): phone={target_phone} dev='{dev_model}' id='{device_id[:8]}' ip={proxy_label} (spent={residential_bytes_spent}B)")
 
@@ -2151,6 +2161,8 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             log("[bot] Number already registered, picking another...")
             last_error = "Number already registered"
             _cleanup_in_flight()
+            active_proxy = None
+            verified_ip = None
             time.sleep(0.2)
             continue
 
@@ -2163,6 +2175,8 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             log("[bot] Captcha verification failed, retrying...")
             last_error = f"Captcha verification failed ({msg})"
             _cleanup_in_flight()
+            active_proxy = None
+            verified_ip = None
             time.sleep(0.2)
             continue
 
@@ -2190,6 +2204,8 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
                 _cleanup_in_flight(burn_ip=False)
                 if active_proxy:
                     proxy_manager.mark_proxy_cooldown(active_proxy, domain=domain, duration=300)
+            active_proxy = None
+            verified_ip = None
             last_error = f"{msg} (code {msg_code})"
             time.sleep(0.3)
             continue
@@ -2356,13 +2372,39 @@ def get_main_reply_keyboard(user_id=None):
 
     if is_adm:
         b5 = types.KeyboardButton("👑 Admin Panel", style="primary")
-        b6 = types.KeyboardButton("❓ Help & Guide", style="primary")
-        kb.row(b5, b6)
-    else:
-        b5 = types.KeyboardButton("💬 Support (@OwAtom)", style="primary")
-        b6 = types.KeyboardButton("❓ Help & Guide", style="primary")
-        kb.row(b5, b6)
+        kb.row(b5)
 
+    return kb
+
+
+def get_registration_running_reply_keyboard():
+    """Returns dynamic keyboard mounted beneath chat input while registration is active."""
+    kb = types.ReplyKeyboardMarkup(
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Tap button or send /cancel to abort..."
+    )
+    kb.row(types.KeyboardButton("🛑 CANCEL REGISTRATION (/cancel)", style="danger"))
+    return kb
+
+
+def get_admin_reply_keyboard():
+    """Returns dynamic admin dock keyboard mounted when admin enters admin panel."""
+    kb = types.ReplyKeyboardMarkup(
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Admin Action Hub..."
+    )
+    b1 = types.KeyboardButton("📊 System Status", style="primary")
+    b2 = types.KeyboardButton("👥 Users & Tokens", style="primary")
+    kb.row(b1, b2)
+
+    b3 = types.KeyboardButton("🌐 SX Proxy Status", style="primary")
+    b4 = types.KeyboardButton("🧹 Purge Expired Keys", style="primary")
+    kb.row(b3, b4)
+
+    b5 = types.KeyboardButton("🏠 Exit Admin to Main Menu", style="danger")
+    kb.row(b5)
     return kb
 
 
@@ -2389,8 +2431,8 @@ def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
     b_multi = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi", style="primary")
     markup.add(b_single, b_multi)
 
-    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="success")
     b_tok = types.InlineKeyboardButton("🎫 My Balance", callback_data="my_tokens", style="primary")
+    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="primary")
     markup.add(b_export, b_tok)
 
     b_link = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link", style="primary")
@@ -2455,11 +2497,11 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b1, b2)
 
     b3 = types.InlineKeyboardButton("✍️ Custom Details (OTP)", callback_data="single_custom", style="primary")
-    b4 = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="success")
+    b4 = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="primary")
     markup.add(b3, b4)
 
-    b_link = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link", style="primary")
     b_tok = types.InlineKeyboardButton("🎫 My Balance", callback_data="my_tokens", style="primary")
+    b_link = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link", style="primary")
     markup.add(b_link, b_tok)
 
     if admin_manager.is_admin(user_id):
@@ -2912,6 +2954,11 @@ def show_admin_menu(chat_id, user, message_id=None):
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
     markup.add(b_back)
 
+    try:
+        bot.send_message(chat_id, "👑 <i>Admin Controls active below:</i>", reply_markup=get_admin_reply_keyboard(), parse_mode="HTML")
+    except Exception:
+        pass
+
     if message_id:
         try:
             bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="HTML")
@@ -3176,6 +3223,76 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
         target_api = cfg["api"]
         target_invite = invite or cfg["invite"]
 
+        # 5-Second Cancellation & Preparation Window
+        stop_event = threading.Event()
+        SINGLE_REG_CANCEL_EVENTS[chat_id] = stop_event
+
+        # Mount temporary Cancel keyboard docked beneath input box
+        try:
+            bot.send_message(
+                chat_id,
+                "⚡ <i>Single Registration starting... Tap Cancel below or send /cancel to abort:</i>",
+                reply_markup=get_registration_running_reply_keyboard(),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+        mid = message_id
+        cancel_requested = False
+        for sec_left in range(5, 0, -1):
+            if stop_event.is_set() or is_session_stop_requested(chat_id):
+                cancel_requested = True
+                break
+
+            cancel_markup = types.InlineKeyboardMarkup()
+            cancel_markup.add(types.InlineKeyboardButton(f"🛑 Cancel Registration ({sec_left}s)", callback_data="cancel_single_reg", style="danger"))
+            mid = send_or_edit(
+                chat_id,
+                f"⏳ <b>Single Registration Initializing...</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⏱️ <b>Starting in:</b> <code>{sec_left} seconds</code>\n"
+                f"• 🌐 <b>Target:</b> <code>{target_site}</code>\n"
+                f"• 🎟️ <b>Invite:</b> <code>{target_invite}</code>\n"
+                f"• 🛡️ <b>Proxy Guard:</b> <i>Unique Indian Residential IP</i>\n\n"
+                f"<i>Cancel karne ke liye button dabayein ya chat me <code>/cancel</code> bhejein:</i>",
+                reply_markup=cancel_markup,
+                message_id=mid
+            )
+            for _ in range(5):
+                if stop_event.is_set() or is_session_stop_requested(chat_id):
+                    cancel_requested = True
+                    break
+                time.sleep(0.2)
+            if cancel_requested:
+                break
+
+        SINGLE_REG_CANCEL_EVENTS.pop(chat_id, None)
+
+        if cancel_requested:
+            try:
+                bot.send_message(
+                    chat_id,
+                    "🛑 <b>Registration Cancelled!</b>\n<i>No tokens deducted. Proxy conserved (0 bytes).</i>",
+                    reply_markup=get_main_reply_keyboard(uid),
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="primary"))
+            send_or_edit(
+                chat_id,
+                f"🛑 <b>Single Registration Cancelled!</b>\n\n"
+                f"• 🌐 Target Site: <code>{target_site}</code>\n"
+                f"• 🎟️ Invite Code: <code>{target_invite}</code>\n\n"
+                f"<i>Registration abort kar di gayi hai. Koi token ya proxy use nahi hua.</i>",
+                reply_markup=markup,
+                message_id=mid
+            )
+            release_chat_lock(chat_id)
+            return
+
         bar_single = render_progress_bar(1, 2, length=10)
         otp_line = f"\n• 📩 SMS Code: <code>{smsvcode}</code>" if smsvcode else ""
         mid = send_or_edit(
@@ -3186,7 +3303,7 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
             f"• 🎟️ Invite: <code>{target_invite}</code>{otp_line}\n"
             f"• 🧩 Solving native AI slider captcha...\n"
             f"• ⚡ Submitting direct API POST with fresh IP &amp; Device...",
-            message_id=message_id
+            message_id=mid
         )
 
         try:
@@ -3199,7 +3316,7 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
                 creator_id=uid,
                 smsvcode=smsvcode,
                 api_type=cfg.get("api_type"),
-                max_search_attempts=4
+                max_search_attempts=2
             )
 
             if not res.get("ok"):
@@ -3273,7 +3390,17 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
                 message_id=mid
             )
     finally:
+        SINGLE_REG_CANCEL_EVENTS.pop(chat_id, None)
         release_chat_lock(chat_id)
+        try:
+            bot.send_message(
+                chat_id,
+                "⚡ <i>Raxi Control Hub Active:</i>",
+                reply_markup=get_main_reply_keyboard(uid),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3338,6 +3465,16 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
             message_id=message_id
         )
 
+        try:
+            bot.send_message(
+                chat_id,
+                "⚡ <b>Multi-Registration Active</b>\n<i>Batch stop action docked below:</i>",
+                reply_markup=get_registration_running_reply_keyboard(),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
         u_reg = admin_manager.user_registry.get(str(uid), {})
         u_name = u_reg.get("username") or u_reg.get("first_name") or str(uid)
         register_active_session(chat_id, uid, count, target_site, target_invite, mid=mid, username=u_name)
@@ -3350,8 +3487,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         success_accounts = []
         failed_count = 0
         total_attempts = 0
-        max_total_attempts = int(count * 1.8) + 15
-        max_consecutive_fails = max(12, min(25, count * 2))
+        max_total_attempts = count + 3
+        max_consecutive_fails = 3
         consecutive_fails = 0
         lock = threading.Lock()
         cond = threading.Condition(lock)
@@ -3772,6 +3909,15 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         except Exception:
             pass
         release_chat_lock(chat_id)
+        try:
+            bot.send_message(
+                chat_id,
+                "⚡ <i>Raxi Control Hub Active:</i>",
+                reply_markup=get_main_reply_keyboard(uid),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
 
 def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_minutes=30, message_id=None, exact_seconds=None):
@@ -3841,7 +3987,7 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
     success_accounts = []
     failed_count = 0
     consecutive_fails = 0
-    max_consecutive_fails = 12
+    max_consecutive_fails = 3
     was_stopped = False
     last_fail_reason = ""
 
@@ -4525,17 +4671,39 @@ def process_and_save_link(chat_id, text, orig_msg=None):
     show_link_options(chat_id, user, del_incoming=orig_msg)
 
 
-@bot.message_handler(commands=["cancel"])
+@bot.message_handler(commands=["cancel", "abort"])
 def handle_cancel_cmd(message):
+    chat_id = message.chat.id
     uid = message.from_user.id
     CUSTOM_REG_STATE.pop(uid, None)
     CUSTOM_SPEED_STATE.pop(uid, None)
     CUSTOM_SCHEDULED_STATE.pop(uid, None)
+    stopped = request_stop_session(chat_id)
     try:
-        bot.delete_message(message.chat.id, message.message_id)
+        bot.delete_message(chat_id, message.message_id)
     except Exception:
         pass
-    show_single_menu(message.chat.id, message.from_user)
+    if stopped:
+        try:
+            bot.send_message(
+                chat_id,
+                "🛑 <b>Registration Cancelled Successfully!</b>\n<i>No tokens deducted. Proxy conserved (0 bytes).</i>",
+                reply_markup=get_main_reply_keyboard(uid),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    else:
+        show_link_options(chat_id, message.from_user)
+        try:
+            bot.send_message(
+                chat_id,
+                "⚡ <i>Action dock ready below:</i>",
+                reply_markup=get_main_reply_keyboard(uid),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
 
 @bot.message_handler(func=lambda msg: msg.from_user and msg.from_user.id in CUSTOM_REG_STATE and msg.text and not msg.text.startswith("/"))
@@ -6023,6 +6191,100 @@ def process_exportdata_reply(message, expected_uid):
     execute_exportdata(message.chat.id, expected_uid, text)
 
 
+def process_admin_adduser_step(message, expected_uid):
+    if message.from_user.id != expected_uid:
+        return
+    text = (message.text or "").strip()
+    if text.startswith("/cancel"):
+        bot.send_message(message.chat.id, "❌ <i>Add user cancel kar diya gaya.</i>", parse_mode="HTML")
+        return
+
+    target_id = None
+    target_uname = ""
+    target_fname = "User"
+    init_tokens = 0
+
+    if getattr(message, "forward_from", None):
+        target_id = message.forward_from.id
+        target_uname = message.forward_from.username or ""
+        target_fname = message.forward_from.first_name or "User"
+    else:
+        parts = text.split()
+        if parts and parts[0].lstrip("-").isdigit():
+            target_id = int(parts[0])
+            if len(parts) > 1 and parts[1].isdigit():
+                init_tokens = int(parts[1])
+
+    if not target_id or target_id <= 0:
+        bot.send_message(message.chat.id, "❌ <b>Invalid ID!</b> Kripya valid Telegram User ID enter karein (e.g. <code>1234567890</code>) ya <code>/cancel</code> bhejein.", parse_mode="HTML")
+        return
+
+    admin_manager.record_user(target_id, target_uname, target_fname)
+    if init_tokens > 0:
+        admin_manager.add_tokens(target_id, init_tokens)
+
+    tok_disp = admin_manager.get_display_tokens(target_id)
+    bot.send_message(
+        message.chat.id,
+        f"✅ <b>User Added Successfully to Registry!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>User ID:</b> <code>{target_id}</code>\n"
+        f"• <b>Username:</b> @{target_uname or 'None'}\n"
+        f"• <b>Initial Balance:</b> <b>{tok_disp}</b>\n"
+        f"• <b>Role:</b> {admin_manager.get_user_role_label(target_id)}",
+        parse_mode="HTML"
+    )
+
+
+def process_admin_addtoken_step(message, expected_uid):
+    if message.from_user.id != expected_uid:
+        return
+    text = (message.text or "").strip()
+    if text.startswith("/cancel"):
+        bot.send_message(message.chat.id, "❌ <i>Token addition cancel kar diya gaya.</i>", parse_mode="HTML")
+        return
+
+    parts = text.split()
+    if len(parts) < 2 or not parts[0].lstrip("-").isdigit() or not parts[1].isdigit():
+        bot.send_message(
+            message.chat.id,
+            "❌ <b>Galat format!</b>\nKripya aise bhejein: <code>&lt;User_ID&gt; &lt;Token_Count&gt;</code>\n\n👉 Example: <code>8327850869 50</code>\n\n<i>Cancel karne ke liye /cancel bhejein.</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    target_id = int(parts[0])
+    amount = int(parts[1])
+    if target_id <= 0 or amount <= 0:
+        bot.send_message(message.chat.id, "❌ Valid positive User ID aur Token amount bhejiye.", parse_mode="HTML")
+        return
+
+    admin_manager.record_user(target_id)
+    new_bal = admin_manager.add_tokens(target_id, amount)
+    u_rec = admin_manager.user_registry.get(str(target_id), {})
+    t_name = u_rec.get("username") or u_rec.get("first_name") or str(target_id)
+
+    bot.send_message(
+        message.chat.id,
+        f"🎉 <b>Tokens Added Successfully!</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>User:</b> {html.escape(t_name)} (<code>{target_id}</code>)\n"
+        f"• <b>Added:</b> <code>+{amount:,} Tokens</code>\n"
+        f"• <b>Updated Balance:</b> <b>{new_bal:,} Tokens</b>",
+        parse_mode="HTML"
+    )
+
+    try:
+        bot.send_message(
+            target_id,
+            f"🎁 <b>Tokens Recharged!</b>\n\n"
+            f"Admin ne aapke account me <b>+{amount:,} Tokens</b> add kiye hain!\n"
+            f"• <b>Updated Balance:</b> <b>{new_bal:,} Tokens</b>\n\n"
+            f"Ab aap direct registration start kar sakte hain! 🚀",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+
+
 @bot.message_handler(commands=["exportdata", "dataexport", "exportlink"])
 def handle_exportdata_cmd(message):
     user = message.from_user
@@ -6119,9 +6381,12 @@ def handle_dock_cmd(message):
     btn in msg.text for btn in [
         "Single Registration", "Single Reg",
         "Multi-Registration", "Multi Reg",
+        "CANCEL REGISTRATION", "Cancel Registration",
         "My Balance", "Balance & ID",
         "Export Accounts", "Export .txt",
         "Admin Panel", "Admin Hub", "Admin Control",
+        "System Status", "Users & Tokens", "SX Proxy Status", "Purge Expired",
+        "Exit Admin to Main Menu", "Exit Admin",
         "Support (@OwAtom)", "Support",
         "Help & Guide"
     ]
@@ -6140,6 +6405,50 @@ def handle_bottom_dock_action(message):
     except Exception:
         pass
 
+    # Cancel action
+    if "CANCEL REGISTRATION" in txt or "Cancel Registration" in txt:
+        request_stop_session(chat_id)
+        try:
+            bot.send_message(
+                chat_id,
+                "🛑 <b>Registration Cancelled!</b>\n<i>No tokens deducted. Proxy conserved (0 bytes).</i>",
+                reply_markup=get_main_reply_keyboard(user.id),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        return
+
+    # Admin sub-actions
+    if "Exit Admin" in txt:
+        show_link_options(chat_id, user)
+        try:
+            bot.send_message(
+                chat_id,
+                "🏠 <b>Returned to Main Dashboard</b>\n<i>Main controls restored below:</i>",
+                reply_markup=get_main_reply_keyboard(user.id),
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+        return
+
+    if "System Status" in txt:
+        handle_status_cmd(message)
+        return
+
+    if "Users & Tokens" in txt:
+        handle_users_cmd(message)
+        return
+
+    if "SX Proxy Status" in txt:
+        handle_sx_status_cmd(message)
+        return
+
+    if "Purge Expired" in txt:
+        handle_sx_purge_cmd(message)
+        return
+
     if not is_user_member(user.id):
         show_force_join_screen(chat_id, user)
         return
@@ -6148,6 +6457,8 @@ def handle_bottom_dock_action(message):
         show_single_menu(chat_id, user)
     elif "Multi" in txt:
         show_multi_menu(chat_id, user)
+    elif "Buy" in txt or "Recharge" in txt or "Deposit" in txt:
+        show_insufficient_tokens_screen(chat_id, user.id, required_count=1)
     elif "Balance" in txt or "ID" in txt:
         handle_tokens_cmd(message)
     elif "Export" in txt:
@@ -6172,6 +6483,19 @@ def handle_bottom_dock_action(message):
         )
     elif "Help" in txt:
         show_help_menu(chat_id, user)
+
+
+@bot.message_handler(commands=["buy", "deposit", "recharge", "shop"])
+def handle_buy_cmd(message):
+    user = message.from_user
+    chat_id = message.chat.id
+    if not check_maintenance_guard(chat_id, user.id):
+        return
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if not is_user_member(user.id):
+        show_force_join_screen(chat_id, user, del_incoming=message)
+        return
+    show_insufficient_tokens_screen(chat_id, user.id, required_count=1, del_incoming=message)
 
 
 @bot.message_handler(func=lambda msg: msg.text and not msg.text.startswith("/"))
@@ -6344,6 +6668,22 @@ def _handle_callback_clicks_inner(call):
                 bot.answer_callback_query(call.id, f"Your Balance: {tok_disp} (1 Token = 1 Account)", show_alert=True)
             except Exception:
                 pass
+            # Show balance inspector with back option
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            url_atom = get_recharge_contact_url("OwAtom", user_id, user=user)
+            markup.add(
+                types.InlineKeyboardButton("💬 Contact Admin to Recharge (@OwAtom)", url=url_atom, style="primary"),
+                types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="primary")
+            )
+            send_or_edit(
+                chat_id,
+                f"🎫 <b>Token Balance Inspector:</b>\n\n"
+                f"• <b>Current Balance:</b> <b>{tok_disp}</b>\n"
+                f"• <b>Rule:</b> <code>1 Token = 1 Successful Account</code>\n\n"
+                f"<i>Tokens recharge karne ke liye Admin (@OwAtom) se sampark karein.</i>",
+                reply_markup=markup,
+                message_id=msg_id
+            )
 
     # ─── Single Registration ───
     elif data in ("reg_single", "single_menu"):
@@ -6717,7 +7057,7 @@ def _handle_callback_clicks_inner(call):
             pass
         show_admin_menu(chat_id, user, message_id=msg_id)
 
-    elif data == "admin_token_help":
+    elif data in ("admin_token_help", "admin_addtoken_prompt"):
         if not admin_manager.is_admin(user_id):
             try:
                 bot.answer_callback_query(call.id, "⛔ Admin Access Required", show_alert=True)
@@ -6728,41 +7068,46 @@ def _handle_callback_clicks_inner(call):
             bot.answer_callback_query(call.id)
         except Exception:
             pass
-        bot.send_message(
+        msg = bot.send_message(
             chat_id,
-            "🎫 <b>Token Management Commands Guide:</b>\n\n"
-            "• <code>/addtoken &lt;user_id&gt; &lt;amount&gt;</code>\n"
-            "  <i>Credits tokens to a user's balance and notifies them.</i>\n\n"
-            "• <code>/settoken &lt;user_id&gt; &lt;exact_amount&gt;</code>\n"
-            "  <i>Sets exact token balance for a user.</i>\n\n"
-            "• <code>/deltoken &lt;user_id&gt; &lt;amount&gt;</code>\n"
-            "  <i>Deducts tokens from a user.</i>\n\n"
-            "💡 <b>Example:</b>\n"
-            "<code>/addtoken 8327850869 25</code>",
+            "🎫 <b>Add Tokens to User:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Kripya <b>User ID</b> aur <b>Token Count</b> space dekar bhejiye:\n\n"
+            "👉 <b>Example:</b> <code>8327850869 50</code>\n\n"
+            "<i>(Cancel karne ke liye /cancel bhejein)</i>",
             parse_mode="HTML"
         )
+        bot.register_next_step_handler(msg, process_admin_addtoken_step, user_id)
 
-    elif data == "admin_broadcast_info":
+    elif data in ("admin_adduser_help", "admin_adduser_prompt"):
+        if not admin_manager.is_admin(user_id):
+            try:
+                bot.answer_callback_query(call.id, "⛔ Admin Access Required", show_alert=True)
+            except Exception:
+                pass
+            return
         try:
             bot.answer_callback_query(call.id)
         except Exception:
             pass
-        bot.send_message(
+        msg = bot.send_message(
             chat_id,
-            "📢 <b>Broadcast Announcement:</b>\n\nUse command:\n<code>/broadcast &lt;your message&gt;</code>\n\nAll registered users will receive the message.",
+            "➕ <b>Add User to System Registry:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Kripya user ka <b>Telegram User ID</b> bhejiye (ya user ka message yahan forward kijiye):\n\n"
+            "👉 <b>Example:</b> <code>1234567890</code>\n"
+            "👉 <b>Tokens ke sath:</b> <code>1234567890 50</code>\n\n"
+            "<i>(Cancel karne ke liye /cancel bhejein)</i>",
             parse_mode="HTML"
         )
+        bot.register_next_step_handler(msg, process_admin_adduser_step, user_id)
 
-    elif data == "admin_adduser_help":
+    elif data == "cancel_single_reg":
+        if chat_id in SINGLE_REG_CANCEL_EVENTS:
+            SINGLE_REG_CANCEL_EVENTS[chat_id].set()
+        request_stop_session(chat_id)
         try:
-            bot.answer_callback_query(call.id)
+            bot.answer_callback_query(call.id, "🛑 Registration cancel kar di gayi hai!", show_alert=True)
         except Exception:
             pass
-        bot.send_message(
-            chat_id,
-            "➕ <b>Add User to Whitelist:</b>\n\nUse command:\n<code>/adduser &lt;telegram_user_id&gt;</code>\n\nExample:\n<code>/adduser 1234567890</code>",
-            parse_mode="HTML"
-        )
 
     elif data == "admin_sx_status":
         if not admin_manager.is_admin(user_id):
@@ -6945,13 +7290,20 @@ def start_health_server(port=None):
             self.send_header('Content-type', 'application/json')
             self.end_headers()
             self.wfile.write(b'{"status":"ok","bot":"raxi4_bot","service":"alive"}')
+
+        def do_POST(self):
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok"}')
+
         def log_message(self, format, *args):
             pass
     try:
         server = HTTPServer(('0.0.0.0', port), HealthHandler)
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
-        log(f"[Health] Cloud health check server active on port {port} ✅")
+        log(f"[Health] Cloud health check & Webhook server active on port {port} ✅")
     except Exception as e:
         log(f"[Health] Warning starting health server: {e} ⚠️")
 
@@ -6988,11 +7340,12 @@ if __name__ == "__main__":
     try:
         bot.set_my_commands([
             types.BotCommand("start", "🚀 Main Menu & Setup"),
+            types.BotCommand("buy", "💳 Buy / Recharge Tokens"),
+            types.BotCommand("tokens", "🎫 Check Token Balance"),
             types.BotCommand("single", "⚡ Single Registration"),
             types.BotCommand("multi", "🔢 Multi Registration"),
             types.BotCommand("stop", "🛑 Stop Running Registration"),
             types.BotCommand("sessions", "📊 Active Registration Tasks"),
-            types.BotCommand("tokens", "🎫 Check Token Balance"),
             types.BotCommand("link", "🔗 Set / Change Referral Link"),
             types.BotCommand("export", "📋 Export Saved Accounts"),
             types.BotCommand("help", "❓ Commands Guide"),

@@ -53,6 +53,8 @@ class AdminManager:
         self.user_registry: Dict[str, dict] = {}
         self.admin_daily_usage: Dict[str, dict] = {}
         self.bot_start_time: float = time.time()
+        self._dirty: bool = False
+        self._last_save_time: float = time.time()
 
         # Seed from BASE_DIR if persistent location is fresh and empty
         base_fallback = BASE_DIR / "admin_settings.json"
@@ -70,8 +72,11 @@ class AdminManager:
     def _start_refresh_daemon(self):
         def _loop():
             while True:
-                time.sleep(60)
+                time.sleep(15)
                 try:
+                    with self._lock:
+                        if getattr(self, "_dirty", False) and (time.time() - getattr(self, "_last_save_time", 0) >= 15):
+                            self._do_save_unlocked()
                     self.check_and_refresh_admin_quotas()
                 except Exception:
                     pass
@@ -229,41 +234,46 @@ class AdminManager:
         except Exception as e:
             print(f"[AdminManager] Error loading settings: {e}")
 
+    def _do_save_unlocked(self):
+        data = {
+            "free_mode": self.free_mode,
+            "maintenance_mode": self.is_maintenance_mode(),
+            "rate_limit_enabled": self.is_rate_limit_enabled(),
+            "rate_limit_seconds": getattr(self, "rate_limit_seconds", 1.0),
+            "master_log_channel": self.master_log_channel,
+            "master_storage_channel": self.master_storage_channel,
+            "admin_user_ids": list(self.admin_user_ids),
+            "whitelisted_user_ids": list(self.whitelisted_user_ids),
+            "user_registry": self.user_registry,
+            "admin_daily_usage": self.admin_daily_usage,
+        }
+        tmp_file = self.filepath.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}")
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            tmp_file.replace(self.filepath)
+            self._last_save_time = time.time()
+            self._dirty = False
+        except Exception as e:
+            print(f"[AdminManager] Error saving settings: {e}")
+            try:
+                if tmp_file.exists():
+                    tmp_file.unlink()
+            except Exception:
+                pass
+
+        # Secondary mirror to BASE_DIR if running with custom persistent filepath
+        base_file = BASE_DIR / "admin_settings.json"
+        if self.filepath != base_file:
+            try:
+                with open(base_file, "w", encoding="utf-8") as f_base:
+                    json.dump(data, f_base, indent=2)
+            except Exception:
+                pass
+
     def save(self):
         with self._lock:
-            data = {
-                "free_mode": self.free_mode,
-                "maintenance_mode": self.is_maintenance_mode(),
-                "rate_limit_enabled": self.is_rate_limit_enabled(),
-                "rate_limit_seconds": getattr(self, "rate_limit_seconds", 1.0),
-                "master_log_channel": self.master_log_channel,
-                "master_storage_channel": self.master_storage_channel,
-                "admin_user_ids": list(self.admin_user_ids),
-                "whitelisted_user_ids": list(self.whitelisted_user_ids),
-                "user_registry": self.user_registry,
-                "admin_daily_usage": self.admin_daily_usage,
-            }
-            tmp_file = self.filepath.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}")
-            try:
-                with open(tmp_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
-                tmp_file.replace(self.filepath)
-            except Exception as e:
-                print(f"[AdminManager] Error saving settings: {e}")
-                try:
-                    if tmp_file.exists():
-                        tmp_file.unlink()
-                except Exception:
-                    pass
-
-            # Secondary mirror to BASE_DIR if running with custom persistent filepath
-            base_file = BASE_DIR / "admin_settings.json"
-            if self.filepath != base_file:
-                try:
-                    with open(base_file, "w", encoding="utf-8") as f_base:
-                        json.dump(data, f_base, indent=2)
-                except Exception:
-                    pass
+            self._do_save_unlocked()
 
     def record_user(self, user_id: int, username: str = "", first_name: str = ""):
         if not user_id:
@@ -284,16 +294,24 @@ class AdminManager:
                     "user_log_channel": None,
                     "user_storage_channel": None,
                 }
+                # Brand new user added -> save immediately
+                self._do_save_unlocked()
             else:
-                if username:
+                changed = False
+                if username and self.user_registry[uid_str].get("username") != username:
                     self.user_registry[uid_str]["username"] = username
-                if first_name:
+                    changed = True
+                if first_name and self.user_registry[uid_str].get("first_name") != first_name:
                     self.user_registry[uid_str]["first_name"] = first_name
+                    changed = True
                 if "tokens" not in self.user_registry[uid_str]:
                     self.user_registry[uid_str]["tokens"] = 0
+                    changed = True
                 self.user_registry[uid_str]["last_active"] = now
                 self.user_registry[uid_str]["role"] = role
-            self.save()
+                # Passive activity: update in-memory dict instantly, mark dirty for background batch save
+                if changed:
+                    self._dirty = True
 
     def _to_int(self, user_id: Any) -> Optional[int]:
         try:
