@@ -631,7 +631,7 @@ class AdminManager:
         if self.is_super_admin(uid):
             return 999999
         if self.is_admin(uid):
-            return 999999
+            return self.get_admin_remaining_daily_tokens(uid)
         self.check_and_refresh_admin_quotas()
         with self._lock:
             uid_str = str(uid)
@@ -646,7 +646,8 @@ class AdminManager:
         if self.is_super_admin(uid):
             return "👑 Unlimited (Owner / Super Admin)"
         if self.is_admin(uid):
-            return "🛡️ Unlimited (Admin)"
+            rem = self.get_admin_remaining_daily_tokens(uid)
+            return f"🛡️ {rem:,} / 1,000 Today (Admin Daily Quota)"
         tokens = self.get_tokens(uid)
         if self.is_free_mode():
             return f"{tokens:,} Token{'s' if tokens != 1 else ''} <i>(🆓 Free Mode)</i>"
@@ -656,10 +657,12 @@ class AdminManager:
         uid = self._to_int(user_id)
         if not uid:
             return False
-        if self.is_super_admin(uid) or self.is_admin(uid):
+        if self.is_super_admin(uid):
             return True
         if self.is_free_mode():
             return True
+        if self.is_admin(uid):
+            return self.get_admin_remaining_daily_tokens(uid) >= amount
         return self.get_tokens(uid) >= amount
 
     def add_tokens(self, user_id: Any, amount: int) -> int:
@@ -685,10 +688,12 @@ class AdminManager:
         uid = self._to_int(user_id)
         if not uid:
             return 0
-        if (self.is_super_admin(uid) or self.is_admin(uid)) and not force:
+        if self.is_super_admin(uid) and not force:
             return 999999
         if self.is_free_mode() and not force:
             return self.get_tokens(uid)
+        if self.is_admin(uid) and not force:
+            return self.record_admin_daily_usage(uid, amount)
         with self._lock:
             uid_str = str(uid)
             if uid_str not in self.user_registry:
@@ -696,15 +701,6 @@ class AdminManager:
             current = int(self.user_registry[uid_str].get("tokens", 0))
             new_val = max(0, current - amount)
             self.user_registry[uid_str]["tokens"] = new_val
-            if uid in self.admin_user_ids and not self.is_super_admin(uid):
-                today_str = get_current_ist_date()
-                rec = self.admin_daily_usage.get(uid_str, {})
-                if rec.get("date") != today_str:
-                    rec = {"date": today_str, "used": 0, "last_reset": time.time()}
-                rec["used"] = rec.get("used", 0) + amount
-                if "last_reset" not in rec:
-                    rec["last_reset"] = time.time()
-                self.admin_daily_usage[uid_str] = rec
             self.save()
             return new_val
 
@@ -734,7 +730,7 @@ class AdminManager:
             for uid_str, data in list(self.user_registry.items()):
                 if uid_str.lstrip("-").isdigit():
                     uid = int(uid_str)
-                    if not self.is_admin(uid):
+                    if not self.is_super_admin(uid):
                         total += int(data.get("tokens", 0))
         return total
 

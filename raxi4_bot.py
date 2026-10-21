@@ -241,6 +241,27 @@ CHANNEL_URL = "https://t.me/owabyss"
 
 # Global single-message tracking dictionary (chat_id -> message_id)
 LAST_BOT_MSG = {}
+LAST_DOCK_MSG = {}
+
+def send_dock_message(chat_id, user_id=None):
+    """Mounts or refreshes the persistent action keyboard cleanly without message buildup."""
+    old_dock = LAST_DOCK_MSG.pop(chat_id, None)
+    if old_dock:
+        try:
+            bot.delete_message(chat_id, old_dock)
+        except Exception:
+            pass
+    try:
+        sent = bot.send_message(
+            chat_id,
+            "⚡ <b>Registration Hub Active</b>\n<i>Docked actions are available below your chat input:</i>",
+            reply_markup=get_main_reply_keyboard(user_id or chat_id),
+            parse_mode="HTML"
+        )
+        LAST_DOCK_MSG[chat_id] = sent.message_id
+        return sent.message_id
+    except Exception:
+        return None
 
 def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming=None):
     """
@@ -990,10 +1011,27 @@ def sign_arsaas(body):
     t["timestamp"] = int(time.time())
     return t
 
+def get_base_domain(host: str) -> str:
+    """
+    Normalizes host/netloc by stripping dynamic subdomains and www,
+    retaining the root domain expected by platform channel databases
+    (e.g. 20745.rajalucketernal.com -> rajalucketernal.com).
+    """
+    if not host:
+        return ""
+    host = host.split(":")[0].strip().lower()
+    parts = host.split(".")
+    if len(parts) > 2:
+        second_level_tlds = {"co.in", "com.in", "net.in", "org.in", "co.uk", "com.pk", "com.bd"}
+        if len(parts) >= 3 and f"{parts[-2]}.{parts[-1]}" in second_level_tlds:
+            return ".".join(parts[-3:])
+        return ".".join(parts[-2:])
+    return host
+
 def detect_and_parse_referral_link(text_or_url):
     """
     Extracts site URL, backend API, invite code, and platform engine type from ANY referral link or text
-    (supports raxi4, raxi win, maanwin, 51game, and all clone sites).
+    (supports raxi4, raxi win, maanwin, 51game, rajaluck, and all clone sites).
     """
     clean_text = text_or_url.strip()
     if not clean_text.startswith("http://") and not clean_text.startswith("https://"):
@@ -1053,14 +1091,14 @@ def detect_and_parse_referral_link(text_or_url):
                     "api": f"{c_site}/api",
                     "api_type": "arsaas",
                     "invite": invite_code,
-                    "domain": c_host,
+                    "domain": get_base_domain(c_host),
                     "raw_url": raw_url,
                     "sms_required": False
                 }
         except Exception:
             pass
 
-    # Check 2B: 51game / Raxi / DMFirst clone (VITE / WEBAPI)
+    # Check 2B: 51game / Raxi / DMFirst / RajaLuck clone (VITE / WEBAPI)
     api_url = None
     domain_lower = parsed.netloc.lower()
 
@@ -1069,6 +1107,8 @@ def detect_and_parse_referral_link(text_or_url):
         api_url = "https://api.raxiqaz.com"
     elif any(k in domain_lower for k in ["dmfirst", "dmfirst17", "dmfirst11", "dmfirst9", "dmfirst7"]):
         api_url = "https://api.dmfirst9api.com"
+    elif any(k in domain_lower for k in ["rajaluck", "rajalucketernal", "rajaluckapi", "lotteryapi"]):
+        api_url = "https://lotteryapi.rajaluckapi.com"
     elif any(k in domain_lower for k in [
         "51game", "51games", "51g",
         "xqtrpv51", "bqrxst51", "dxqwjtkhsyznvrb", "ewjtfy51", "cwyjdz51",
@@ -1114,7 +1154,7 @@ def detect_and_parse_referral_link(text_or_url):
             # If not in index HTML, scan linked JS bundle scripts (Vite/Vue build)
             if not api_url:
                 script_srcs = re.findall(r'(?:src=|href=)["\']([^"\']+\.js[^"\']*)["\']', html_text)
-                for s_src in script_srcs[:6]:
+                for s_src in script_srcs[:30]:
                     try:
                         s_url = urllib.parse.urljoin(base_site, s_src)
                         s_resp = requests.get(s_url, timeout=4, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
@@ -1134,6 +1174,8 @@ def detect_and_parse_referral_link(text_or_url):
     if not api_url:
         if "51" in domain_lower:
             api_url = "https://api.api51gameapi.com"
+        elif any(k in domain_lower for k in ["rajaluck", "rajalucketernal"]):
+            api_url = "https://lotteryapi.rajaluckapi.com"
         else:
             api_url = API
 
@@ -1142,7 +1184,7 @@ def detect_and_parse_referral_link(text_or_url):
         "api": api_url,
         "api_type": "webapi",
         "invite": invite_code,
-        "domain": parsed.netloc,
+        "domain": get_base_domain(parsed.netloc),
         "raw_url": raw_url,
         "sms_required": False
     }
@@ -1179,7 +1221,7 @@ def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
             "sms_required": False,
             "site": current_site,
             "api": api_url,
-            "domain": parsed.netloc,
+            "domain": get_base_domain(parsed.netloc),
             "switched_mirror": False,
             "mirror_count": 0,
             "api_type": "arsaas"
@@ -1190,7 +1232,7 @@ def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
         r = requests.post(f"{api_url}/api/webapi/RegisterState", json=signed_body({}), timeout=4)
         if r.status_code == 200:
             data = r.json().get("data", {})
-            sms_required = (data.get("isOpenRegisterSMS") == "1")
+            sms_required = (data.get("isOpenRegisterSMS") == "1") or (data.get("registerSMSState") == "1")
     except Exception as e:
         log(f"[bot] RegisterState check error for {api_url}: {e}")
 
@@ -1199,7 +1241,7 @@ def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
             "sms_required": False,
             "site": current_site,
             "api": api_url,
-            "domain": parsed.netloc,
+            "domain": get_base_domain(parsed.netloc),
             "switched_mirror": False,
             "mirror_count": 0,
             "api_type": "webapi"
@@ -1285,7 +1327,7 @@ def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
                     "sms_required": False,
                     "site": m_url,
                     "api": m_api,
-                    "domain": parsed_m.netloc,
+                    "domain": get_base_domain(parsed_m.netloc),
                     "switched_mirror": True,
                     "mirror_count": live_scanned,
                     "api_type": "webapi"
@@ -1296,7 +1338,7 @@ def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
         "sms_required": True,
         "site": current_site,
         "api": api_url,
-        "domain": parsed.netloc,
+        "domain": get_base_domain(parsed.netloc),
         "switched_mirror": False,
         "mirror_count": live_scanned,
         "api_type": "webapi"
@@ -1843,7 +1885,7 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
     target_site = site or SITE
     target_api = api or API
     target_invite = invite or INVITE
-    domain = urllib.parse.urlparse(target_site).netloc
+    domain = get_base_domain(urllib.parse.urlparse(target_site).netloc)
 
     is_arsaas = (api_type == "arsaas") or ("/Home" in str(target_api)) or (target_api == f"{target_site}/api") or ("maanwin" in domain)
 
@@ -2238,6 +2280,27 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
                 "msg": f"SMS Verification Required: This platform enforces SMS OTP ({msg}). Registration cannot proceed without real SMS OTP."
             }
 
+        # If domain channel does not exist (e.g. invalid subdomain), retry with clean base domain or rajaluck.com
+        if "channel does not exist" in str(msg).lower() or "channel not exist" in str(msg).lower():
+            log(f"[bot] Channel error on {domain}: {msg}")
+            base_d = get_base_domain(domain)
+            if domain != base_d:
+                domain = base_d
+                _cleanup_in_flight()
+                time.sleep(0.2)
+                continue
+            if "rajaluck" in domain and domain != "rajaluck.com":
+                domain = "rajaluck.com"
+                _cleanup_in_flight()
+                time.sleep(0.2)
+                continue
+            _cleanup_in_flight()
+            return {
+                "ok": False,
+                "fatal": True,
+                "msg": f"Channel Error: {msg} (Domain '{domain}' is not recognized by platform)."
+            }
+
         _cleanup_in_flight()
         last_error = msg or f"Error code {code}"
         time.sleep(0.2)
@@ -2348,8 +2411,8 @@ def show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_
 
 def get_main_reply_keyboard(user_id=None):
     """
-    Returns the persistent 2x2 ReplyKeyboardMarkup docked directly beneath the chat input box,
-    matching the user reference screenshot layout.
+    Returns the persistent ReplyKeyboardMarkup docked directly beneath the chat input box,
+    arranged symmetrically with 2 buttons per row.
     """
     is_adm = False
     if user_id:
@@ -2364,17 +2427,22 @@ def get_main_reply_keyboard(user_id=None):
         input_field_placeholder="Select action or paste link..."
     )
 
-    b1 = types.KeyboardButton("⚡ Single Registration", style="primary")
-    b2 = types.KeyboardButton("🔢 Multi-Registration", style="primary")
+    b1 = types.KeyboardButton("⚡ Single Registration")
+    b2 = types.KeyboardButton("🔢 Multi-Registration")
     kb.row(b1, b2)
 
-    b3 = types.KeyboardButton("🎫 My Balance & ID", style="primary")
-    b4 = types.KeyboardButton("📋 Export Accounts", style="primary")
+    b3 = types.KeyboardButton("🎫 My Balance & ID")
+    b4 = types.KeyboardButton("📋 Export Accounts")
     kb.row(b3, b4)
 
     if is_adm:
-        b5 = types.KeyboardButton("👑 Admin Panel", style="primary")
-        kb.row(b5)
+        b5 = types.KeyboardButton("👑 Admin Panel")
+        b6 = types.KeyboardButton("❓ Help & Guide")
+        kb.row(b5, b6)
+    else:
+        b5 = types.KeyboardButton("💬 Support (@OwAtom)")
+        b6 = types.KeyboardButton("❓ Help & Guide")
+        kb.row(b5, b6)
 
     return kb
 
@@ -2386,7 +2454,7 @@ def get_registration_running_reply_keyboard():
         is_persistent=True,
         input_field_placeholder="Tap button or send /cancel to abort..."
     )
-    kb.row(types.KeyboardButton("🛑 CANCEL REGISTRATION (/cancel)", style="danger"))
+    kb.row(types.KeyboardButton("🛑 CANCEL REGISTRATION (/cancel)"))
     return kb
 
 
@@ -2397,15 +2465,15 @@ def get_admin_reply_keyboard():
         is_persistent=True,
         input_field_placeholder="Admin Action Hub..."
     )
-    b1 = types.KeyboardButton("📊 System Status", style="primary")
-    b2 = types.KeyboardButton("👥 Users & Tokens", style="primary")
+    b1 = types.KeyboardButton("📊 System Status")
+    b2 = types.KeyboardButton("👥 Users & Tokens")
     kb.row(b1, b2)
 
-    b3 = types.KeyboardButton("🌐 SX Proxy Status", style="primary")
-    b4 = types.KeyboardButton("🧹 Purge Expired Keys", style="primary")
+    b3 = types.KeyboardButton("🌐 SX Proxy Status")
+    b4 = types.KeyboardButton("🧹 Purge Expired Keys")
     kb.row(b3, b4)
 
-    b5 = types.KeyboardButton("🏠 Exit Admin to Main Menu", style="danger")
+    b5 = types.KeyboardButton("🏠 Exit Admin to Main Menu")
     kb.row(b5)
     return kb
 
@@ -2423,26 +2491,26 @@ def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
         f"🎫 <b>Tokens:</b> <b>{tokens_disp}</b>\n\n"
         f"🌐 <b>Active Site:</b> <code>{cfg['site']}</code>\n"
         f"🎟️ <b>Invite Code:</b> <code>{cfg['invite']}</code>\n\n"
-        f"⚡ <b>Quick Registration Hub:</b>\n"
+        f"⚡ <b>Registration Hub:</b>\n"
         f"Niche button dabakar instant account create karein ya referral link chat me bhejein:\n"
         f"<code>https://www.raxi4.com/#/register?invitationCode=12345678901</code>"
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_single = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random", style="primary")
-    b_multi = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi", style="primary")
+    b_single = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random")
+    b_multi = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi")
     markup.add(b_single, b_multi)
 
-    b_tok = types.InlineKeyboardButton("🎫 My Balance", callback_data="my_tokens", style="primary")
-    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="primary")
-    markup.add(b_export, b_tok)
+    b_tok = types.InlineKeyboardButton("🎫 My Balance & ID", callback_data="my_tokens")
+    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt")
+    markup.add(b_tok, b_export)
 
-    b_link = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link", style="primary")
-    b_help = types.InlineKeyboardButton("❓ Help & Guide", callback_data="show_help", style="primary")
+    b_link = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link")
+    b_help = types.InlineKeyboardButton("❓ Help & Guide", callback_data="show_help")
     markup.add(b_link, b_help)
 
     if admin_manager.is_admin(user_id):
-        b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin", style="danger")
+        b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin")
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
@@ -2494,20 +2562,20 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random", style="primary")
-    b2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi", style="primary")
+    b1 = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random")
+    b2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi")
     markup.add(b1, b2)
 
-    b3 = types.InlineKeyboardButton("✍️ Custom Details (OTP)", callback_data="single_custom", style="primary")
-    b4 = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="primary")
+    b3 = types.InlineKeyboardButton("✍️ Custom Details (OTP)", callback_data="single_custom")
+    b4 = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt")
     markup.add(b3, b4)
 
-    b_tok = types.InlineKeyboardButton("🎫 My Balance", callback_data="my_tokens", style="primary")
-    b_link = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link", style="primary")
-    markup.add(b_link, b_tok)
+    b_tok = types.InlineKeyboardButton("🎫 My Balance & ID", callback_data="my_tokens")
+    b_link = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link")
+    markup.add(b_tok, b_link)
 
     if admin_manager.is_admin(user_id):
-        b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin", style="danger")
+        b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin")
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
@@ -2519,8 +2587,8 @@ def show_single_menu(chat_id, user, message_id=None):
     [🎲 Random Details] and [✍️ Custom Details]
     """
     user_id = user.id if user else chat_id
-    if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
-        if admin_manager.get_tokens(user_id) <= 0:
+    if not (admin_manager.is_super_admin(user_id) or admin_manager.is_free_mode()):
+        if not admin_manager.has_enough_tokens(user_id, 1):
             show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_id=message_id)
             return
 
@@ -2550,10 +2618,10 @@ def show_single_menu(chat_id, user, message_id=None):
         f"{info_lines}"
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("🎲 Random Details", callback_data="single_random", style="primary")
-    b2 = types.InlineKeyboardButton("✍️ Custom Details" + (" (OTP)" if sms_req else ""), callback_data="single_custom", style="primary")
-    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
-    b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start", style="primary")
+    b1 = types.InlineKeyboardButton("🎲 Random Details", callback_data="single_random")
+    b2 = types.InlineKeyboardButton("✍️ Custom Details" + (" (OTP)" if sms_req else ""), callback_data="single_custom")
+    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
+    b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
     markup.add(b1, b2)
     markup.add(b_back, b_home)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
@@ -2562,8 +2630,8 @@ def show_single_menu(chat_id, user, message_id=None):
 def show_multi_menu(chat_id, user, message_id=None):
     """Displays count selection for Multi-Registration."""
     user_id = user.id if user else chat_id
-    if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
-        if admin_manager.get_tokens(user_id) <= 0:
+    if not (admin_manager.is_super_admin(user_id) or admin_manager.is_free_mode()):
+        if not admin_manager.has_enough_tokens(user_id, 5):
             show_insufficient_tokens_screen(chat_id, user_id, required_count=5, message_id=message_id)
             return
 
@@ -2583,9 +2651,9 @@ def show_multi_menu(chat_id, user, message_id=None):
             f"enter karke OTP ke sath account create kar sakte hain."
         )
         markup = types.InlineKeyboardMarkup(row_width=1)
-        b_custom = types.InlineKeyboardButton("⚡ Use Single (Custom OTP)", callback_data="single_custom", style="primary")
-        b_change = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link", style="primary")
-        b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
+        b_custom = types.InlineKeyboardButton("⚡ Use Single (Custom OTP)", callback_data="single_custom")
+        b_change = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link")
+        b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
         markup.add(b_custom, b_change, b_back)
         send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
         return
@@ -2604,14 +2672,14 @@ def show_multi_menu(chat_id, user, message_id=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ 5 Accounts (5 🎫)", callback_data="multi_run_5", style="primary")
-    b2 = types.InlineKeyboardButton("⚡ 10 Accounts (10 🎫)", callback_data="multi_run_10", style="primary")
-    b3 = types.InlineKeyboardButton("⚡ 50 Accounts (50 🎫)", callback_data="multi_run_50", style="primary")
-    b4 = types.InlineKeyboardButton("⚡ 100 Accounts (100 🎫)", callback_data="multi_run_100", style="primary")
-    b5 = types.InlineKeyboardButton("⚡ 500 Accounts (500 🎫)", callback_data="multi_run_500", style="primary")
-    b_custom = types.InlineKeyboardButton("✍️ Custom Fast", callback_data="multi_custom", style="primary")
-    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="success")
-    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
+    b1 = types.InlineKeyboardButton("⚡ 5 Accounts (5 🎫)", callback_data="multi_run_5")
+    b2 = types.InlineKeyboardButton("⚡ 10 Accounts (10 🎫)", callback_data="multi_run_10")
+    b3 = types.InlineKeyboardButton("⚡ 50 Accounts (50 🎫)", callback_data="multi_run_50")
+    b4 = types.InlineKeyboardButton("⚡ 100 Accounts (100 🎫)", callback_data="multi_run_100")
+    b5 = types.InlineKeyboardButton("⚡ 500 Accounts (500 🎫)", callback_data="multi_run_500")
+    b_custom = types.InlineKeyboardButton("✍️ Custom Fast", callback_data="multi_custom")
+    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt")
+    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
     markup.add(b1, b2)
     markup.add(b3, b4)
     markup.add(b5, b_custom)
@@ -2623,8 +2691,8 @@ def show_multi_menu(chat_id, user, message_id=None):
 def show_custom_amount_prompt(chat_id, user, message_id=None):
     """Displays prompt asking user to type custom bulk count."""
     user_id = user.id if user else chat_id
-    if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
-        if admin_manager.get_tokens(user_id) <= 0:
+    if not (admin_manager.is_super_admin(user_id) or admin_manager.is_free_mode()):
+        if not admin_manager.has_enough_tokens(user_id, 1):
             show_insufficient_tokens_screen(chat_id, user_id, required_count=5, message_id=message_id)
             return
 
@@ -2649,8 +2717,8 @@ def show_custom_amount_prompt(chat_id, user, message_id=None):
 def show_custom_scheduled_count_prompt(chat_id, user, message_id=None, default_count=20):
     """Step 1: Asks user how many accounts to create for scheduled registration."""
     user_id = user.id if hasattr(user, "id") else (user or chat_id)
-    if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
-        if admin_manager.get_tokens(user_id) <= 0:
+    if not (admin_manager.is_super_admin(user_id) or admin_manager.is_free_mode()):
+        if not admin_manager.has_enough_tokens(user_id, default_count):
             show_insufficient_tokens_screen(chat_id, user_id, required_count=default_count, message_id=message_id)
             return
 
@@ -2848,10 +2916,9 @@ def show_speed_selection_menu(chat_id, user, count, message_id=None):
     tokens_disp = admin_manager.get_display_tokens(user_id)
     cfg = get_chat_config(chat_id)
 
-    # Check token requirement for non-admins
-    if not (admin_manager.is_admin(user_id) or admin_manager.is_free_mode()):
-        avail = admin_manager.get_tokens(user_id)
-        if avail < count:
+    # Check token requirement for non-super admins
+    if not (admin_manager.is_super_admin(user_id) or admin_manager.is_free_mode()):
+        if not admin_manager.has_enough_tokens(user_id, count):
             show_insufficient_tokens_screen(chat_id, user_id, required_count=count, message_id=message_id)
             return
 
@@ -3210,7 +3277,7 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
         return
 
     # Token Gatekeeper
-    if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
+    if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
         if not admin_manager.has_enough_tokens(uid, 1):
             show_insufficient_tokens_screen(chat_id, uid, required_count=1, message_id=message_id)
             return
@@ -3394,15 +3461,7 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
     finally:
         SINGLE_REG_CANCEL_EVENTS.pop(chat_id, None)
         release_chat_lock(chat_id)
-        try:
-            bot.send_message(
-                chat_id,
-                "⚡ <i>Raxi Control Hub Active:</i>",
-                reply_markup=get_main_reply_keyboard(uid),
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
+        send_dock_message(chat_id, uid)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3427,8 +3486,8 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         show_force_join_screen(chat_id, type('UserObj', (), {'id': uid, 'first_name': 'User'})(), message_id=message_id)
         return
 
-    # Token check: Admins (and Super Admin) have unlimited access; Free Mode is free; Regular Users check available tokens
-    if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
+    # Token check: Super Admin has unlimited access; Free Mode is free; Regular Users and Admins check available tokens
+    if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
         avail = admin_manager.get_tokens(uid)
         if avail < count:
             show_insufficient_tokens_screen(chat_id, uid, required_count=count, message_id=message_id)
@@ -3530,7 +3589,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                             return
                         if consecutive_fails >= max_consecutive_fails:
                             return
-                        if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
+                        if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
                             if admin_manager.get_tokens(uid) <= 0:
                                 return
 
@@ -3911,15 +3970,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         except Exception:
             pass
         release_chat_lock(chat_id)
-        try:
-            bot.send_message(
-                chat_id,
-                "⚡ <i>Raxi Control Hub Active:</i>",
-                reply_markup=get_main_reply_keyboard(uid),
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
+        send_dock_message(chat_id, uid)
 
 
 def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_minutes=30, message_id=None, exact_seconds=None):
@@ -3934,7 +3985,7 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
         return
 
     # Check token requirement
-    if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
+    if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
         avail = admin_manager.get_tokens(uid)
         if avail < count:
             show_insufficient_tokens_screen(chat_id, uid, required_count=count, message_id=message_id)
@@ -4040,7 +4091,7 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
                 break
 
             # Token check
-            if not (admin_manager.is_admin(uid) or admin_manager.is_free_mode()):
+            if not (admin_manager.is_super_admin(uid) or admin_manager.is_free_mode()):
                 if not admin_manager.has_enough_tokens(uid, 1):
                     log(f"[bot] Scheduled run stopped: insufficient tokens for user {uid}")
                     was_stopped = True
