@@ -1678,9 +1678,9 @@ def show_export_menu(chat_id, user, message_id=None, del_incoming=None):
         f"• 📦 <b>Download Both:</b> Dono files ek sath send hongi."
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("📱 Phone:Pass Combos", callback_data="do_export_combos", style="primary")
-    b2 = types.InlineKeyboardButton("📑 Full Report (.txt)", callback_data="do_export_full", style="primary")
-    b3 = types.InlineKeyboardButton("📦 Download Both Files", callback_data="do_export_both", style="success")
+    b1 = types.InlineKeyboardButton("📱 Combos (.txt)", callback_data="do_export_combos", style="primary")
+    b2 = types.InlineKeyboardButton("📑 Full Report", callback_data="do_export_full", style="primary")
+    b3 = types.InlineKeyboardButton("📦 Download Both", callback_data="do_export_both", style="success")
     b4 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
     markup.add(b1, b2)
     markup.add(b3)
@@ -2649,7 +2649,7 @@ def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_single = types.InlineKeyboardButton("⚡ Single Reg", callback_data="single_random", style="success")
+    b_single = types.InlineKeyboardButton("⚡ Single Reg", callback_data="reg_single", style="success")
     b_multi = types.InlineKeyboardButton("🔢 Multi Reg", callback_data="reg_multi", style="primary")
     markup.add(b_single, b_multi)
 
@@ -2720,17 +2720,17 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ Single Reg", callback_data="single_random", style="success")
+    b1 = types.InlineKeyboardButton("⚡ Single Reg", callback_data="reg_single", style="success")
     b2 = types.InlineKeyboardButton("🔢 Multi Reg", callback_data="reg_multi", style="primary")
     markup.add(b1, b2)
 
-    b3 = types.InlineKeyboardButton("✍️ Custom OTP" if sms_req else "✍️ Custom Details", callback_data="single_custom", style="primary")
-    b4 = types.InlineKeyboardButton("📋 Export Accounts", callback_data="export_txt", style="success")
-    markup.add(b3, b4)
-
     b_tok = types.InlineKeyboardButton("🎫 Balance & ID", callback_data="my_tokens", style="primary")
+    b_export = types.InlineKeyboardButton("📋 Export Accounts", callback_data="export_txt", style="success")
+    markup.add(b_tok, b_export)
+
     b_link = types.InlineKeyboardButton("🔗 Change Link", callback_data="ask_new_link", style="primary")
-    markup.add(b_tok, b_link)
+    b_help = types.InlineKeyboardButton("❓ Help & Guide", callback_data="show_help", style="primary")
+    markup.add(b_link, b_help)
 
     if admin_manager.is_admin(user_id):
         b_admin = types.InlineKeyboardButton("👑 Admin Hub", callback_data="menu_admin", style="danger")
@@ -2776,8 +2776,8 @@ def show_single_menu(chat_id, user, message_id=None, del_incoming=None):
         f"{info_lines}"
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("🎲 Random Details", callback_data="single_random", style="success")
-    b2 = types.InlineKeyboardButton("✍️ Custom Details" + (" (OTP)" if sms_req else ""), callback_data="single_custom", style="primary")
+    b1 = types.InlineKeyboardButton("🎲 Random Reg", callback_data="single_random", style="success")
+    b2 = types.InlineKeyboardButton("✍️ Custom OTP" if sms_req else "✍️ Custom Reg", callback_data="single_custom", style="primary")
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
     b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start", style="primary")
     markup.add(b1, b2)
@@ -2809,8 +2809,8 @@ def show_multi_menu(chat_id, user, message_id=None, del_incoming=None):
             f"enter karke OTP ke sath account create kar sakte hain."
         )
         markup = types.InlineKeyboardMarkup(row_width=1)
-        b_custom = types.InlineKeyboardButton("⚡ Use Single (Custom OTP)", callback_data="single_custom", style="primary")
-        b_change = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link", style="primary")
+        b_custom = types.InlineKeyboardButton("⚡ Single Custom OTP", callback_data="single_custom", style="success")
+        b_change = types.InlineKeyboardButton("🔗 Change Link", callback_data="ask_new_link", style="primary")
         b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
         markup.add(b_custom, b_change, b_back)
         send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
@@ -3099,12 +3099,12 @@ def show_speed_selection_menu(chat_id, user, count, message_id=None, del_incomin
         f"  Aap total accounts & minutes batao — bot random times par 1-1 ya 2-2 karke target reach karega! <i>(100% Turbo Safe)</i>"
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ FASTEST (Turbo)", callback_data=f"bspeed_{count}_0", style="primary")
-    b2 = types.InlineKeyboardButton("🛡️ SAFE (3s Delay)", callback_data=f"bspeed_{count}_3", style="primary")
-    b3 = types.InlineKeyboardButton("🐢 STEALTH (6s)", callback_data=f"bspeed_{count}_6", style="primary")
+    b1 = types.InlineKeyboardButton("⚡ Turbo (0s)", callback_data=f"bspeed_{count}_0", style="success")
+    b2 = types.InlineKeyboardButton("🛡️ Safe (3s)", callback_data=f"bspeed_{count}_3", style="primary")
+    b3 = types.InlineKeyboardButton("🐢 Stealth (6s)", callback_data=f"bspeed_{count}_6", style="primary")
     b4 = types.InlineKeyboardButton("⏱️ Custom Gap", callback_data=f"bspeed_{count}_custom", style="primary")
-    b_sched = types.InlineKeyboardButton("🎲 Custom Scheduled Plan", callback_data=f"bspeed_{count}_sched", style="primary")
-    b_back = types.InlineKeyboardButton("🔙 Back to Multi-Menu", callback_data="reg_multi", style="danger")
+    b_sched = types.InlineKeyboardButton("🎲 Scheduled Plan", callback_data=f"bspeed_{count}_sched", style="primary")
+    b_back = types.InlineKeyboardButton("🔙 Back to Multi", callback_data="reg_multi", style="danger")
     markup.add(b1, b2)
     markup.add(b3, b4)
     markup.add(b_sched)
@@ -3205,9 +3205,9 @@ def show_users_list(chat_id, user, message_id=None, del_incoming=None):
         text = "\n".join(lines)
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_add = types.InlineKeyboardButton("➕ Add User (/adduser)", callback_data="admin_adduser_help", style="primary")
-    b_tok = types.InlineKeyboardButton("🎫 Add Tokens (/addtoken)", callback_data="admin_token_help", style="primary")
-    b_back = types.InlineKeyboardButton("🔙 Back to Admin Menu", callback_data="menu_admin", style="danger")
+    b_add = types.InlineKeyboardButton("➕ Add User", callback_data="admin_adduser_help", style="primary")
+    b_tok = types.InlineKeyboardButton("🎫 Add Tokens", callback_data="admin_token_help", style="primary")
+    b_back = types.InlineKeyboardButton("🔙 Back to Admin", callback_data="menu_admin", style="danger")
     markup.add(b_add, b_tok)
     markup.add(b_back)
 
@@ -3233,6 +3233,7 @@ def show_active_sessions_dashboard(chat_id, user, message_id=None, del_incoming=
 
     markup = types.InlineKeyboardMarkup(row_width=2)
     b_refresh = types.InlineKeyboardButton("🔄 Refresh", callback_data="sessions_refresh", style="primary")
+    b_back = types.InlineKeyboardButton("🔙 Back to Admin", callback_data="menu_admin", style="danger")
 
     if not sessions:
         text = (
@@ -3241,7 +3242,7 @@ def show_active_sessions_dashboard(chat_id, user, message_id=None, del_incoming=
             "Is samay koi bhi active multi-registration session running nahi hai.\n\n"
             "💡 <i>Nayi bulk registration run karne ke liye <code>/bulk &lt;count&gt;</code> ya menu use karein.</i>"
         )
-        markup.add(b_refresh)
+        markup.add(b_refresh, b_back)
         send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
         return
 
@@ -3281,7 +3282,8 @@ def show_active_sessions_dashboard(chat_id, user, message_id=None, del_incoming=
 
     action_row = [b_refresh]
     if is_super and len(sessions) > 1:
-        action_row.append(types.InlineKeyboardButton("🛑 STOP ALL SESSIONS", callback_data="sessions_stop_all", style="danger"))
+        action_row.append(types.InlineKeyboardButton("🛑 STOP ALL", callback_data="sessions_stop_all", style="danger"))
+    action_row.append(b_back)
     markup.add(*action_row)
 
     full_text = "\n".join(text_lines)
@@ -3348,7 +3350,7 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
     text += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_single = types.InlineKeyboardButton("⚡ Single Reg", callback_data="single_random", style="success")
+    b_single = types.InlineKeyboardButton("⚡ Single Reg", callback_data="reg_single", style="success")
     b_multi = types.InlineKeyboardButton("🔢 Multi Reg", callback_data="reg_multi", style="primary")
     b_tokens = types.InlineKeyboardButton("🎫 Balance & ID", callback_data="my_tokens", style="primary")
     b_export = types.InlineKeyboardButton("📋 Export Accounts", callback_data="export_txt", style="success")
@@ -3537,9 +3539,9 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
             )
 
             markup = types.InlineKeyboardMarkup(row_width=2)
-            btn1 = types.InlineKeyboardButton("⚡ Register Again", callback_data="single_random", style="primary")
-            btn2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi", style="primary")
-            btn3 = types.InlineKeyboardButton("📋 Export .txt", callback_data="export_txt", style="success")
+            btn1 = types.InlineKeyboardButton("⚡ Single Reg", callback_data="reg_single", style="success")
+            btn2 = types.InlineKeyboardButton("🔢 Multi Reg", callback_data="reg_multi", style="primary")
+            btn3 = types.InlineKeyboardButton("📋 Export Accounts", callback_data="export_txt", style="success")
             btn4 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
             markup.add(btn1, btn2)
             markup.add(btn3, btn4)
@@ -3812,9 +3814,9 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         rem_tokens = admin_manager.get_display_tokens(uid)
 
         markup = types.InlineKeyboardMarkup(row_width=2)
-        b1 = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random", style="primary")
-        b2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi", style="primary")
-        b3 = types.InlineKeyboardButton("📋 Export .txt", callback_data="export_txt", style="success")
+        b1 = types.InlineKeyboardButton("⚡ Single Reg", callback_data="reg_single", style="success")
+        b2 = types.InlineKeyboardButton("🔢 Multi Reg", callback_data="reg_multi", style="primary")
+        b3 = types.InlineKeyboardButton("📋 Export Accounts", callback_data="export_txt", style="success")
         b4 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
         markup.add(b1, b2)
         markup.add(b3, b4)
@@ -4571,8 +4573,8 @@ def handle_tokens_cmd(message):
     url_atom = get_recharge_contact_url("OwAtom", user.id, user=user)
     url_karma = get_recharge_contact_url("OwKarma", user.id, user=user)
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random", style="primary")
-    b2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi", style="primary")
+    b1 = types.InlineKeyboardButton("⚡ Single Reg", callback_data="reg_single", style="success")
+    b2 = types.InlineKeyboardButton("🔢 Multi Reg", callback_data="reg_multi", style="primary")
     b_atom = types.InlineKeyboardButton("💬 Recharge: @OwAtom", url=url_atom, style="primary")
     b_karma = types.InlineKeyboardButton("💬 Recharge: @OwKarma", url=url_karma, style="primary")
     b3 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
@@ -5977,15 +5979,16 @@ def show_super_statistics(chat_id, user, message_id=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_file = types.InlineKeyboardButton("📥 Download Full Audit (.txt)", callback_data="super_export_audit", style="success")
-    b_backup = types.InlineKeyboardButton("💾 Backup Database (.txt)", callback_data="super_cloud_backup", style="success")
-    b_search = types.InlineKeyboardButton("🔍 Search Link/Code", callback_data="super_search_prompt", style="primary")
+    b_file = types.InlineKeyboardButton("📥 Full Audit", callback_data="super_export_audit", style="success")
+    b_backup = types.InlineKeyboardButton("💾 DB Backup", callback_data="super_cloud_backup", style="success")
+    b_search = types.InlineKeyboardButton("🔍 Search Link", callback_data="super_search_prompt", style="primary")
     maint_txt = "🛠️ Maintenance: ON" if admin_manager.is_maintenance_mode() else "🛠️ Maintenance: OFF"
     b_maint = types.InlineKeyboardButton(maint_txt, callback_data="super_toggle_maint", style="danger" if admin_manager.is_maintenance_mode() else "primary")
     b_refresh = types.InlineKeyboardButton("🔄 Refresh Stats", callback_data="super_stats_refresh", style="primary")
+    b_back = types.InlineKeyboardButton("🔙 Back to Admin", callback_data="menu_admin", style="danger")
     markup.add(b_file, b_backup)
     markup.add(b_search, b_maint)
-    markup.add(b_refresh)
+    markup.add(b_refresh, b_back)
 
     if message_id:
         try:
@@ -6775,7 +6778,7 @@ def _handle_callback_clicks_inner(call):
             markup = types.InlineKeyboardMarkup(row_width=1)
             url_atom = get_recharge_contact_url("OwAtom", user_id, user=user)
             markup.add(
-                types.InlineKeyboardButton("💬 Contact Admin to Recharge (@OwAtom)", url=url_atom, style="primary"),
+                types.InlineKeyboardButton("💬 Recharge Tokens (@OwAtom)", url=url_atom, style="primary"),
                 types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
             )
             send_or_edit(
