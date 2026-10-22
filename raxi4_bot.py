@@ -2784,11 +2784,11 @@ def show_multi_menu(chat_id, user, message_id=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ 5 Accounts (5 🎫)", callback_data="multi_run_5", style="primary")
-    b2 = types.InlineKeyboardButton("⚡ 10 Accounts (10 🎫)", callback_data="multi_run_10", style="primary")
-    b3 = types.InlineKeyboardButton("⚡ 50 Accounts (50 🎫)", callback_data="multi_run_50", style="primary")
-    b4 = types.InlineKeyboardButton("⚡ 100 Accounts (100 🎫)", callback_data="multi_run_100", style="primary")
-    b5 = types.InlineKeyboardButton("🔥 500 Accounts (500 🎫)", callback_data="multi_run_500", style="primary")
+    b1 = types.InlineKeyboardButton("5 Accounts", callback_data="multi_run_5", style="primary")
+    b2 = types.InlineKeyboardButton("10 Accounts", callback_data="multi_run_10", style="primary")
+    b3 = types.InlineKeyboardButton("50 Accounts", callback_data="multi_run_50", style="primary")
+    b4 = types.InlineKeyboardButton("100 Accounts", callback_data="multi_run_100", style="primary")
+    b5 = types.InlineKeyboardButton("500 Accounts", callback_data="multi_run_500", style="primary")
     b_custom = types.InlineKeyboardButton("✍️ Custom Fast", callback_data="multi_custom", style="primary")
     b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="success")
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
@@ -3057,7 +3057,7 @@ def show_speed_selection_menu(chat_id, user, count, message_id=None):
     b2 = types.InlineKeyboardButton("🛡️ SAFE (3s Delay)", callback_data=f"bspeed_{count}_3", style="primary")
     b3 = types.InlineKeyboardButton("🐢 STEALTH (6s)", callback_data=f"bspeed_{count}_6", style="primary")
     b4 = types.InlineKeyboardButton("⏱️ Custom Gap", callback_data=f"bspeed_{count}_custom", style="primary")
-    b_sched = types.InlineKeyboardButton("🎲 Custom Scheduled Plan 🌟", callback_data=f"bspeed_{count}_sched", style="primary")
+    b_sched = types.InlineKeyboardButton("🎲 Custom Scheduled Plan", callback_data=f"bspeed_{count}_sched", style="primary")
     b_back = types.InlineKeyboardButton("🔙 Back to Multi-Menu", callback_data="reg_multi", style="danger")
     markup.add(b1, b2)
     markup.add(b3, b4)
@@ -3116,8 +3116,8 @@ def show_admin_menu(chat_id, user, message_id=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_maint = types.InlineKeyboardButton("🛠️ Maint: ACTIVE ⚠️" if admin_manager.is_maintenance_mode() else "🛠️ Maint: OFF 🟢", callback_data="toggle_maint", style="danger" if admin_manager.is_maintenance_mode() else "primary")
-    b_rate = types.InlineKeyboardButton("⚡ Anti-Flood: ON 🟢" if admin_manager.is_rate_limit_enabled() else "⚡ Anti-Flood: OFF 🔴", callback_data="toggle_rate", style="primary")
+    b_maint = types.InlineKeyboardButton("🛠️ Maintenance: ON" if admin_manager.is_maintenance_mode() else "🛠️ Maintenance: OFF", callback_data="toggle_maint", style="danger" if admin_manager.is_maintenance_mode() else "primary")
+    b_rate = types.InlineKeyboardButton("⚡ Anti-Flood: ON" if admin_manager.is_rate_limit_enabled() else "⚡ Anti-Flood: OFF", callback_data="toggle_rate", style="primary")
     markup.add(b_maint, b_rate)
 
     b_users = types.InlineKeyboardButton("👥 Manage Users", callback_data="admin_users", style="primary")
@@ -3134,11 +3134,6 @@ def show_admin_menu(chat_id, user, message_id=None):
 
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
     markup.add(b_back)
-
-    try:
-        bot.send_message(chat_id, "👑 <i>Admin Controls active below:</i>", reply_markup=get_admin_reply_keyboard(), parse_mode="HTML")
-    except Exception:
-        pass
 
     if message_id:
         try:
@@ -3408,17 +3403,6 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
         stop_event = threading.Event()
         SINGLE_REG_CANCEL_EVENTS[chat_id] = stop_event
 
-        # Mount temporary Cancel keyboard docked beneath input box
-        try:
-            bot.send_message(
-                chat_id,
-                "⚡ <i>Single Registration starting... Tap Cancel below or send /cancel to abort:</i>",
-                reply_markup=get_registration_running_reply_keyboard(),
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
-
         mid = message_id
         cancel_requested = False
         for sec_left in range(5, 0, -1):
@@ -3451,15 +3435,6 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
         SINGLE_REG_CANCEL_EVENTS.pop(chat_id, None)
 
         if cancel_requested:
-            try:
-                bot.send_message(
-                    chat_id,
-                    "🛑 <b>Registration Cancelled!</b>\n<i>No tokens deducted. Proxy conserved (0 bytes).</i>",
-                    reply_markup=get_main_reply_keyboard(uid),
-                    parse_mode="HTML"
-                )
-            except Exception:
-                pass
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger"))
             send_or_edit(
@@ -3551,7 +3526,7 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
             )
 
             markup = types.InlineKeyboardMarkup(row_width=2)
-            btn1 = types.InlineKeyboardButton("⚡ Register Again (1 🎫)", callback_data="single_random", style="primary")
+            btn1 = types.InlineKeyboardButton("⚡ Register Again", callback_data="single_random", style="primary")
             btn2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi", style="primary")
             btn3 = types.InlineKeyboardButton("📋 Export .txt", callback_data="export_txt", style="success")
             btn4 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
@@ -3637,16 +3612,6 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
             reply_markup=stop_markup,
             message_id=message_id
         )
-
-        try:
-            bot.send_message(
-                chat_id,
-                "⚡ <b>Multi-Registration Active</b>\n<i>Batch stop action docked below:</i>",
-                reply_markup=get_registration_running_reply_keyboard(),
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
 
         u_reg = admin_manager.user_registry.get(str(uid), {})
         u_name = u_reg.get("username") or u_reg.get("first_name") or str(uid)
@@ -4534,24 +4499,13 @@ def handle_start(message):
     CUSTOM_SPEED_STATE.pop(user.id, None)
     CUSTOM_SCHEDULED_STATE.pop(user.id, None)
 
-    # Clean old bot message if possible so a fresh welcome screen lands right at the bottom
-    old_mid = LAST_BOT_MSG.pop(chat_id, None)
-    if old_mid:
+    # Clean any legacy dock message so chat is 100% single-card clean
+    old_dock = LAST_DOCK_MSG.pop(chat_id, None)
+    if old_dock:
         try:
-            bot.delete_message(chat_id, old_mid)
+            bot.delete_message(chat_id, old_dock)
         except Exception:
             pass
-
-    # Ensure persistent 2x2 action dock is mounted under the chat input box
-    try:
-        bot.send_message(
-            chat_id,
-            "⚡ <b>Registration Hub Active</b>\n<i>Docked actions are available below your chat input:</i>",
-            reply_markup=get_main_reply_keyboard(user.id),
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
 
     if not is_user_member(user.id):
         show_force_join_screen(chat_id, user, del_incoming=message)
@@ -4867,26 +4821,15 @@ def handle_cancel_cmd(message):
     except Exception:
         pass
     if stopped:
-        try:
-            bot.send_message(
-                chat_id,
-                "🛑 <b>Registration Cancelled Successfully!</b>\n<i>No tokens deducted. Proxy conserved (0 bytes).</i>",
-                reply_markup=get_main_reply_keyboard(uid),
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger"))
+        send_or_edit(
+            chat_id,
+            "🛑 <b>Registration Cancelled Successfully!</b>\n\n<i>No tokens deducted. Proxy conserved (0 bytes).</i>",
+            reply_markup=markup
+        )
     else:
         show_link_options(chat_id, message.from_user)
-        try:
-            bot.send_message(
-                chat_id,
-                "⚡ <i>Action dock ready below:</i>",
-                reply_markup=get_main_reply_keyboard(uid),
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
 
 
 @bot.message_handler(func=lambda msg: msg.from_user and msg.from_user.id in CUSTOM_REG_STATE and msg.text and not msg.text.startswith("/"))
@@ -6053,7 +5996,7 @@ def show_super_statistics(chat_id, user, message_id=None):
     b_file = types.InlineKeyboardButton("📥 Download Full Audit (.txt)", callback_data="super_export_audit", style="success")
     b_backup = types.InlineKeyboardButton("💾 Backup Database (.txt)", callback_data="super_cloud_backup", style="success")
     b_search = types.InlineKeyboardButton("🔍 Search Link/Code", callback_data="super_search_prompt", style="primary")
-    maint_txt = "🛠️ Maint: " + ("ON 🔒" if admin_manager.is_maintenance_mode() else "OFF 🟢")
+    maint_txt = "🛠️ Maintenance: ON" if admin_manager.is_maintenance_mode() else "🛠️ Maintenance: OFF"
     b_maint = types.InlineKeyboardButton(maint_txt, callback_data="super_toggle_maint", style="danger" if admin_manager.is_maintenance_mode() else "primary")
     b_refresh = types.InlineKeyboardButton("🔄 Refresh Stats", callback_data="super_stats_refresh", style="primary")
     markup.add(b_file, b_backup)
@@ -6549,15 +6492,6 @@ def handle_dock_cmd(message):
         bot.delete_message(chat_id, message.message_id)
     except Exception:
         pass
-    try:
-        bot.send_message(
-            chat_id,
-            "⚡ <b>Action dock re-mounted below:</b>",
-            reply_markup=get_main_reply_keyboard(user.id),
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
     if not is_user_member(user.id):
         show_force_join_screen(chat_id, user)
         return
@@ -6595,29 +6529,18 @@ def handle_bottom_dock_action(message):
     # Cancel action
     if "CANCEL REGISTRATION" in txt or "Cancel Registration" in txt:
         request_stop_session(chat_id)
-        try:
-            bot.send_message(
-                chat_id,
-                "🛑 <b>Registration Cancelled!</b>\n<i>No tokens deducted. Proxy conserved (0 bytes).</i>",
-                reply_markup=get_main_reply_keyboard(user.id),
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger"))
+        send_or_edit(
+            chat_id,
+            "🛑 <b>Registration Cancelled!</b>\n\n<i>No tokens deducted. Proxy conserved (0 bytes).</i>",
+            reply_markup=markup
+        )
         return
 
     # Admin sub-actions
     if "Exit Admin" in txt:
         show_link_options(chat_id, user)
-        try:
-            bot.send_message(
-                chat_id,
-                "🏠 <b>Returned to Main Dashboard</b>\n<i>Main controls restored below:</i>",
-                reply_markup=get_main_reply_keyboard(user.id),
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
         return
 
     if "System Status" in txt:
