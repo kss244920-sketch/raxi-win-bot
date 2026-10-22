@@ -260,36 +260,75 @@ LAST_BOT_MSG = {}
 LAST_DOCK_MSG = {}
 
 def send_dock_message(chat_id, user_id=None):
-    """Mounts or refreshes the persistent action keyboard cleanly without message buildup."""
+    """Safely cleans any legacy dock message without sending redundant text."""
     old_dock = LAST_DOCK_MSG.pop(chat_id, None)
     if old_dock:
         try:
             bot.delete_message(chat_id, old_dock)
         except Exception:
             pass
-    try:
-        sent = bot.send_message(
-            chat_id,
-            "⚡ <b>Registration Hub Active</b>\n<i>Docked actions are available below your chat input:</i>",
-            reply_markup=get_main_reply_keyboard(user_id or chat_id),
-            parse_mode="HTML"
-        )
-        LAST_DOCK_MSG[chat_id] = sent.message_id
-        return sent.message_id
-    except Exception:
-        return None
+    return None
 
 def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming=None):
     """
-    Guarantees the bot edits the existing message instead of sending new ones!
-    Deletes the user's incoming command/link message to keep chat completely clean.
-    Gracefully falls back to plain-text rendering if malformed HTML entities are encountered.
+    Guarantees the bot maintains a single, clean, interactive card at the bottom of the chat:
+    1. If del_incoming is passed (new user command / referral link / text):
+       - Deletes incoming user command/text.
+       - Deletes previous bot card (LAST_BOT_MSG[chat_id]) so chat has zero duplicates.
+       - Sends fresh card at the bottom and records LAST_BOT_MSG[chat_id].
+    2. If message_id is provided or inline edit (del_incoming is None):
+       - Directly edits the existing card in place (edit_message_text).
+       - Buttons update instantly without jumping or creating new messages.
+       - Falls back to send_message only if message was deleted or uneditable.
     """
     if del_incoming and hasattr(del_incoming, "message_id"):
         try:
             bot.delete_message(chat_id, del_incoming.message_id)
         except Exception:
             pass
+
+        # Clean old bot message so the fresh card lands cleanly at the bottom
+        old_mid = LAST_BOT_MSG.pop(chat_id, None)
+        if old_mid:
+            try:
+                bot.delete_message(chat_id, old_mid)
+            except Exception:
+                pass
+
+        # Also purge any legacy dock message
+        old_dock = LAST_DOCK_MSG.pop(chat_id, None)
+        if old_dock:
+            try:
+                bot.delete_message(chat_id, old_dock)
+            except Exception:
+                pass
+
+        try:
+            sent = bot.send_message(
+                chat_id,
+                text,
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
+            LAST_BOT_MSG[chat_id] = sent.message_id
+            return sent.message_id
+        except Exception as e:
+            err_str = str(e).lower()
+            if "can't parse entities" in err_str or "parse mode" in err_str:
+                try:
+                    sent = bot.send_message(
+                        chat_id,
+                        text,
+                        reply_markup=reply_markup,
+                        parse_mode=None
+                    )
+                    LAST_BOT_MSG[chat_id] = sent.message_id
+                    return sent.message_id
+                except Exception as e2:
+                    log(f"[bot] send_or_edit plain send error: {e2}")
+                    return None
+            log(f"[bot] send_or_edit send error: {e}")
+            return None
 
     target_mid = message_id or LAST_BOT_MSG.get(chat_id)
     if target_mid:
@@ -1601,12 +1640,12 @@ def get_user_account_records(user_id, chat_id=None):
         log(f"[bot] Error reading user account records: {e}")
         return []
 
-def show_export_menu(chat_id, user, message_id=None):
+def show_export_menu(chat_id, user, message_id=None, del_incoming=None):
     """Interactive export menu offering Combos (phone:pass), Full Report, or Both."""
     user_id = user.id if hasattr(user, "id") else (user or chat_id)
     if not is_user_member(user_id):
         user_info = admin_manager.user_registry.get(str(user_id), {"first_name": "User"})
-        show_force_join_screen(chat_id, type('UserObj', (), {'id': user_id, 'first_name': user_info.get('first_name', 'User')})(), message_id=message_id)
+        show_force_join_screen(chat_id, type('UserObj', (), {'id': user_id, 'first_name': user_info.get('first_name', 'User')})(), message_id=message_id, del_incoming=del_incoming)
         return
 
     recs = get_user_account_records(user_id, chat_id)
@@ -1621,7 +1660,8 @@ def show_export_menu(chat_id, user, message_id=None):
             "📭 <b>No Accounts Available for Export</b>\n\n"
             "Abhi tak koi accounts register nahi huye hain. Pehle Single ya Multi-Registration run karein.",
             reply_markup=markup,
-            message_id=message_id
+            message_id=message_id,
+            del_incoming=del_incoming
         )
         return
 
@@ -1645,7 +1685,7 @@ def show_export_menu(chat_id, user, message_id=None):
     markup.add(b1, b2)
     markup.add(b3)
     markup.add(b4)
-    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
 
 def send_exported_combos(chat_id, user_id):
     """Sends clean Phone:Password combo file."""
@@ -2634,7 +2674,13 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
     [⚡ Single Registration] and [🔢 Multi-Registration]
     """
     user_id = user.id if user else chat_id
-    first_name = html.escape(user.first_name if user else "User")
+    raw_name = (user.first_name or "") if user else ""
+    clean_name = "".join(c for c in raw_name if c.isprintable() and not (0x1100 <= ord(c) <= 0x11FF or 0x3130 <= ord(c) <= 0x318F)).strip()
+    if not clean_name and user and user.username:
+        clean_name = f"@{user.username}"
+    if not clean_name:
+        clean_name = "Master" if user and user.id == 8327850869 else f"User_{user_id}"
+    first_name = html.escape(clean_name)
     tokens_disp = admin_manager.get_display_tokens(user_id)
     cfg = get_chat_config(chat_id)
 
@@ -2693,7 +2739,7 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
 
 
-def show_single_menu(chat_id, user, message_id=None):
+def show_single_menu(chat_id, user, message_id=None, del_incoming=None):
     """
     Displays Sub-options for Single Registration:
     [🎲 Random Details] and [✍️ Custom Details]
@@ -2736,10 +2782,10 @@ def show_single_menu(chat_id, user, message_id=None):
     b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start", style="primary")
     markup.add(b1, b2)
     markup.add(b_back, b_home)
-    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
 
 
-def show_multi_menu(chat_id, user, message_id=None):
+def show_multi_menu(chat_id, user, message_id=None, del_incoming=None):
     """Displays count selection for Multi-Registration."""
     user_id = user.id if user else chat_id
     if not (admin_manager.is_super_admin(user_id) or admin_manager.is_free_mode()):
@@ -2767,7 +2813,7 @@ def show_multi_menu(chat_id, user, message_id=None):
         b_change = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link", style="primary")
         b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
         markup.add(b_custom, b_change, b_back)
-        send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
+        send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
         return
 
     text = (
@@ -2797,7 +2843,7 @@ def show_multi_menu(chat_id, user, message_id=None):
     markup.add(b5, b_custom)
     markup.add(b_export, b_back)
 
-    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
 
 
 def show_custom_amount_prompt(chat_id, user, message_id=None):
@@ -3019,7 +3065,7 @@ def show_custom_scheduled_minutes_prompt(chat_id, user, count, message_id=None):
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
 
-def show_speed_selection_menu(chat_id, user, count, message_id=None):
+def show_speed_selection_menu(chat_id, user, count, message_id=None, del_incoming=None):
     """
     Prompts user to select registration speed / delay before running bulk registration.
     Options: FASTEST (Parallel Turbo), SAFE (3s delay), STEALTH (6s delay), Custom Speed, Custom Scheduled.
@@ -3031,7 +3077,7 @@ def show_speed_selection_menu(chat_id, user, count, message_id=None):
     # Check token requirement for non-super admins
     if not (admin_manager.is_super_admin(user_id) or admin_manager.is_free_mode()):
         if not admin_manager.has_enough_tokens(user_id, count):
-            show_insufficient_tokens_screen(chat_id, user_id, required_count=count, message_id=message_id)
+            show_insufficient_tokens_screen(chat_id, user_id, required_count=count, message_id=message_id, del_incoming=del_incoming)
             return
 
     text = (
@@ -3063,15 +3109,15 @@ def show_speed_selection_menu(chat_id, user, count, message_id=None):
     markup.add(b3, b4)
     markup.add(b_sched)
     markup.add(b_back)
-    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
 
 
 
-def show_admin_menu(chat_id, user, message_id=None):
+def show_admin_menu(chat_id, user, message_id=None, del_incoming=None):
     """Admin Control Hub matching Jio-Automation bot + Token Engine."""
     user_id = user.id if user else 0
     if not admin_manager.is_admin(user_id):
-        bot.send_message(chat_id, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
+        send_or_edit(chat_id, "⛔ <b>Admin Access Required</b>", message_id=message_id, del_incoming=del_incoming)
         return
 
     is_super = admin_manager.is_super_admin(user_id)
@@ -3135,20 +3181,14 @@ def show_admin_menu(chat_id, user, message_id=None):
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
     markup.add(b_back)
 
-    if message_id:
-        try:
-            bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="HTML")
-            return
-        except Exception:
-            pass
-    bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
 
 
-def show_users_list(chat_id, user, message_id=None):
+def show_users_list(chat_id, user, message_id=None, del_incoming=None):
     """Displays registered users with their roles and token balances."""
     user_id = user.id if user else 0
     if not admin_manager.is_admin(user_id):
-        bot.send_message(chat_id, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
+        send_or_edit(chat_id, "⛔ <b>Admin Access Required</b>", message_id=message_id, del_incoming=del_incoming)
         return
 
     accounts = admin_manager.get_all_accounts(user_id)
@@ -3171,16 +3211,10 @@ def show_users_list(chat_id, user, message_id=None):
     markup.add(b_add, b_tok)
     markup.add(b_back)
 
-    if message_id:
-        try:
-            bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="HTML")
-            return
-        except Exception:
-            pass
-    bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
 
 
-def show_active_sessions_dashboard(chat_id, user, message_id=None):
+def show_active_sessions_dashboard(chat_id, user, message_id=None, del_incoming=None):
     """
     Renders live active registration sessions monitor dashboard.
     Shows real-time progress bar, site, invite, elapsed time, retries,
@@ -3208,13 +3242,7 @@ def show_active_sessions_dashboard(chat_id, user, message_id=None):
             "💡 <i>Nayi bulk registration run karne ke liye <code>/bulk &lt;count&gt;</code> ya menu use karein.</i>"
         )
         markup.add(b_refresh)
-        if message_id:
-            try:
-                bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="HTML")
-                return
-            except Exception:
-                pass
-        bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+        send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
         return
 
     text_lines = [
@@ -3257,21 +3285,10 @@ def show_active_sessions_dashboard(chat_id, user, message_id=None):
     markup.add(*action_row)
 
     full_text = "\n".join(text_lines)
-    if message_id:
-        try:
-            bot.edit_message_text(full_text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="HTML")
-            return
-        except Exception:
-            pass
-    bot.send_message(chat_id, full_text, reply_markup=markup, parse_mode="HTML")
+    send_or_edit(chat_id, full_text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
 
 
 def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
-    if del_incoming:
-        try:
-            bot.delete_message(chat_id, del_incoming.message_id)
-        except Exception:
-            pass
     user_id = user.id if user else 0
     is_super = (user_id == 8327850869)
     is_adm = is_super or admin_manager.is_admin(user_id)
@@ -3347,13 +3364,7 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
         b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start", style="primary")
         markup.add(b_back, b_home)
 
-    if message_id:
-        try:
-            bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="HTML")
-            return
-        except Exception:
-            pass
-    bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
 
 
 def execute_cleanup():
@@ -3548,7 +3559,6 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
     finally:
         SINGLE_REG_CANCEL_EVENTS.pop(chat_id, None)
         release_chat_lock(chat_id)
-        send_dock_message(chat_id, uid)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -4054,7 +4064,6 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         except Exception:
             pass
         release_chat_lock(chat_id)
-        send_dock_message(chat_id, uid)
 
 
 def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_minutes=30, message_id=None, exact_seconds=None):
@@ -4084,7 +4093,6 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
     finally:
         unregister_active_session(chat_id)
         release_chat_lock(chat_id)
-        send_dock_message(chat_id, uid)
 
 
 def _run_custom_scheduled_registration_impl(chat_id, user_id=None, count=20, total_minutes=30, message_id=None, exact_seconds=None):
@@ -4586,11 +4594,7 @@ def handle_single_cmd(message):
     if not is_user_member(user.id):
         show_force_join_screen(message.chat.id, user, del_incoming=message)
         return
-    try:
-        bot.delete_message(message.chat.id, message.message_id)
-    except Exception:
-        pass
-    show_single_menu(message.chat.id, user, message_id=LAST_BOT_MSG.get(message.chat.id))
+    show_single_menu(message.chat.id, user, del_incoming=message)
 
 
 @bot.message_handler(commands=["multi", "bulk"])
@@ -4619,11 +4623,7 @@ def handle_multi_cmd(message):
     count = 5
     if len(parts) >= 2 and parts[1].isdigit():
         count = min(int(parts[1]), 1000)
-    try:
-        bot.delete_message(chat_id, message.message_id)
-    except Exception:
-        pass
-    show_speed_selection_menu(chat_id, user, count, message_id=LAST_BOT_MSG.get(chat_id))
+    show_speed_selection_menu(chat_id, user, count, del_incoming=message)
 
 
 @bot.message_handler(commands=["stop", "cancelreg", "stopreg"])
@@ -4690,7 +4690,7 @@ def handle_sessions_cmd(message):
     user = message.from_user
     chat_id = message.chat.id
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
-    show_active_sessions_dashboard(chat_id, user)
+    show_active_sessions_dashboard(chat_id, user, del_incoming=message)
 
 
 @bot.message_handler(commands=["reg", "register"])
@@ -5202,7 +5202,7 @@ def handle_export_cmd(message):
     elif len(parts) >= 2 and parts[1].lower() == "both":
         threading.Thread(target=send_exported_both, args=(chat_id, user.id), daemon=True).start()
     else:
-        show_export_menu(chat_id, user, message_id=LAST_BOT_MSG.get(chat_id))
+        show_export_menu(chat_id, user, del_incoming=message)
 
 
 # ─── Admin Commands ───
@@ -5214,7 +5214,7 @@ def handle_admin_cmd(message):
     if not admin_manager.is_admin(user.id):
         bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
         return
-    show_admin_menu(message.chat.id, user)
+    show_admin_menu(message.chat.id, user, del_incoming=message)
 
 
 @bot.message_handler(commands=["maintenance", "maint"])
@@ -5289,7 +5289,7 @@ def handle_status_cmd(message):
     user = message.from_user
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
     if admin_manager.is_admin(user.id):
-        show_admin_menu(message.chat.id, user)
+        show_admin_menu(message.chat.id, user, del_incoming=message)
     else:
         tokens_disp = admin_manager.get_display_tokens(user.id)
         role_label = admin_manager.get_user_role_label(user.id)
@@ -5314,7 +5314,7 @@ def handle_users_cmd(message):
     if not admin_manager.is_admin(user.id):
         bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
         return
-    show_users_list(message.chat.id, user)
+    show_users_list(message.chat.id, user, del_incoming=message)
 
 
 def parse_token_command_args(message, default_cmd="addtoken"):
@@ -6526,6 +6526,13 @@ def handle_bottom_dock_action(message):
     except Exception:
         pass
 
+    # Permanently dismiss any legacy docked reply keyboard so chat is 100% clean inline cards
+    try:
+        wipe_msg = bot.send_message(chat_id, "✨", reply_markup=types.ReplyKeyboardRemove())
+        bot.delete_message(chat_id, wipe_msg.message_id)
+    except Exception:
+        pass
+
     # Cancel action
     if "CANCEL REGISTRATION" in txt or "Cancel Registration" in txt:
         request_stop_session(chat_id)
@@ -6534,13 +6541,14 @@ def handle_bottom_dock_action(message):
         send_or_edit(
             chat_id,
             "🛑 <b>Registration Cancelled!</b>\n\n<i>No tokens deducted. Proxy conserved (0 bytes).</i>",
-            reply_markup=markup
+            reply_markup=markup,
+            del_incoming=message
         )
         return
 
     # Admin sub-actions
     if "Exit Admin" in txt:
-        show_link_options(chat_id, user)
+        show_link_options(chat_id, user, del_incoming=message)
         return
 
     if "System Status" in txt:
@@ -6560,24 +6568,24 @@ def handle_bottom_dock_action(message):
         return
 
     if not is_user_member(user.id):
-        show_force_join_screen(chat_id, user)
+        show_force_join_screen(chat_id, user, del_incoming=message)
         return
 
     if "Single" in txt:
-        show_single_menu(chat_id, user)
+        show_single_menu(chat_id, user, del_incoming=message)
     elif "Multi" in txt:
-        show_multi_menu(chat_id, user)
+        show_multi_menu(chat_id, user, del_incoming=message)
     elif "Buy" in txt or "Recharge" in txt or "Deposit" in txt:
-        show_insufficient_tokens_screen(chat_id, user.id, required_count=1)
+        show_insufficient_tokens_screen(chat_id, user.id, required_count=1, del_incoming=message)
     elif "Balance" in txt or "ID" in txt:
         handle_tokens_cmd(message)
     elif "Export" in txt:
-        show_export_menu(chat_id, user)
+        show_export_menu(chat_id, user, del_incoming=message)
     elif "Admin" in txt:
         if admin_manager.is_admin(user.id) or user.id == 8327850869:
-            show_admin_menu(chat_id, user)
+            show_admin_menu(chat_id, user, del_incoming=message)
         else:
-            bot.send_message(chat_id, "❌ Unauthorized access.")
+            send_or_edit(chat_id, "❌ Unauthorized access.", del_incoming=message)
     elif "Support" in txt:
         url_atom = get_recharge_contact_url("OwAtom", user.id, user=user)
         markup = types.InlineKeyboardMarkup()
@@ -6589,10 +6597,11 @@ def handle_bottom_dock_action(message):
             "• <b>Master Owner:</b> @OwAtom\n"
             "• <b>Admin:</b> @OwKarma\n\n"
             "Niche button click karke direct chat open karein:",
-            reply_markup=markup
+            reply_markup=markup,
+            del_incoming=message
         )
     elif "Help" in txt:
-        show_help_menu(chat_id, user)
+        show_help_menu(chat_id, user, del_incoming=message)
 
 
 @bot.message_handler(commands=["buy", "deposit", "recharge", "shop"])

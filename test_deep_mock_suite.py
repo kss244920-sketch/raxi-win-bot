@@ -204,6 +204,56 @@ class TestRaxiBotDeep(unittest.TestCase):
         self.assertIn("Android", dev1["ua"])
         self.assertIsNotNone(dev1["model"])
 
+    def test_10_command_and_callback_in_place_editing_flow(self):
+        """
+        Verify end-to-end interactive flow:
+        1. /start cleans incoming message, sends fresh card at bottom, stores message_id.
+        2. Inline button click calls callback handler which EDITS the card in place.
+        3. All screen transitions edit the exact same card in-place with 0 new messages.
+        """
+        self.bot_mock.reset_mock()
+        sent_card = MockMessage(text="", mid=2001)
+        self.bot_mock.send_message.return_value = sent_card
+
+        # Step 1: User sends /start
+        user_msg = MockMessage(text="/start", mid=5001)
+        raxi4_bot.handle_start(user_msg)
+
+        # Incoming /start must be deleted
+        self.bot_mock.delete_message.assert_any_call(user_msg.chat.id, 5001)
+        # Fresh card sent at bottom
+        self.assertEqual(raxi4_bot.LAST_BOT_MSG[user_msg.chat.id], 2001)
+
+        # Step 2: User clicks "⚡ Single Registration" inline button on that card
+        self.bot_mock.reset_mock()
+        cq_single = MockCallbackQuery(data="reg_single", mid=2001)
+        raxi4_bot.handle_callback_clicks(cq_single)
+
+        # Must edit the card in place, NOT send_message!
+        self.assertEqual(self.bot_mock.send_message.call_count, 0)
+        self.assertEqual(self.bot_mock.edit_message_text.call_count, 1)
+        self.assertEqual(self.bot_mock.edit_message_text.call_args.kwargs["message_id"], 2001)
+
+        # Step 3: User clicks "🔙 Back to Options"
+        self.bot_mock.reset_mock()
+        cq_back = MockCallbackQuery(data="show_link_options", mid=2001)
+        raxi4_bot.handle_callback_clicks(cq_back)
+
+        # Must edit in place again
+        self.assertEqual(self.bot_mock.send_message.call_count, 0)
+        self.assertEqual(self.bot_mock.edit_message_text.call_count, 1)
+        self.assertEqual(self.bot_mock.edit_message_text.call_args.kwargs["message_id"], 2001)
+
+        # Step 4: User clicks "👑 Admin Control Hub"
+        self.bot_mock.reset_mock()
+        cq_admin = MockCallbackQuery(data="menu_admin", mid=2001)
+        raxi4_bot.handle_callback_clicks(cq_admin)
+
+        # Must edit in place into Admin menu!
+        self.assertEqual(self.bot_mock.send_message.call_count, 0)
+        self.assertEqual(self.bot_mock.edit_message_text.call_count, 1)
+        self.assertEqual(self.bot_mock.edit_message_text.call_args.kwargs["message_id"], 2001)
+
 
 if __name__ == "__main__":
     unittest.main()
