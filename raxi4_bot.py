@@ -7210,6 +7210,32 @@ def _handle_callback_clicks_inner(call):
         )
         bot.register_next_step_handler(msg, process_admin_adduser_step, user_id)
 
+    elif data == "admin_broadcast_info":
+        if not admin_manager.is_admin(user_id):
+            try:
+                bot.answer_callback_query(call.id, "⛔ Admin Access Required", show_alert=True)
+            except Exception:
+                pass
+            return
+        try:
+            bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔙 Back to Admin Menu", callback_data="menu_admin", style="danger"))
+        send_or_edit(
+            chat_id,
+            "📢 <b>Broadcast Announcement:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Sabhi bot users ko global message bhejne ke liye command use karein:\n\n"
+            "👉 <b>Command Syntax:</b>\n"
+            "<code>/broadcast &lt;message&gt;</code>\n\n"
+            "<b>Example:</b>\n"
+            "<code>/broadcast New proxy server live! Speed boosted.</code>\n\n"
+            "<i>(Yeh message registered users ko direct dispatch kiya jayega)</i>",
+            reply_markup=markup,
+            message_id=msg_id
+        )
+
     elif data == "cancel_single_reg":
         if chat_id in SINGLE_REG_CANCEL_EVENTS:
             SINGLE_REG_CANCEL_EVENTS[chat_id].set()
