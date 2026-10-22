@@ -2649,20 +2649,20 @@ def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_single = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random", style="primary")
-    b_multi = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi", style="primary")
+    b_single = types.InlineKeyboardButton("⚡ Single Reg", callback_data="single_random", style="success")
+    b_multi = types.InlineKeyboardButton("🔢 Multi Reg", callback_data="reg_multi", style="primary")
     markup.add(b_single, b_multi)
 
-    b_tok = types.InlineKeyboardButton("🎫 My Balance & ID", callback_data="my_tokens", style="primary")
-    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="success")
+    b_tok = types.InlineKeyboardButton("🎫 Balance & ID", callback_data="my_tokens", style="primary")
+    b_export = types.InlineKeyboardButton("📋 Export Accounts", callback_data="export_txt", style="success")
     markup.add(b_tok, b_export)
 
-    b_link = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link", style="primary")
+    b_link = types.InlineKeyboardButton("🔗 Change Link", callback_data="ask_new_link", style="primary")
     b_help = types.InlineKeyboardButton("❓ Help & Guide", callback_data="show_help", style="primary")
     markup.add(b_link, b_help)
 
     if admin_manager.is_admin(user_id):
-        b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin", style="primary")
+        b_admin = types.InlineKeyboardButton("👑 Admin Hub", callback_data="menu_admin", style="danger")
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
@@ -2720,20 +2720,20 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random", style="primary")
-    b2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi", style="primary")
+    b1 = types.InlineKeyboardButton("⚡ Single Reg", callback_data="single_random", style="success")
+    b2 = types.InlineKeyboardButton("🔢 Multi Reg", callback_data="reg_multi", style="primary")
     markup.add(b1, b2)
 
-    b3 = types.InlineKeyboardButton("✍️ Custom Details (OTP)", callback_data="single_custom", style="primary")
-    b4 = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="success")
+    b3 = types.InlineKeyboardButton("✍️ Custom OTP" if sms_req else "✍️ Custom Details", callback_data="single_custom", style="primary")
+    b4 = types.InlineKeyboardButton("📋 Export Accounts", callback_data="export_txt", style="success")
     markup.add(b3, b4)
 
-    b_tok = types.InlineKeyboardButton("🎫 My Balance & ID", callback_data="my_tokens", style="primary")
-    b_link = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link", style="primary")
+    b_tok = types.InlineKeyboardButton("🎫 Balance & ID", callback_data="my_tokens", style="primary")
+    b_link = types.InlineKeyboardButton("🔗 Change Link", callback_data="ask_new_link", style="primary")
     markup.add(b_tok, b_link)
 
     if admin_manager.is_admin(user_id):
-        b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin", style="primary")
+        b_admin = types.InlineKeyboardButton("👑 Admin Hub", callback_data="menu_admin", style="danger")
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
@@ -2776,7 +2776,7 @@ def show_single_menu(chat_id, user, message_id=None, del_incoming=None):
         f"{info_lines}"
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("🎲 Random Details", callback_data="single_random", style="primary")
+    b1 = types.InlineKeyboardButton("🎲 Random Details", callback_data="single_random", style="success")
     b2 = types.InlineKeyboardButton("✍️ Custom Details" + (" (OTP)" if sms_req else ""), callback_data="single_custom", style="primary")
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
     b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start", style="primary")
@@ -2830,13 +2830,13 @@ def show_multi_menu(chat_id, user, message_id=None, del_incoming=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("5 Accounts", callback_data="multi_run_5", style="primary")
-    b2 = types.InlineKeyboardButton("10 Accounts", callback_data="multi_run_10", style="primary")
+    b1 = types.InlineKeyboardButton("5 Accounts", callback_data="multi_run_5", style="success")
+    b2 = types.InlineKeyboardButton("10 Accounts", callback_data="multi_run_10", style="success")
     b3 = types.InlineKeyboardButton("50 Accounts", callback_data="multi_run_50", style="primary")
     b4 = types.InlineKeyboardButton("100 Accounts", callback_data="multi_run_100", style="primary")
     b5 = types.InlineKeyboardButton("500 Accounts", callback_data="multi_run_500", style="primary")
     b_custom = types.InlineKeyboardButton("✍️ Custom Fast", callback_data="multi_custom", style="primary")
-    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="success")
+    b_export = types.InlineKeyboardButton("📋 Export Accounts", callback_data="export_txt", style="success")
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
     markup.add(b1, b2)
     markup.add(b3, b4)
@@ -3162,8 +3162,8 @@ def show_admin_menu(chat_id, user, message_id=None, del_incoming=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_maint = types.InlineKeyboardButton("🛠️ Maintenance: ON" if admin_manager.is_maintenance_mode() else "🛠️ Maintenance: OFF", callback_data="toggle_maint", style="danger" if admin_manager.is_maintenance_mode() else "primary")
-    b_rate = types.InlineKeyboardButton("⚡ Anti-Flood: ON" if admin_manager.is_rate_limit_enabled() else "⚡ Anti-Flood: OFF", callback_data="toggle_rate", style="primary")
+    b_maint = types.InlineKeyboardButton("🛠️ Maintenance: ON" if admin_manager.is_maintenance_mode() else "🛠️ Maintenance: OFF", callback_data="toggle_maint", style="danger" if admin_manager.is_maintenance_mode() else "success")
+    b_rate = types.InlineKeyboardButton("⚡ Anti-Flood: ON" if admin_manager.is_rate_limit_enabled() else "⚡ Anti-Flood: OFF", callback_data="toggle_rate", style="success" if admin_manager.is_rate_limit_enabled() else "danger")
     markup.add(b_maint, b_rate)
 
     b_users = types.InlineKeyboardButton("👥 Manage Users", callback_data="admin_users", style="primary")
@@ -3174,8 +3174,8 @@ def show_admin_menu(chat_id, user, message_id=None, del_incoming=None):
     b_sx = types.InlineKeyboardButton("🌐 SX Proxy Status", callback_data="admin_sx_status", style="primary")
     markup.add(b_sess, b_sx)
 
-    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="success")
-    b_bcast = types.InlineKeyboardButton("📢 Broadcast Announcement", callback_data="admin_broadcast_info", style="primary")
+    b_export = types.InlineKeyboardButton("📋 Export Accounts", callback_data="export_txt", style="success")
+    b_bcast = types.InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast_info", style="primary")
     markup.add(b_export, b_bcast)
 
     b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
@@ -3348,15 +3348,15 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
     text += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_single = types.InlineKeyboardButton("⚡ Single Reg", callback_data="single_random", style="primary")
+    b_single = types.InlineKeyboardButton("⚡ Single Reg", callback_data="single_random", style="success")
     b_multi = types.InlineKeyboardButton("🔢 Multi Reg", callback_data="reg_multi", style="primary")
-    b_tokens = types.InlineKeyboardButton("🎫 My Balance", callback_data="my_tokens", style="primary")
-    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="success")
+    b_tokens = types.InlineKeyboardButton("🎫 Balance & ID", callback_data="my_tokens", style="primary")
+    b_export = types.InlineKeyboardButton("📋 Export Accounts", callback_data="export_txt", style="success")
     markup.add(b_single, b_multi)
     markup.add(b_tokens, b_export)
 
     if is_adm:
-        b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin", style="primary")
+        b_admin = types.InlineKeyboardButton("👑 Admin Hub", callback_data="menu_admin", style="danger")
         b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
         markup.add(b_admin, b_back)
     else:
@@ -5226,18 +5226,9 @@ def handle_maintenance_cmd(message):
         return
 
     new_mode = admin_manager.toggle_maintenance_mode()
-    halted = 0
     if new_mode:
-        halted = halt_non_owner_sessions()
-    mode_text = "ENABLED ⚠️ (Only Owner allowed)" if new_mode else "DISABLED 🟢 (Public Access Restored)"
-    halt_info = f"\n• <i>Active sessions stopped: {halted}</i>" if (new_mode and halted > 0) else ""
-    bot.reply_to(
-        message,
-        f"🛠️ <b>Maintenance Mode Updated!</b>\n\n"
-        f"• Status: <b>{mode_text}</b>{halt_info}\n\n"
-        f"<i>{'Ab sirf Owner bot use kar sakte hain (Admins aur users sabhi blocked hain).' if new_mode else 'Sabhi users ab bot use kar sakte hain.'}</i>",
-        parse_mode="HTML"
-    )
+        halt_non_owner_sessions()
+    show_admin_menu(message.chat.id, user, del_incoming=message)
 
 
 @bot.message_handler(commands=["freemode"])
@@ -5248,15 +5239,8 @@ def handle_freemode_cmd(message):
         bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
         return
 
-    new_mode = admin_manager.toggle_free_mode()
-    mode_text = "ENABLED 🟢 (Free Mode ON — No Tokens Required)" if new_mode else "DISABLED 🔴 (Tokens Required)"
-    bot.reply_to(
-        message,
-        f"👑 <b>Free Mode Status Updated!</b>\n\n"
-        f"• Status: <b>{mode_text}</b>\n\n"
-        f"<i>Sabhi users ke liye registration {'bina tokens ke khula hai' if new_mode else 'tokens ke sath chalega'}.</i>",
-        parse_mode="HTML"
-    )
+    admin_manager.toggle_free_mode()
+    show_admin_menu(message.chat.id, user, del_incoming=message)
 
 
 @bot.message_handler(commands=["setstorage", "storagechannel"])
