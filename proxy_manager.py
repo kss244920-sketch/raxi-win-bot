@@ -273,10 +273,9 @@ class ProxyManager:
                 purged.append(key)
                 logger.info(f"Purging expired/exhausted SX account: {key[:6]}... (balance: {bal} bytes, ${usd_bal} USD)")
 
-        if purged:
-            self.sx_config["accounts"] = remaining
-            self.sx_config["active"] = len(remaining) > 0
-            self.save_sx_config(self.sx_config)
+        self.sx_config["accounts"] = remaining
+        self.sx_config["active"] = len(remaining) > 0
+        self.save_sx_config(self.sx_config)
 
         return purged
 
@@ -402,7 +401,13 @@ class ProxyManager:
 
         tot_mb = round(total_bytes / (1024 * 1024), 2)
         tot_gb = round(total_bytes / (1024 * 1024 * 1024), 2)
-        approx_accounts = int(total_bytes / (25 * 1024))
+        if total_bytes > 0:
+            approx_accounts = int(total_bytes / (25 * 1024))
+        elif total_usd > 0:
+            est_bytes = (total_usd / 3.0) * (1024 * 1024 * 1024)
+            approx_accounts = int(est_bytes / (25 * 1024))
+        else:
+            approx_accounts = 0
 
         lines.append(f"\n📊 <b>Total Combined Data:</b> <code>{tot_mb} MB (~{tot_gb} GB)</code>")
         if total_usd > 0:

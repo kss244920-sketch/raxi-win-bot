@@ -830,9 +830,14 @@ USED_MODELS_BY_DOMAIN = {}
 DEVICE_LOCK = threading.Lock()
 USED_DEVICES_FILE = os.path.join(DATA_DIR, "used_devices.json")
 
+# ─── Zero-Collision Phone Pool & Memory Registry ───
+USED_PHONE_NUMBERS = set()
+IN_FLIGHT_PHONES = set()
+PHONE_LOCK = threading.Lock()
+
 def load_used_devices():
-    """Loads historical used device IDs and domain model allocations from JSON and accounts log."""
-    global USED_DEVICE_IDS, USED_MODELS_BY_DOMAIN
+    """Loads historical used device IDs, domain model allocations, and historical phone numbers."""
+    global USED_DEVICE_IDS, USED_MODELS_BY_DOMAIN, USED_PHONE_NUMBERS
     with DEVICE_LOCK:
         for c in [USED_DEVICES_FILE, os.path.join(BASE_DIR, "used_devices.json")]:
             if os.path.exists(c):
@@ -846,12 +851,16 @@ def load_used_devices():
                 except Exception as e:
                     log(f"[devices] Error loading {c}: {e}")
 
-        # Scan accounts file to capture past model usage per domain
+        # Scan accounts file to capture past model usage per domain and historical phones
         for c in [ACCOUNTS_FILE, os.path.join(DATA_DIR, "raxi_accounts.txt"), os.path.join(BASE_DIR, "raxi_accounts.txt")]:
             if os.path.exists(c):
                 try:
                     with open(c, "r", encoding="utf-8", errors="ignore") as f:
                         for line in f:
+                            m_ph = re.search(r'Phone:\s*(\S+)', line)
+                            if m_ph:
+                                with PHONE_LOCK:
+                                    USED_PHONE_NUMBERS.add(m_ph.group(1).strip())
                             m_site = re.search(r'Site:\s*https?://([^ /|]+)', line)
                             dom = proxy_manager.normalize_domain(m_site.group(1)) if m_site else "default"
                             m_dev = re.search(r'Device:\s*([^|]+)', line)
@@ -868,7 +877,7 @@ def load_used_devices():
                 except Exception:
                     pass
 
-        log(f"[devices] Loaded {len(USED_DEVICE_IDS)} unique historical device IDs across {len(USED_MODELS_BY_DOMAIN)} domains.")
+        log(f"[devices] Loaded {len(USED_DEVICE_IDS)} unique historical device IDs across {len(USED_MODELS_BY_DOMAIN)} domains. Loaded {len(USED_PHONE_NUMBERS)} unique historical phone numbers.")
 
 load_used_devices()
 
@@ -1427,10 +1436,18 @@ def get_chat_config(chat_id):
     return CHAT_CONFIGS[chat_id]
 
 def generate_random_phone():
-    """Generates a realistic 10-digit Indian phone number."""
-    prefix = random.choice(INDIAN_PREFIXES)
-    suffix = "".join([str(random.randint(0, 9)) for _ in range(8)])
-    return f"{prefix}{suffix}"
+    """Generates a realistic 10-digit Indian phone number guaranteed to have never been used before."""
+    with PHONE_LOCK:
+        for _ in range(100):
+            prefix = random.choice(INDIAN_PREFIXES)
+            suffix = "".join([str(random.randint(0, 9)) for _ in range(8)])
+            phone = f"{prefix}{suffix}"
+            if phone not in USED_PHONE_NUMBERS and phone not in IN_FLIGHT_PHONES:
+                IN_FLIGHT_PHONES.add(phone)
+                return phone
+        phone = f"{random.choice(INDIAN_PREFIXES)}{''.join([str(random.randint(0, 9)) for _ in range(8)])}"
+        IN_FLIGHT_PHONES.add(phone)
+        return phone
 
 def generate_random_password():
     """Generates an 8-character alphanumeric password satisfying site requirements."""
@@ -1458,6 +1475,9 @@ RE_TOK = re.compile(r"Token:\s*(\S+)")
 
 def save_account_to_file(phone, password, uid, token, invite, site="https://www.raxi4.com", device=None, proxy=None, creator_id=None):
     """Saves successfully created account to raxi_accounts.txt with creator isolation, IST timestamp, and thread safety."""
+    with PHONE_LOCK:
+        USED_PHONE_NUMBERS.add(str(phone))
+        IN_FLIGHT_PHONES.discard(str(phone))
     ist_tz = timezone(timedelta(hours=5, minutes=30))
     ts = datetime.now(ist_tz).strftime("%Y-%m-%d %H:%M:%S")
     dev = device or "Generic Android"
@@ -1929,9 +1949,10 @@ def count_saved_accounts():
 #  CORE REGISTRATION WORKER
 # ═══════════════════════════════════════════════════════════════════════════
 
-def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=2, creator_id=None, smsvcode="", api_type=None, session_id=None):
+def auto_register_account(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=1, creator_id=None, smsvcode="", api_type=None, session_id=None):
     """
     Registers a new account with dynamic phone, password, device profile, and proxy rotation.
+    Strict minimal proxy usage: 1 shot per registration, 0 proxy bytes on captcha/slider.
     Protected by GLOBAL_REG_SEMAPHORE to ensure max 8 parallel workers across all users (RAM/CPU safe).
     """
     with GLOBAL_REG_SEMAPHORE:
@@ -1941,7 +1962,7 @@ def auto_register_account(phone=None, password=None, invite=None, site=None, api
             smsvcode=smsvcode, api_type=api_type, session_id=session_id
         )
 
-def _auto_register_account_impl(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=2, creator_id=None, smsvcode="", api_type=None, session_id=None):
+def _auto_register_account_impl(phone=None, password=None, invite=None, site=None, api=None, max_search_attempts=1, creator_id=None, smsvcode="", api_type=None, session_id=None):
     target_site = site or SITE
     target_api = api or API
     target_invite = invite or INVITE
@@ -1978,6 +1999,8 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
                 else:
                     proxy_manager.release_in_flight_ip(verified_ip, domain=domain)
             release_in_flight_device(device_id)
+            with PHONE_LOCK:
+                IN_FLIGHT_PHONES.discard(target_phone)
 
         base_headers = {
             "User-Agent": dev_ua,
@@ -2105,13 +2128,24 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
             continue
 
         # 2. Solve slider puzzle via native PIL + NumPy contour matching (0 KB network data)
+        container_x = None
+        score = 0
         try:
             container_x, score = solve_slider(bg_b64, sl_b64)
-            track = make_track(container_x)
         except Exception as exc:
             log(f"[bot] Slider solver error: {exc}")
-            container_x = random.randint(110, 210)
-            track = make_track(container_x)
+            container_x = None
+            score = 0
+
+        # STRICT PROXY PROTECTION: If slider cannot be solved with confidence, DO NOT spend residential proxy!
+        if container_x is None or score <= 0:
+            log(f"[bot] Slider puzzle contour matching low confidence (score={score}, x={container_x}). Aborting attempt before touching residential proxy.")
+            last_error = "Slider puzzle contour matching low confidence"
+            _cleanup_in_flight()
+            time.sleep(0.2)
+            continue
+
+        track = make_track(container_x)
 
         # 3. FAST ISOLATED RESIDENTIAL PROXY ACQUISITION:
         # Strictly acquired only AFTER Captcha is 100% verified & slider solved.
@@ -2239,6 +2273,10 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
 
             # Mark device permanently used across all domains and for this domain's model rotation
             mark_device_used(device_id, domain=domain, model=dev_model)
+
+            with PHONE_LOCK:
+                USED_PHONE_NUMBERS.add(target_phone)
+                IN_FLIGHT_PHONES.discard(target_phone)
 
             # Mark verified IP permanently used for this domain
             if verified_ip:
@@ -3453,7 +3491,7 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
                 creator_id=uid,
                 smsvcode=smsvcode,
                 api_type=cfg.get("api_type"),
-                max_search_attempts=2
+                max_search_attempts=1
             )
 
             if not res.get("ok"):
@@ -3691,7 +3729,14 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                     cooldown_wait_cycles[0] = 0
 
                 try:
-                    res = auto_register_account(site=target_site, api=target_api, invite=target_invite, creator_id=uid, api_type=cfg.get("api_type"))
+                    res = auto_register_account(
+                        site=target_site,
+                        api=target_api,
+                        invite=target_invite,
+                        creator_id=uid,
+                        api_type=cfg.get("api_type"),
+                        max_search_attempts=1
+                    )
                 except Exception as e:
                     log(f"[bot] auto_register_account unexpected exception in worker: {e}")
                     res = {"ok": False, "msg": str(e)}
@@ -4204,7 +4249,8 @@ def _run_custom_scheduled_registration_impl(chat_id, user_id=None, count=20, tot
                     api=target_api,
                     invite=target_invite,
                     creator_id=uid,
-                    api_type=api_type
+                    api_type=api_type,
+                    max_search_attempts=1
                 )
             except Exception as e:
                 log(f"[bot] Scheduled register exception: {e}")
