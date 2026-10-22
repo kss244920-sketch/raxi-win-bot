@@ -128,7 +128,7 @@ seed_persistent_file("working_proxies.txt")
 seed_persistent_file("fresh_raw_proxies.txt")
 seed_persistent_file("used_devices.json")
 
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True, num_threads=24, use_class_middlewares=True)
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML", threaded=True, num_threads=10, use_class_middlewares=True)
 
 # ─── TeleCore Sliding Window Anti-Flood & Maintenance Mode Guard ───
 from telebot.handler_backends import CancelUpdate, BaseMiddleware
@@ -1016,6 +1016,7 @@ def sign_arsaas(body):
     Uses a 12-digit random integer and uppercase MD5 of sorted non-empty keys.
     """
     t = dict(body)
+    t.setdefault("language", "en")
     t.pop("signature", None)
     t.pop("timestamp", None)
     t["random"] = random.randint(100000000000, 999999999999)
@@ -1088,6 +1089,20 @@ def detect_and_parse_referral_link(text_or_url):
     if not invite_code:
         invite_code = INVITE
 
+    domain_lower = parsed.netloc.lower()
+
+    # FAST PATH 1: Instant AR-SAAS resolution (MaanWin, GoaGames, BigDaddy, Tiranga, 13l, etc.)
+    if any(k in domain_lower for k in ["maanwin", "goagame", "bigdaddy", "tiranga", "13l."]):
+        return {
+            "site": base_site,
+            "api": f"{base_site}/api",
+            "api_type": "arsaas",
+            "invite": invite_code,
+            "domain": get_base_domain(parsed.netloc),
+            "raw_url": raw_url,
+            "sms_required": False
+        }
+
     # 2. Check Platform Engine (AR-SAAS vs VITE/WEBAPI)
     # Check 2A: AR-SAAS platform (MaanWin, GoaGames, BigDaddy, Tiranga, 13l.world, etc.)
     for c_host in candidate_hosts:
@@ -1096,8 +1111,13 @@ def detect_and_parse_referral_link(text_or_url):
             r_ar = requests.post(
                 f"{c_site}/api/Home/Captcha",
                 json=sign_arsaas({}),
-                headers={"Origin": c_site, "Referer": f"{c_site}/register", "Content-Type": "application/json;charset=UTF-8"},
-                timeout=2.5,
+                headers={
+                    "Origin": c_site,
+                    "Referer": f"{c_site}/register",
+                    "Content-Type": "application/json;charset=UTF-8",
+                    "User-Agent": "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/129.0.0.0 Mobile Safari/537.36"
+                },
+                timeout=3.0,
                 allow_redirects=True
             )
             if r_ar.status_code == 200 and r_ar.json().get("data", {}).get("captchaId"):
@@ -1232,11 +1252,12 @@ def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
       api_type: str
     """
     parsed = urllib.parse.urlparse(current_site)
-    if api_type == "arsaas" or "/Home" in str(api_url) or api_url == f"{current_site}/api":
+    domain_lower = parsed.netloc.lower()
+    if api_type == "arsaas" or "/Home" in str(api_url) or api_url == f"{current_site}/api" or any(k in domain_lower for k in ["maanwin", "goagame", "bigdaddy", "tiranga", "13l"]):
         return {
             "sms_required": False,
             "site": current_site,
-            "api": api_url,
+            "api": f"{current_site}/api" if not str(api_url).endswith("/api") else api_url,
             "domain": get_base_domain(parsed.netloc),
             "switched_mirror": False,
             "mirror_count": 0,
@@ -1329,7 +1350,7 @@ def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
         return None
 
     live_scanned = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         results = list(executor.map(test_single_mirror, candidates))
 
     for item in results:
@@ -1574,7 +1595,7 @@ def show_export_menu(chat_id, user, message_id=None):
 
     if total_accs == 0:
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger"))
+        markup.add(types.InlineKeyboardButton("🔴 🔙 Back to Options", callback_data="show_link_options"))
         send_or_edit(
             chat_id,
             "📭 <b>No Accounts Available for Export</b>\n\n"
@@ -1597,10 +1618,10 @@ def show_export_menu(chat_id, user, message_id=None):
         f"• 📦 <b>Download Both:</b> Dono files ek sath send hongi."
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("📱 Phone:Pass Combos", callback_data="do_export_combos", style="primary")
-    b2 = types.InlineKeyboardButton("📑 Full Report (.txt)", callback_data="do_export_full", style="primary")
-    b3 = types.InlineKeyboardButton("📦 Download Both Files", callback_data="do_export_both", style="success")
-    b4 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
+    b1 = types.InlineKeyboardButton("🔵 📱 Phone:Pass Combos", callback_data="do_export_combos")
+    b2 = types.InlineKeyboardButton("📑 📑 Full Report (.txt)", callback_data="do_export_full")
+    b3 = types.InlineKeyboardButton("🟢 📦 Download Both Files", callback_data="do_export_both")
+    b4 = types.InlineKeyboardButton("🔴 🔙 Back to Options", callback_data="show_link_options")
     markup.add(b1, b2)
     markup.add(b3)
     markup.add(b4)
@@ -1725,6 +1746,27 @@ def send_exported_accounts(chat_id, user_id):
     """Maintains backward compatibility by launching the full report."""
     send_exported_full_report(chat_id, user_id)
 
+def truncate_html_caption(html_text: str, max_len: int = 1000) -> str:
+    """Safely truncates an HTML caption so it stays under 1024 characters without breaking tags."""
+    if not html_text or len(html_text) <= max_len:
+        return html_text or ""
+    cutoff = html_text[:max_len - 30]
+    last_nl = cutoff.rfind("\n")
+    if last_nl > max_len // 2:
+        cutoff = cutoff[:last_nl]
+    open_tags = []
+    for tag_match in re.finditer(r"<(/?[a-zA-Z]+)[^>]*>", cutoff):
+        tag = tag_match.group(1)
+        if tag.startswith("/"):
+            tag_name = tag[1:].lower()
+            if open_tags and open_tags[-1] == tag_name:
+                open_tags.pop()
+        else:
+            open_tags.append(tag.lower())
+    for tag in reversed(open_tags):
+        cutoff += f"</{tag}>"
+    return cutoff
+
 def dispatch_storage_channel_audit(user_id, action_type, site, invite, accounts_list, tokens_deducted=0, doc_bytes=None, filename=None, notes=""):
     """
     Comprehensive Master Storage Audit Log:
@@ -1777,10 +1819,12 @@ def dispatch_storage_channel_audit(user_id, action_type, site, invite, accounts_
             f"🛡️ <i>Permanent cloud archival & history tracking.</i>"
         )
 
+        safe_caption = truncate_html_caption(audit_caption, 1000)
+
         if doc_bytes:
             bio = io.BytesIO(doc_bytes)
             bio.name = filename or f"audit_{user_id}_{int(time.time())}.txt"
-            bot.send_document(storage_ch, bio, caption=audit_caption[:1024], parse_mode="HTML")
+            bot.send_document(storage_ch, bio, caption=safe_caption, parse_mode="HTML")
         elif isinstance(accounts_list, list) and accounts_list:
             lines = [
                 f"# Master Storage Audit Export",
@@ -1797,7 +1841,7 @@ def dispatch_storage_channel_audit(user_id, action_type, site, invite, accounts_
             f_bytes = "\n".join(lines).encode("utf-8")
             bio = io.BytesIO(f_bytes)
             bio.name = filename or f"audit_{user_id}_{int(time.time())}.txt"
-            bot.send_document(storage_ch, bio, caption=audit_caption[:1024], parse_mode="HTML")
+            bot.send_document(storage_ch, bio, caption=safe_caption, parse_mode="HTML")
         else:
             bot.send_message(storage_ch, audit_caption, parse_mode="HTML")
         log(f"[storage_audit] Successfully dispatched audit to master storage channel {storage_ch} for user {user_id}")
@@ -1903,7 +1947,9 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
     target_invite = invite or INVITE
     domain = get_base_domain(urllib.parse.urlparse(target_site).netloc)
 
-    is_arsaas = (api_type == "arsaas") or ("/Home" in str(target_api)) or (target_api == f"{target_site}/api") or ("maanwin" in domain)
+    is_arsaas = (api_type == "arsaas") or ("/Home" in str(target_api)) or (target_api == f"{target_site}/api") or any(k in domain for k in ["maanwin", "goagame", "bigdaddy", "tiranga", "13l"])
+    if is_arsaas and not str(target_api).endswith("/api"):
+        target_api = f"{target_site}/api"
 
     is_auto = (phone is None)
     last_error = "Unknown error"
@@ -2343,8 +2389,8 @@ def show_force_join_screen(chat_id, user, message_id=None, del_incoming=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=1)
-    b_join = types.InlineKeyboardButton("📢 Join @owabyss", url=CHANNEL_URL, style="primary")
-    b_verify = types.InlineKeyboardButton("🔄 Verify Membership", callback_data="verify_join", style="success")
+    b_join = types.InlineKeyboardButton("📢 Join @owabyss", url=CHANNEL_URL)
+    b_verify = types.InlineKeyboardButton("🟢 🔄 Verify Membership", callback_data="verify_join")
     markup.add(b_join, b_verify)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
@@ -2374,11 +2420,17 @@ def get_recharge_contact_url(admin_username: str, user_id: int, user=None, requi
     return f"https://t.me/{admin_username}?text={encoded}"
 
 
-def show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_id=None):
+def show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_id=None, del_incoming=None):
     """
     Renders professional Insufficient Tokens / Funds screen directing user to @OwAtom or @OwKarma.
     Covers both 0 balance and partial balance shortage (e.g. need 10, have 5-6).
     """
+    if del_incoming and hasattr(del_incoming, "message_id"):
+        try:
+            bot.delete_message(chat_id, del_incoming.message_id)
+        except Exception:
+            pass
+
     avail = admin_manager.get_tokens(user_id)
     shortage = max(0, required_count - avail)
 
@@ -2415,10 +2467,10 @@ def show_insufficient_tokens_screen(chat_id, user_id, required_count=1, message_
     url_karma = get_recharge_contact_url("OwKarma", user_id, required_count=required_count)
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_atom = types.InlineKeyboardButton("💬 Message @OwAtom", url=url_atom, style="primary")
-    b_karma = types.InlineKeyboardButton("💬 Message @OwKarma", url=url_karma, style="primary")
-    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
-    b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start", style="primary")
+    b_atom = types.InlineKeyboardButton("💬 Message @OwAtom", url=url_atom)
+    b_karma = types.InlineKeyboardButton("💬 Message @OwKarma", url=url_karma)
+    b_back = types.InlineKeyboardButton("🔴 🔙 Back to Options", callback_data="show_link_options")
+    b_home = types.InlineKeyboardButton("🏠 🏠 Main Menu", callback_data="show_start")
     markup.add(b_atom, b_karma)
     markup.add(b_back, b_home)
 
@@ -2513,20 +2565,20 @@ def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_single = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random")
-    b_multi = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi")
+    b_single = types.InlineKeyboardButton("🟢 ⚡ Single Registration", callback_data="single_random")
+    b_multi = types.InlineKeyboardButton("🔵 🔢 Multi-Registration", callback_data="reg_multi")
     markup.add(b_single, b_multi)
 
-    b_tok = types.InlineKeyboardButton("🎫 My Balance & ID", callback_data="my_tokens")
-    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt")
+    b_tok = types.InlineKeyboardButton("🟡 🎫 My Balance & ID", callback_data="my_tokens")
+    b_export = types.InlineKeyboardButton("🟣 📋 Export Accounts (.txt)", callback_data="export_txt")
     markup.add(b_tok, b_export)
 
-    b_link = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link")
-    b_help = types.InlineKeyboardButton("❓ Help & Guide", callback_data="show_help")
+    b_link = types.InlineKeyboardButton("🔗 🔗 Change Platform Link", callback_data="ask_new_link")
+    b_help = types.InlineKeyboardButton("❓ ❓ Help & Guide", callback_data="show_help")
     markup.add(b_link, b_help)
 
     if admin_manager.is_admin(user_id):
-        b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin")
+        b_admin = types.InlineKeyboardButton("👑 👑 Admin Control Hub", callback_data="menu_admin")
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
@@ -2578,20 +2630,20 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random")
-    b2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi")
+    b1 = types.InlineKeyboardButton("🟢 ⚡ Single Registration", callback_data="single_random")
+    b2 = types.InlineKeyboardButton("🔵 🔢 Multi-Registration", callback_data="reg_multi")
     markup.add(b1, b2)
 
-    b3 = types.InlineKeyboardButton("✍️ Custom Details (OTP)", callback_data="single_custom")
-    b4 = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt")
+    b3 = types.InlineKeyboardButton("✍️ ✍️ Custom Details (OTP)", callback_data="single_custom")
+    b4 = types.InlineKeyboardButton("🟣 📋 Export Accounts (.txt)", callback_data="export_txt")
     markup.add(b3, b4)
 
-    b_tok = types.InlineKeyboardButton("🎫 My Balance & ID", callback_data="my_tokens")
-    b_link = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link")
+    b_tok = types.InlineKeyboardButton("🟡 🎫 My Balance & ID", callback_data="my_tokens")
+    b_link = types.InlineKeyboardButton("🔗 🔗 Change Platform Link", callback_data="ask_new_link")
     markup.add(b_tok, b_link)
 
     if admin_manager.is_admin(user_id):
-        b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin")
+        b_admin = types.InlineKeyboardButton("👑 👑 Admin Control Hub", callback_data="menu_admin")
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
@@ -2634,10 +2686,10 @@ def show_single_menu(chat_id, user, message_id=None):
         f"{info_lines}"
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("🎲 Random Details", callback_data="single_random")
-    b2 = types.InlineKeyboardButton("✍️ Custom Details" + (" (OTP)" if sms_req else ""), callback_data="single_custom")
-    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
-    b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
+    b1 = types.InlineKeyboardButton("🎲 🎲 Random Details", callback_data="single_random")
+    b2 = types.InlineKeyboardButton("✍️ ✍️ Custom Details" + (" (OTP)" if sms_req else ""), callback_data="single_custom")
+    b_back = types.InlineKeyboardButton("🔴 🔙 Back to Options", callback_data="show_link_options")
+    b_home = types.InlineKeyboardButton("🏠 🏠 Main Menu", callback_data="show_start")
     markup.add(b1, b2)
     markup.add(b_back, b_home)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
@@ -2669,7 +2721,7 @@ def show_multi_menu(chat_id, user, message_id=None):
         markup = types.InlineKeyboardMarkup(row_width=1)
         b_custom = types.InlineKeyboardButton("⚡ Use Single (Custom OTP)", callback_data="single_custom")
         b_change = types.InlineKeyboardButton("🔗 Change Platform Link", callback_data="ask_new_link")
-        b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
+        b_back = types.InlineKeyboardButton("🔴 🔙 Back to Options", callback_data="show_link_options")
         markup.add(b_custom, b_change, b_back)
         send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
         return
@@ -2688,14 +2740,14 @@ def show_multi_menu(chat_id, user, message_id=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ 5 Accounts (5 🎫)", callback_data="multi_run_5")
-    b2 = types.InlineKeyboardButton("⚡ 10 Accounts (10 🎫)", callback_data="multi_run_10")
-    b3 = types.InlineKeyboardButton("⚡ 50 Accounts (50 🎫)", callback_data="multi_run_50")
-    b4 = types.InlineKeyboardButton("⚡ 100 Accounts (100 🎫)", callback_data="multi_run_100")
-    b5 = types.InlineKeyboardButton("⚡ 500 Accounts (500 🎫)", callback_data="multi_run_500")
-    b_custom = types.InlineKeyboardButton("✍️ Custom Fast", callback_data="multi_custom")
-    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt")
-    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
+    b1 = types.InlineKeyboardButton("🟢 ⚡ 5 Accounts (5 🎫)", callback_data="multi_run_5")
+    b2 = types.InlineKeyboardButton("🔵 ⚡ 10 Accounts (10 🎫)", callback_data="multi_run_10")
+    b3 = types.InlineKeyboardButton("🟣 ⚡ 50 Accounts (50 🎫)", callback_data="multi_run_50")
+    b4 = types.InlineKeyboardButton("🟠 ⚡ 100 Accounts (100 🎫)", callback_data="multi_run_100")
+    b5 = types.InlineKeyboardButton("🔥 ⚡ 500 Accounts (500 🎫)", callback_data="multi_run_500")
+    b_custom = types.InlineKeyboardButton("✍️ ✍️ Custom Fast", callback_data="multi_custom")
+    b_export = types.InlineKeyboardButton("🟣 📋 Export Accounts (.txt)", callback_data="export_txt")
+    b_back = types.InlineKeyboardButton("🔴 🔙 Back to Options", callback_data="show_link_options")
     markup.add(b1, b2)
     markup.add(b3, b4)
     markup.add(b5, b_custom)
@@ -2725,7 +2777,7 @@ def show_custom_amount_prompt(chat_id, user, message_id=None):
         f"💡 <i>Ya fir direct command use karein:</i> <code>/bulk &lt;number&gt;</code>"
     )
     markup = types.InlineKeyboardMarkup(row_width=1)
-    b_back = types.InlineKeyboardButton("🔙 Back to Multi-Menu", callback_data="reg_multi", style="danger")
+    b_back = types.InlineKeyboardButton("🔙 Back to Multi-Menu", callback_data="reg_multi")
     markup.add(b_back)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
@@ -2757,13 +2809,13 @@ def show_custom_scheduled_count_prompt(chat_id, user, message_id=None, default_c
         f"<i>(1 Token = 1 Account)</i>"
     )
     markup = types.InlineKeyboardMarkup(row_width=3)
-    b1 = types.InlineKeyboardButton("10 Accounts", callback_data="sched_cnt_10", style="primary")
-    b2 = types.InlineKeyboardButton("25 Accounts", callback_data="sched_cnt_25", style="primary")
-    b3 = types.InlineKeyboardButton("50 Accounts", callback_data="sched_cnt_50", style="primary")
-    b4 = types.InlineKeyboardButton("100 Accounts", callback_data="sched_cnt_100", style="primary")
-    b5 = types.InlineKeyboardButton("200 Accounts", callback_data="sched_cnt_200", style="primary")
-    b6 = types.InlineKeyboardButton("500 Accounts", callback_data="sched_cnt_500", style="primary")
-    b_back = types.InlineKeyboardButton("🔙 Cancel / Back", callback_data="reg_multi", style="danger")
+    b1 = types.InlineKeyboardButton("10 Accounts", callback_data="sched_cnt_10")
+    b2 = types.InlineKeyboardButton("25 Accounts", callback_data="sched_cnt_25")
+    b3 = types.InlineKeyboardButton("50 Accounts", callback_data="sched_cnt_50")
+    b4 = types.InlineKeyboardButton("100 Accounts", callback_data="sched_cnt_100")
+    b5 = types.InlineKeyboardButton("200 Accounts", callback_data="sched_cnt_200")
+    b6 = types.InlineKeyboardButton("500 Accounts", callback_data="sched_cnt_500")
+    b_back = types.InlineKeyboardButton("🔙 Cancel / Back", callback_data="reg_multi")
     markup.add(b1, b2, b3)
     markup.add(b4, b5, b6)
     markup.add(b_back)
@@ -2915,9 +2967,9 @@ def show_custom_scheduled_minutes_prompt(chat_id, user, count, message_id=None):
         f"• Bot dynamic organic delay calculate karke live dashboard me <b>har account ka scheduled timestamp</b> show karega."
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⏱️ In Minutes (e.g. 30m)", callback_data=f"sched_unit_{count}_min", style="primary")
-    b2 = types.InlineKeyboardButton("⏳ In Hours (e.g. 2h)", callback_data=f"sched_unit_{count}_hr", style="primary")
-    b_back = types.InlineKeyboardButton("🔙 Back to Step 1", callback_data="multi_sched", style="danger")
+    b1 = types.InlineKeyboardButton("⏱️ In Minutes (e.g. 30m)", callback_data=f"sched_unit_{count}_min")
+    b2 = types.InlineKeyboardButton("⏳ In Hours (e.g. 2h)", callback_data=f"sched_unit_{count}_hr")
+    b_back = types.InlineKeyboardButton("🔴 🔙 Back to Step 1", callback_data="multi_sched")
     markup.add(b1, b2)
     markup.add(b_back)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
@@ -2957,12 +3009,12 @@ def show_speed_selection_menu(chat_id, user, count, message_id=None):
         f"  Aap total accounts & minutes batao — bot random times par 1-1 ya 2-2 karke target reach karega! <i>(100% Turbo Safe)</i>"
     )
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ FASTEST (Turbo)", callback_data=f"bspeed_{count}_0", style="success")
-    b2 = types.InlineKeyboardButton("🛡️ SAFE (3s Delay)", callback_data=f"bspeed_{count}_3", style="primary")
-    b3 = types.InlineKeyboardButton("🐢 STEALTH (6s)", callback_data=f"bspeed_{count}_6", style="primary")
-    b4 = types.InlineKeyboardButton("⏱️ Custom Gap", callback_data=f"bspeed_{count}_custom", style="primary")
-    b_sched = types.InlineKeyboardButton("🎲 Custom Scheduled (Random Human Time) 🌟", callback_data=f"bspeed_{count}_sched", style="primary")
-    b_back = types.InlineKeyboardButton("🔙 Back to Multi-Menu", callback_data="reg_multi", style="danger")
+    b1 = types.InlineKeyboardButton("🟢 ⚡ FASTEST (Turbo)", callback_data=f"bspeed_{count}_0")
+    b2 = types.InlineKeyboardButton("🔵 🛡️ SAFE (3s Delay)", callback_data=f"bspeed_{count}_3")
+    b3 = types.InlineKeyboardButton("🐢 🐢 STEALTH (6s)", callback_data=f"bspeed_{count}_6")
+    b4 = types.InlineKeyboardButton("⏱️ ⏱️ Custom Gap", callback_data=f"bspeed_{count}_custom")
+    b_sched = types.InlineKeyboardButton("🎲 🎲 Custom Scheduled Plan 🌟", callback_data=f"bspeed_{count}_sched")
+    b_back = types.InlineKeyboardButton("🔴 🔙 Back to Multi-Menu", callback_data="reg_multi")
     markup.add(b1, b2)
     markup.add(b3, b4)
     markup.add(b_sched)
@@ -3020,23 +3072,23 @@ def show_admin_menu(chat_id, user, message_id=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_maint = types.InlineKeyboardButton("🛠️ Maint: ACTIVE ⚠️" if admin_manager.is_maintenance_mode() else "🛠️ Maint: OFF 🟢", callback_data="toggle_maint", style="danger" if admin_manager.is_maintenance_mode() else "primary")
-    b_rate = types.InlineKeyboardButton("⚡ Anti-Flood: ON 🟢" if admin_manager.is_rate_limit_enabled() else "⚡ Anti-Flood: OFF 🔴", callback_data="toggle_rate", style="primary")
+    b_maint = types.InlineKeyboardButton("🛠️ Maint: ACTIVE ⚠️" if admin_manager.is_maintenance_mode() else "🛠️ Maint: OFF 🟢", callback_data="toggle_maint")
+    b_rate = types.InlineKeyboardButton("⚡ Anti-Flood: ON 🟢" if admin_manager.is_rate_limit_enabled() else "⚡ Anti-Flood: OFF 🔴", callback_data="toggle_rate")
     markup.add(b_maint, b_rate)
 
-    b_users = types.InlineKeyboardButton("👥 Manage Users", callback_data="admin_users", style="primary")
-    b_tok = types.InlineKeyboardButton("🎫 Manage Tokens", callback_data="admin_token_help", style="primary")
+    b_users = types.InlineKeyboardButton("👥 Manage Users", callback_data="admin_users")
+    b_tok = types.InlineKeyboardButton("🎫 Manage Tokens", callback_data="admin_token_help")
     markup.add(b_users, b_tok)
 
-    b_sess = types.InlineKeyboardButton("📊 Active Sessions", callback_data="admin_sessions", style="primary")
-    b_sx = types.InlineKeyboardButton("🌐 SX Proxy Status", callback_data="admin_sx_status", style="primary")
+    b_sess = types.InlineKeyboardButton("📊 Active Sessions", callback_data="admin_sessions")
+    b_sx = types.InlineKeyboardButton("🌐 SX Proxy Status", callback_data="admin_sx_status")
     markup.add(b_sess, b_sx)
 
-    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="success")
-    b_bcast = types.InlineKeyboardButton("📢 Broadcast Announcement", callback_data="admin_broadcast_info", style="primary")
+    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt")
+    b_bcast = types.InlineKeyboardButton("📢 Broadcast Announcement", callback_data="admin_broadcast_info")
     markup.add(b_export, b_bcast)
 
-    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
+    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
     markup.add(b_back)
 
     try:
@@ -3074,9 +3126,9 @@ def show_users_list(chat_id, user, message_id=None):
         text = "\n".join(lines)
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_add = types.InlineKeyboardButton("➕ Add User (/adduser)", callback_data="admin_adduser_help", style="primary")
-    b_tok = types.InlineKeyboardButton("🎫 Add Tokens (/addtoken)", callback_data="admin_token_help", style="primary")
-    b_back = types.InlineKeyboardButton("🔙 Back to Admin Menu", callback_data="menu_admin", style="danger")
+    b_add = types.InlineKeyboardButton("➕ Add User (/adduser)", callback_data="admin_adduser_help")
+    b_tok = types.InlineKeyboardButton("🎫 Add Tokens (/addtoken)", callback_data="admin_token_help")
+    b_back = types.InlineKeyboardButton("🔙 Back to Admin Menu", callback_data="menu_admin")
     markup.add(b_add, b_tok)
     markup.add(b_back)
 
@@ -3107,7 +3159,7 @@ def show_active_sessions_dashboard(chat_id, user, message_id=None):
         sessions = [s for s in sessions if s.get("chat_id") == chat_id or s.get("user_id") == user_id]
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_refresh = types.InlineKeyboardButton("🔄 Refresh", callback_data="sessions_refresh", style="primary")
+    b_refresh = types.InlineKeyboardButton("🔄 Refresh", callback_data="sessions_refresh")
 
     if not sessions:
         text = (
@@ -3154,7 +3206,7 @@ def show_active_sessions_dashboard(chat_id, user, message_id=None):
         text_lines.append("────────────────────────────")
 
         stop_buttons.append(
-            types.InlineKeyboardButton(f"🛑 Stop #{idx} ({s_comp}/{s_count})", callback_data=f"stop_reg_{s_chat}", style="danger")
+            types.InlineKeyboardButton(f"🔴 🛑 Stop #{idx} ({s_comp}/{s_count})", callback_data=f"stop_reg_{s_chat}")
         )
 
     for btn in stop_buttons:
@@ -3162,7 +3214,7 @@ def show_active_sessions_dashboard(chat_id, user, message_id=None):
 
     action_row = [b_refresh]
     if is_super and len(sessions) > 1:
-        action_row.append(types.InlineKeyboardButton("🛑 STOP ALL SESSIONS", callback_data="sessions_stop_all", style="danger"))
+        action_row.append(types.InlineKeyboardButton("🔴 🛑 STOP ALL SESSIONS", callback_data="sessions_stop_all"))
     markup.add(*action_row)
 
     full_text = "\n".join(text_lines)
@@ -3240,20 +3292,20 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
     text += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_single = types.InlineKeyboardButton("⚡ Single Reg", callback_data="single_random", style="primary")
-    b_multi = types.InlineKeyboardButton("🔢 Multi Reg", callback_data="reg_multi", style="primary")
-    b_tokens = types.InlineKeyboardButton("🎫 My Balance", callback_data="my_tokens", style="primary")
-    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt", style="success")
+    b_single = types.InlineKeyboardButton("⚡ Single Reg", callback_data="single_random")
+    b_multi = types.InlineKeyboardButton("🔢 Multi Reg", callback_data="reg_multi")
+    b_tokens = types.InlineKeyboardButton("🎫 My Balance", callback_data="my_tokens")
+    b_export = types.InlineKeyboardButton("📋 Export Accounts (.txt)", callback_data="export_txt")
     markup.add(b_single, b_multi)
     markup.add(b_tokens, b_export)
 
     if is_adm:
-        b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin", style="danger")
-        b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="primary")
+        b_admin = types.InlineKeyboardButton("👑 Admin Control Hub", callback_data="menu_admin")
+        b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
         markup.add(b_admin, b_back)
     else:
-        b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="primary")
-        b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start", style="danger")
+        b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
+        b_home = types.InlineKeyboardButton("🏠 Main Menu", callback_data="show_start")
         markup.add(b_back, b_home)
 
     if message_id:
@@ -3331,7 +3383,7 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
                 break
 
             cancel_markup = types.InlineKeyboardMarkup()
-            cancel_markup.add(types.InlineKeyboardButton(f"🛑 Cancel Registration ({sec_left}s)", callback_data="cancel_single_reg", style="danger"))
+            cancel_markup.add(types.InlineKeyboardButton(f"🔴 🛑 Cancel Registration ({sec_left}s)", callback_data="cancel_single_reg"))
             mid = send_or_edit(
                 chat_id,
                 f"⏳ <b>Single Registration Initializing...</b>\n"
@@ -3365,7 +3417,7 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
             except Exception:
                 pass
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="primary"))
+            markup.add(types.InlineKeyboardButton("🔴 🔙 Back to Options", callback_data="show_link_options"))
             send_or_edit(
                 chat_id,
                 f"🛑 <b>Single Registration Cancelled!</b>\n\n"
@@ -3407,7 +3459,7 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
             if not res.get("ok"):
                 err_msg = res.get("msg", "Registration failed.")
                 markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger"))
+                markup.add(types.InlineKeyboardButton("🔴 🔙 Back to Options", callback_data="show_link_options"))
                 send_or_edit(
                     chat_id,
                     f"❌ <b>Registration Failed</b>\n⚠️ Reason: <code>{html.escape(err_msg)}</code>\n\n<i>Note: Koi token deduct nahi hua.</i>",
@@ -3455,10 +3507,10 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
             )
 
             markup = types.InlineKeyboardMarkup(row_width=2)
-            btn1 = types.InlineKeyboardButton("⚡ Register Again (1 🎫)", callback_data="single_random", style="primary")
-            btn2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi", style="primary")
-            btn3 = types.InlineKeyboardButton("📋 Export .txt", callback_data="export_txt", style="success")
-            btn4 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="primary")
+            btn1 = types.InlineKeyboardButton("🟢 ⚡ Register Again (1 🎫)", callback_data="single_random")
+            btn2 = types.InlineKeyboardButton("🔵 🔢 Multi-Registration", callback_data="reg_multi")
+            btn3 = types.InlineKeyboardButton("🟣 📋 Export .txt", callback_data="export_txt")
+            btn4 = types.InlineKeyboardButton("🔴 🔙 Back to Options", callback_data="show_link_options")
             markup.add(btn1, btn2)
             markup.add(btn3, btn4)
 
@@ -3467,7 +3519,7 @@ def run_registration_and_send_ss(chat_id, user_id=None, phone=None, password=Non
         except Exception as e:
             log(f"[bot] Pipeline error: {e}")
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger"))
+            markup.add(types.InlineKeyboardButton("🔴 🔙 Back to Options", callback_data="show_link_options"))
             send_or_edit(
                 chat_id,
                 f"💥 <b>Error during registration:</b>\n<code>{html.escape(str(e))}</code>\n\n<i>Note: No tokens were deducted.</i>",
@@ -3527,7 +3579,7 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
             delay_note += f"• ⏳ Est. Total Duration: <code>{est_str}</code>\n"
 
         stop_markup = types.InlineKeyboardMarkup()
-        stop_markup.add(types.InlineKeyboardButton("🛑 Stop Registration", callback_data=f"stop_reg_{chat_id}", style="danger"))
+        stop_markup.add(types.InlineKeyboardButton("🔴 🛑 Stop Registration", callback_data=f"stop_reg_{chat_id}"))
 
         mid = send_or_edit(
             chat_id,
@@ -3734,10 +3786,10 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
         rem_tokens = admin_manager.get_display_tokens(uid)
 
         markup = types.InlineKeyboardMarkup(row_width=2)
-        b1 = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random", style="primary")
-        b2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi", style="primary")
-        b3 = types.InlineKeyboardButton("📋 Export .txt", callback_data="export_txt", style="success")
-        b4 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="primary")
+        b1 = types.InlineKeyboardButton("🟢 ⚡ Single Registration", callback_data="single_random")
+        b2 = types.InlineKeyboardButton("🔵 🔢 Multi-Registration", callback_data="reg_multi")
+        b3 = types.InlineKeyboardButton("🟣 📋 Export .txt", callback_data="export_txt")
+        b4 = types.InlineKeyboardButton("🔴 🔙 Back to Options", callback_data="show_link_options")
         markup.add(b1, b2)
         markup.add(b3, b4)
 
@@ -4011,6 +4063,16 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
         log(f"[bot] Registration already running in chat {chat_id}, skipping duplicate scheduled run.")
         return
 
+    try:
+        _run_custom_scheduled_registration_impl(chat_id, user_id=uid, count=count, total_minutes=total_minutes, message_id=message_id, exact_seconds=exact_seconds)
+    finally:
+        unregister_active_session(chat_id)
+        release_chat_lock(chat_id)
+        send_dock_message(chat_id, uid)
+
+
+def _run_custom_scheduled_registration_impl(chat_id, user_id=None, count=20, total_minutes=30, message_id=None, exact_seconds=None):
+    uid = user_id or chat_id
     cfg = get_chat_config(chat_id)
     target_site = cfg["site"]
     target_api = cfg["api"]
@@ -4024,7 +4086,7 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
 
     current_mid = [message_id]
     stop_markup = types.InlineKeyboardMarkup()
-    stop_markup.add(types.InlineKeyboardButton("🛑 Stop Registration", callback_data=f"stop_reg_{chat_id}", style="danger"))
+    stop_markup.add(types.InlineKeyboardButton("🔴 🛑 Stop Registration", callback_data=f"stop_reg_{chat_id}"))
 
     # Generate complete timeline upfront
     plan = generate_schedule_plan(start_time, count, total_seconds)
@@ -4209,9 +4271,9 @@ def run_custom_scheduled_registration(chat_id, user_id=None, count=20, total_min
     rem_tokens = admin_manager.get_display_tokens(uid)
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_again = types.InlineKeyboardButton("🎲 New Scheduled Run", callback_data="multi_sched", style="primary")
-    b_export = types.InlineKeyboardButton("📋 Export .txt", callback_data="export_txt", style="success")
-    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="primary")
+    b_again = types.InlineKeyboardButton("🎲 New Scheduled Run", callback_data="multi_sched")
+    b_export = types.InlineKeyboardButton("📋 Export .txt", callback_data="export_txt")
+    b_back = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
     markup.add(b_again, b_export)
     markup.add(b_back)
 
@@ -4472,7 +4534,7 @@ def handle_id_cmd(message):
         f"• <b>Token Balance:</b> <b>{tokens_disp}</b>"
     )
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="primary"))
+    markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options"))
     send_or_edit(message.chat.id, text, reply_markup=markup, del_incoming=message)
 
 
@@ -4495,11 +4557,11 @@ def handle_tokens_cmd(message):
     url_atom = get_recharge_contact_url("OwAtom", user.id, user=user)
     url_karma = get_recharge_contact_url("OwKarma", user.id, user=user)
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b1 = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random", style="primary")
-    b2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi", style="primary")
-    b_atom = types.InlineKeyboardButton("💬 Recharge: @OwAtom", url=url_atom, style="primary")
-    b_karma = types.InlineKeyboardButton("💬 Recharge: @OwKarma", url=url_karma, style="primary")
-    b3 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger")
+    b1 = types.InlineKeyboardButton("⚡ Single Registration", callback_data="single_random")
+    b2 = types.InlineKeyboardButton("🔢 Multi-Registration", callback_data="reg_multi")
+    b_atom = types.InlineKeyboardButton("💬 Recharge: @OwAtom", url=url_atom)
+    b_karma = types.InlineKeyboardButton("💬 Recharge: @OwKarma", url=url_karma)
+    b3 = types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
     markup.add(b1, b2)
     markup.add(b_atom, b_karma)
     markup.add(b3)
@@ -4800,7 +4862,7 @@ def handle_custom_reg_steps(message):
             except Exception:
                 pass
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg", style="danger"))
+            markup.add(types.InlineKeyboardButton("🔴 ❌ Cancel Registration", callback_data="cancel_custom_reg"))
             send_or_edit(
                 chat_id,
                 f"❌ <b>Invalid Mobile Number!</b>\n\n"
@@ -4821,7 +4883,7 @@ def handle_custom_reg_steps(message):
         CUSTOM_REG_STATE[uid]["phone"] = clean_phone
 
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg", style="danger"))
+        markup.add(types.InlineKeyboardButton("🔴 ❌ Cancel Registration", callback_data="cancel_custom_reg"))
         send_or_edit(
             chat_id,
             f"🔑 <b>Custom Registration — Step 2/{steps_total}</b>\n"
@@ -4843,7 +4905,7 @@ def handle_custom_reg_steps(message):
             except Exception:
                 pass
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg", style="danger"))
+            markup.add(types.InlineKeyboardButton("🔴 ❌ Cancel Registration", callback_data="cancel_custom_reg"))
             send_or_edit(
                 chat_id,
                 "❌ <b>Password too short!</b>\n\n"
@@ -4887,8 +4949,8 @@ def handle_custom_reg_steps(message):
         if not ok:
             CUSTOM_REG_STATE.pop(uid, None)
             markup = types.InlineKeyboardMarkup(row_width=2)
-            markup.add(types.InlineKeyboardButton("🔄 Try Again", callback_data="single_custom", style="primary"))
-            markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger"))
+            markup.add(types.InlineKeyboardButton("🟢 🔄 Try Again", callback_data="single_custom"))
+            markup.add(types.InlineKeyboardButton("🔴 🔙 Back to Options", callback_data="show_link_options"))
             send_or_edit(
                 chat_id,
                 f"❌ <b>SMS OTP Failed to Send!</b>\n\n"
@@ -4902,7 +4964,7 @@ def handle_custom_reg_steps(message):
 
         CUSTOM_REG_STATE[uid]["step"] = "otp"
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg", style="danger"))
+        markup.add(types.InlineKeyboardButton("🔴 ❌ Cancel Registration", callback_data="cancel_custom_reg"))
         send_or_edit(
             chat_id,
             f"📩 <b>Custom Registration — Step 3/3 (SMS OTP)</b>\n"
@@ -4926,7 +4988,7 @@ def handle_custom_reg_steps(message):
             except Exception:
                 pass
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg", style="danger"))
+            markup.add(types.InlineKeyboardButton("🔴 ❌ Cancel Registration", callback_data="cancel_custom_reg"))
             send_or_edit(
                 chat_id,
                 f"❌ <b>Invalid OTP format!</b>\n\n"
@@ -5064,8 +5126,8 @@ def handle_custom_scheduled_msg(message):
             req_m = max(0.1, sec / 60.0)
             req_str = f"{req_m:.1f}m" if req_m < 1.0 else f"{int(round(req_m))}m"
             markup = types.InlineKeyboardMarkup(row_width=1)
-            b_accept = types.InlineKeyboardButton(f"✅ Auto-Design ({min_safe_m}m Realistic Plan)", callback_data=f"sched_min_{count}_{min_safe_m}", style="success")
-            b_cancel = types.InlineKeyboardButton("❌ Cancel / Enter New Time", callback_data=f"sched_cnt_{count}", style="danger")
+            b_accept = types.InlineKeyboardButton(f"✅ Auto-Design ({min_safe_m}m Realistic Plan)", callback_data=f"sched_min_{count}_{min_safe_m}")
+            b_cancel = types.InlineKeyboardButton("❌ Cancel / Enter New Time", callback_data=f"sched_cnt_{count}")
             markup.add(b_accept, b_cancel)
             send_or_edit(
                 chat_id,
@@ -5936,12 +5998,12 @@ def show_super_statistics(chat_id, user, message_id=None):
     )
 
     markup = types.InlineKeyboardMarkup(row_width=2)
-    b_file = types.InlineKeyboardButton("📥 Download Full Audit (.txt)", callback_data="super_export_audit", style="success")
-    b_backup = types.InlineKeyboardButton("💾 Backup Database (.txt)", callback_data="super_cloud_backup", style="success")
-    b_search = types.InlineKeyboardButton("🔍 Search Link/Code", callback_data="super_search_prompt", style="primary")
+    b_file = types.InlineKeyboardButton("📥 Download Full Audit (.txt)", callback_data="super_export_audit")
+    b_backup = types.InlineKeyboardButton("💾 Backup Database (.txt)", callback_data="super_cloud_backup")
+    b_search = types.InlineKeyboardButton("🔍 Search Link/Code", callback_data="super_search_prompt")
     maint_txt = "🛠️ Maint: " + ("ON 🔒" if admin_manager.is_maintenance_mode() else "OFF 🟢")
-    b_maint = types.InlineKeyboardButton(maint_txt, callback_data="super_toggle_maint", style="danger" if admin_manager.is_maintenance_mode() else "primary")
-    b_refresh = types.InlineKeyboardButton("🔄 Refresh Stats", callback_data="super_stats_refresh", style="primary")
+    b_maint = types.InlineKeyboardButton(maint_txt, callback_data="super_toggle_maint")
+    b_refresh = types.InlineKeyboardButton("🔄 Refresh Stats", callback_data="super_stats_refresh")
     markup.add(b_file, b_backup)
     markup.add(b_search, b_maint)
     markup.add(b_refresh)
@@ -6544,8 +6606,8 @@ def handle_bottom_dock_action(message):
     elif "Support" in txt:
         url_atom = get_recharge_contact_url("OwAtom", user.id, user=user)
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("💬 Open Chat with @OwAtom", url=url_atom, style="primary"))
-        markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="danger"))
+        markup.add(types.InlineKeyboardButton("💬 Open Chat with @OwAtom", url=url_atom))
+        markup.add(types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options"))
         send_or_edit(
             chat_id,
             "💬 <b>Official Master Support:</b>\n\n"
@@ -6745,8 +6807,8 @@ def _handle_callback_clicks_inner(call):
             markup = types.InlineKeyboardMarkup(row_width=1)
             url_atom = get_recharge_contact_url("OwAtom", user_id, user=user)
             markup.add(
-                types.InlineKeyboardButton("💬 Contact Admin to Recharge (@OwAtom)", url=url_atom, style="primary"),
-                types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options", style="primary")
+                types.InlineKeyboardButton("💬 Contact Admin to Recharge (@OwAtom)", url=url_atom),
+                types.InlineKeyboardButton("🔙 Back to Options", callback_data="show_link_options")
             )
             send_or_edit(
                 chat_id,
@@ -6982,7 +7044,7 @@ def _handle_callback_clicks_inner(call):
         }
         unit_label = "Minutes (e.g. <code>30</code>, <code>45</code> ya <code>60</code>)" if unit == "min" else "Hours (e.g. <code>2</code>, <code>1.5</code> ya <code>3</code>)"
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🔙 Back to Step 2", callback_data=f"sched_cnt_{cnt}", style="danger"))
+        markup.add(types.InlineKeyboardButton("🔙 Back to Step 2", callback_data=f"sched_cnt_{cnt}"))
         send_or_edit(
             chat_id,
             f"⏱️ <b>Custom Scheduled Registration — Time Input</b>\n"
@@ -7437,7 +7499,7 @@ if __name__ == "__main__":
     log("[bot] Starting telegram infinity_polling loop...")
     while True:
         try:
-            bot.infinity_polling(timeout=30, long_polling_timeout=20)
+            bot.infinity_polling(timeout=30, long_polling_timeout=20, skip_pending=True)
         except KeyboardInterrupt:
             log("Bot stopped by user.")
             break
