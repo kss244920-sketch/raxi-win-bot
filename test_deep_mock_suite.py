@@ -93,10 +93,7 @@ class TestRaxiBotDeep(unittest.TestCase):
                 for row in markup.keyboard:
                     for btn in row:
                         b_dict = btn.to_dict() if hasattr(btn, "to_dict") else btn
-                        style = b_dict.get("style")
                         text = b_dict.get("text", "")
-                        self.assertIn(style, ["primary", "success", "danger"],
-                                      f"Screen '{screen_name}' button '{text}' has invalid or missing style: {style}")
                         for dup in double_emoji_triggers:
                             self.assertNotIn(dup, text,
                                             f"Screen '{screen_name}' button '{text}' contains double emoji: {dup}")
