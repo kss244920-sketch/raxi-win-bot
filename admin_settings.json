@@ -6,8 +6,8 @@
   "master_log_channel": "-1003946923981",
   "master_storage_channel": "-1003899151943",
   "admin_user_ids": [
-    8327850869,
     6217522461,
+    8327850869,
     8219398815
   ],
   "whitelisted_user_ids": [],
@@ -18,7 +18,7 @@
       "first_name": "Master",
       "role": "\ud83d\udc51 Owner / Super Admin",
       "joined_at": 1791360836.8728495,
-      "last_active": 1792747820.799704,
+      "last_active": 1792748936.1628134,
       "user_log_channel": null,
       "user_storage_channel": null,
       "tokens": 999999
