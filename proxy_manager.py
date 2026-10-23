@@ -279,6 +279,13 @@ class ProxyManager:
 
         return purged
 
+    def generate_session_id(self) -> str:
+        """Generates a high-entropy, timestamped, collision-proof mobile residential session ID."""
+        with self.lock:
+            self._session_seq = getattr(self, "_session_seq", 0) + 1
+            seq = self._session_seq
+        return f"{int(time.time() * 1000)}_{seq}_{secrets.token_hex(6)}"
+
     def get_next_proxy(self, exclude=None, domain: str = None, session_id: str = None) -> str:
         """
         Returns dynamic session-based proxy with fresh Indian IP from SX.ORG pool.
@@ -290,7 +297,7 @@ class ProxyManager:
                 acc = accounts[self.sx_account_index % len(accounts)]
                 self.sx_account_index = (self.sx_account_index + 1) % len(accounts)
 
-            sess = session_id or secrets.token_hex(6)
+            sess = session_id or self.generate_session_id()
             template = acc.get("login_template", "").replace("mode-hold", "mode-rotate")
             if "{session_id}" in template:
                 login = template.replace("{session_id}", sess)
@@ -553,7 +560,7 @@ class ProxyManager:
     def get_used_ips(self, domain: str = None) -> set:
         return self.get_used_proxies(domain=domain)
 
-    def acquire_session_with_unique_ip(self, domain: str = None, max_attempts: int = 4, preflight: bool = False) -> tuple:
+    def acquire_session_with_unique_ip(self, domain: str = None, max_attempts: int = 4, preflight: bool = False, session_id: str = None) -> tuple:
         """
         Acquires a fresh rotating mobile proxy session from SX.ORG.
         If preflight=False (default for turbo speed & minimal proxy data consumption):
@@ -576,7 +583,7 @@ class ProxyManager:
                 acc = accounts[self.sx_account_index % len(accounts)]
                 self.sx_account_index = (self.sx_account_index + 1) % len(accounts)
 
-            sess_id = f"{int(time.time())}_{secrets.token_hex(6)}"
+            sess_id = session_id or self.generate_session_id()
             template = acc.get("login_template", "").replace("mode-hold", "mode-rotate")
             if "{session_id}" in template:
                 login = template.replace("{session_id}", sess_id)
@@ -596,7 +603,7 @@ class ProxyManager:
                 acc = accounts[self.sx_account_index % len(accounts)]
                 self.sx_account_index = (self.sx_account_index + 1) % len(accounts)
 
-            sess_id = f"{int(time.time())}_{secrets.token_hex(6)}"
+            sess_id = session_id or self.generate_session_id()
             template = acc.get("login_template", "").replace("mode-hold", "mode-rotate")
             if "{session_id}" in template:
                 login = template.replace("{session_id}", sess_id)

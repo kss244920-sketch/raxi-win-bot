@@ -18,6 +18,7 @@ import shutil
 import gc
 import uuid
 import glob
+import collections
 import random
 import secrets
 import base64
@@ -258,24 +259,39 @@ CHANNEL_URL = "https://t.me/owabyss"
 # Global single-message tracking dictionary (chat_id -> message_id)
 LAST_BOT_MSG = {}
 LAST_DOCK_MSG = {}
+ALL_DOCK_MSGS = collections.defaultdict(set)
+LAST_DOCK_PHASE = {}
 
-def send_dock_message(chat_id, user_id=None, phase="main"):
+def send_dock_message(chat_id, user_id=None, phase="main", force=False):
     """Mounts or refreshes the persistent action keyboard cleanly docked beneath chat, adapting to screen phase."""
-    old_dock = LAST_DOCK_MSG.pop(chat_id, None)
-    if old_dock:
+    # Never duplicate if the exact dock phase is already active in chat
+    if not force and LAST_DOCK_PHASE.get(chat_id) == phase and chat_id in LAST_DOCK_MSG:
+        return LAST_DOCK_MSG.get(chat_id)
+
+    # Clean up all previous dock messages for this chat to prevent duplicate bubbles
+    mids_to_clean = list(ALL_DOCK_MSGS[chat_id])
+    if chat_id in LAST_DOCK_MSG:
+        mids_to_clean.append(LAST_DOCK_MSG[chat_id])
+    for mid in mids_to_clean:
         try:
-            bot.delete_message(chat_id, old_dock)
+            bot.delete_message(chat_id, mid)
         except Exception:
             pass
+    ALL_DOCK_MSGS[chat_id].clear()
+    LAST_DOCK_MSG.pop(chat_id, None)
+
     try:
         kb = get_dock_keyboard(user_id or chat_id, phase=phase)
         sent = bot.send_message(
             chat_id,
             "⚡ <b>Raxi Control Hub Active</b>",
             reply_markup=kb,
-            parse_mode="HTML"
+            parse_mode="HTML",
+            disable_notification=True
         )
         LAST_DOCK_MSG[chat_id] = sent.message_id
+        ALL_DOCK_MSGS[chat_id].add(sent.message_id)
+        LAST_DOCK_PHASE[chat_id] = phase
         return sent.message_id
     except Exception:
         return None
@@ -1748,7 +1764,8 @@ def show_export_menu(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b3)
     markup.add(b4)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    send_dock_message(chat_id, user_id, phase="export")
+    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "export":
+        send_dock_message(chat_id, user_id, phase="export")
 
 def send_exported_combos(chat_id, user_id):
     """Sends clean Phone:Password combo file."""
@@ -2083,7 +2100,7 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
     residential_bytes_spent = 0
     active_proxy = None
     verified_ip = None
-    account_session_id = session_id or secrets.token_hex(6)
+    account_session_id = session_id or proxy_manager.generate_session_id()
     for attempt in range(1, max_search_attempts + 1):
         target_phone = phone if not is_auto else generate_random_phone()
         target_pwd = password if password else generate_random_password()
@@ -2263,7 +2280,7 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
             break
 
         if not active_proxy:
-            active_proxy, verified_ip, account_session_id = proxy_manager.acquire_session_with_unique_ip(domain=domain, preflight=False)
+            active_proxy, verified_ip, account_session_id = proxy_manager.acquire_session_with_unique_ip(domain=domain, preflight=False, session_id=account_session_id)
         if not active_proxy:
             log(f"[bot] Could not acquire residential proxy session for {domain} (attempt {attempt}/{max_search_attempts}). Retrying with fresh session...")
             last_error = "Could not acquire residential proxy session"
@@ -2525,7 +2542,7 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
         last_error = msg or f"Error code {code}"
         time.sleep(0.2)
 
-    return {"ok": False, "msg": f"Could not register after rotating multiple IPs ({last_error}). Please try again."}
+    return {"ok": False, "msg": f"Registration unsuccessful ({last_error}). Please try again."}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2792,12 +2809,11 @@ def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
     cfg = get_chat_config(chat_id)
 
     text = (
-        f"👋 <b>Welcome {first_name}!</b>\n\n"
-        f"👤 <b>User:</b> {first_name} | 🆔 <b>ID:</b> <code>{user_id}</code>\n"
+        f"⚡ <b>Raxi Registration Control Hub</b>\n\n"
+        f"👋 <b>Welcome:</b> {first_name} | 🆔 <b>ID:</b> <code>{user_id}</code>\n"
         f"🎫 <b>Tokens:</b> <b>{tokens_disp}</b>\n\n"
         f"🌐 <b>Active Site:</b> <code>{cfg['site']}</code>\n"
         f"🎟️ <b>Invite Code:</b> <code>{cfg['invite']}</code>\n\n"
-        f"⚡ <b>Registration Hub:</b>\n"
         f"Niche button dabakar instant account create karein ya referral link chat me bhejein:\n"
         f"<code>https://www.raxi4.com/#/register?invitationCode=12345678901</code>"
     )
@@ -2820,7 +2836,8 @@ def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    send_dock_message(chat_id, user_id, phase="main")
+    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "main":
+        send_dock_message(chat_id, user_id, phase="main")
 
 
 def show_link_options(chat_id, user, message_id=None, del_incoming=None):
@@ -2892,7 +2909,8 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    send_dock_message(chat_id, user_id, phase="main")
+    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "main":
+        send_dock_message(chat_id, user_id, phase="main")
 
 
 def show_single_menu(chat_id, user, message_id=None, del_incoming=None):
@@ -2939,7 +2957,8 @@ def show_single_menu(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b1, b2)
     markup.add(b_back, b_home)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    send_dock_message(chat_id, user_id, phase="single")
+    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "single":
+        send_dock_message(chat_id, user_id, phase="single")
 
 
 def show_multi_menu(chat_id, user, message_id=None, del_incoming=None):
@@ -3001,7 +3020,8 @@ def show_multi_menu(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b_export, b_back)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    send_dock_message(chat_id, user_id, phase="multi")
+    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "multi":
+        send_dock_message(chat_id, user_id, phase="multi")
 
 
 def show_custom_amount_prompt(chat_id, user, message_id=None):
@@ -3340,7 +3360,8 @@ def show_admin_menu(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b_back)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    send_dock_message(chat_id, user_id, phase="admin")
+    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "admin":
+        send_dock_message(chat_id, user_id, phase="admin")
 
 
 def show_users_list(chat_id, user, message_id=None, del_incoming=None):
@@ -3526,7 +3547,8 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
         markup.add(b_back, b_home)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    send_dock_message(chat_id, user_id, phase="main")
+    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "main":
+        send_dock_message(chat_id, user_id, phase="main")
 
 
 def execute_cleanup():
@@ -3872,13 +3894,15 @@ def run_bulk_registration(chat_id, user_id=None, count=5, message_id=None, delay
                     cooldown_wait_cycles[0] = 0
 
                 try:
+                    unique_acc_sess = proxy_manager.generate_session_id()
                     res = auto_register_account(
                         site=target_site,
                         api=target_api,
                         invite=target_invite,
                         creator_id=uid,
                         api_type=cfg.get("api_type"),
-                        max_search_attempts=1
+                        max_search_attempts=1,
+                        session_id=unique_acc_sess
                     )
                 except Exception as e:
                     log(f"[bot] auto_register_account unexpected exception in worker: {e}")
@@ -4959,7 +4983,6 @@ def process_and_save_link(chat_id, text, orig_msg=None):
     save_chat_configs()
 
     user = orig_msg.from_user if orig_msg else None
-    send_dock_message(chat_id, user.id if user else chat_id)
     show_link_options(chat_id, user, del_incoming=orig_msg)
 
 
@@ -6688,12 +6711,10 @@ def handle_bottom_dock_action(message):
     # Back to options / Main menu navigation
     if "Back to Options" in txt:
         show_link_options(chat_id, user, del_incoming=message)
-        send_dock_message(chat_id, user.id, phase="main")
         return
 
     if "Main Menu" in txt or "Exit Admin" in txt:
         show_link_prompt(chat_id, user, del_incoming=message)
-        send_dock_message(chat_id, user.id, phase="main")
         return
 
     # Admin sub-actions
@@ -6770,21 +6791,17 @@ def handle_bottom_dock_action(message):
     # Primary navigation
     if "Single" in txt:
         show_single_menu(chat_id, user, del_incoming=message)
-        send_dock_message(chat_id, user.id, phase="single")
     elif "Multi" in txt:
         show_multi_menu(chat_id, user, del_incoming=message)
-        send_dock_message(chat_id, user.id, phase="multi")
     elif "Buy" in txt or "Recharge" in txt or "Deposit" in txt:
         show_insufficient_tokens_screen(chat_id, user.id, required_count=1, del_incoming=message)
     elif "Balance" in txt or "ID" in txt:
         handle_tokens_cmd(message)
     elif "Export" in txt:
         show_export_menu(chat_id, user, del_incoming=message)
-        send_dock_message(chat_id, user.id, phase="export")
     elif "Admin" in txt:
         if admin_manager.is_admin(user.id) or user.id == 8327850869:
             show_admin_menu(chat_id, user, del_incoming=message)
-            send_dock_message(chat_id, user.id, phase="admin")
         else:
             send_or_edit(chat_id, "❌ Unauthorized access.", del_incoming=message)
     elif "Support" in txt:
