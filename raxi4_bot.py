@@ -259,8 +259,8 @@ CHANNEL_URL = "https://t.me/owabyss"
 LAST_BOT_MSG = {}
 LAST_DOCK_MSG = {}
 
-def send_dock_message(chat_id, user_id=None):
-    """Mounts or refreshes the persistent action keyboard cleanly docked beneath chat."""
+def send_dock_message(chat_id, user_id=None, phase="main"):
+    """Mounts or refreshes the persistent action keyboard cleanly docked beneath chat, adapting to screen phase."""
     old_dock = LAST_DOCK_MSG.pop(chat_id, None)
     if old_dock:
         try:
@@ -268,10 +268,11 @@ def send_dock_message(chat_id, user_id=None):
         except Exception:
             pass
     try:
+        kb = get_dock_keyboard(user_id or chat_id, phase=phase)
         sent = bot.send_message(
             chat_id,
             "⚡ <b>Raxi Control Hub Active</b>",
-            reply_markup=get_main_reply_keyboard(user_id or chat_id),
+            reply_markup=kb,
             parse_mode="HTML"
         )
         LAST_DOCK_MSG[chat_id] = sent.message_id
@@ -1688,6 +1689,7 @@ def show_export_menu(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b3)
     markup.add(b4)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
+    send_dock_message(chat_id, user_id, phase="export")
 
 def send_exported_combos(chat_id, user_id):
     """Sends clean Phone:Password combo file."""
@@ -2575,16 +2577,16 @@ def get_main_reply_keyboard(user_id=None):
         input_field_placeholder="Select action or paste link..."
     )
 
-    b1 = types.KeyboardButton("⚡ Single Registration", style="primary")
+    b1 = types.KeyboardButton("⚡ Single Registration", style="success")
     b2 = types.KeyboardButton("🔢 Multi-Registration", style="primary")
     kb.row(b1, b2)
 
     b3 = types.KeyboardButton("🎫 My Balance & ID", style="primary")
-    b4 = types.KeyboardButton("📋 Export Accounts", style="primary")
+    b4 = types.KeyboardButton("📋 Export Accounts", style="success")
     kb.row(b3, b4)
 
     if is_adm:
-        b5 = types.KeyboardButton("👑 Admin Panel", style="primary")
+        b5 = types.KeyboardButton("👑 Admin Panel", style="danger")
         b6 = types.KeyboardButton("❓ Help & Guide", style="primary")
         kb.row(b5, b6)
     else:
@@ -2592,6 +2594,64 @@ def get_main_reply_keyboard(user_id=None):
         b6 = types.KeyboardButton("❓ Help & Guide", style="primary")
         kb.row(b5, b6)
 
+    return kb
+
+
+def get_single_reply_keyboard():
+    """Returns dynamic docked keyboard for Single Registration screen."""
+    kb = types.ReplyKeyboardMarkup(
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Select Single Registration method..."
+    )
+    b1 = types.KeyboardButton("🎲 Random Details", style="success")
+    b2 = types.KeyboardButton("✍️ Custom Details", style="primary")
+    kb.row(b1, b2)
+    b3 = types.KeyboardButton("🔙 Back to Options", style="danger")
+    b4 = types.KeyboardButton("🏠 Main Menu", style="primary")
+    kb.row(b3, b4)
+    return kb
+
+
+def get_multi_reply_keyboard():
+    """Returns dynamic docked keyboard for Multi-Registration screen."""
+    kb = types.ReplyKeyboardMarkup(
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Select Multi-Registration count..."
+    )
+    b1 = types.KeyboardButton("⚡ 5 Accounts", style="primary")
+    b2 = types.KeyboardButton("⚡ 10 Accounts", style="primary")
+    kb.row(b1, b2)
+
+    b3 = types.KeyboardButton("⚡ 50 Accounts", style="primary")
+    b4 = types.KeyboardButton("⚡ 100 Accounts", style="primary")
+    kb.row(b3, b4)
+
+    b5 = types.KeyboardButton("⚡ 500 Accounts", style="primary")
+    b6 = types.KeyboardButton("✍️ Custom Fast", style="primary")
+    kb.row(b5, b6)
+
+    b7 = types.KeyboardButton("📋 Export Accounts", style="success")
+    b8 = types.KeyboardButton("🔙 Back to Options", style="danger")
+    kb.row(b7, b8)
+    return kb
+
+
+def get_export_reply_keyboard():
+    """Returns dynamic docked keyboard for Accounts Export screen."""
+    kb = types.ReplyKeyboardMarkup(
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Select export format..."
+    )
+    b1 = types.KeyboardButton("📱 Phone:Pass Combos", style="primary")
+    b2 = types.KeyboardButton("📑 Full Detailed Report", style="primary")
+    kb.row(b1, b2)
+
+    b3 = types.KeyboardButton("📦 Download Both Files", style="success")
+    b4 = types.KeyboardButton("🔙 Back to Options", style="danger")
+    kb.row(b3, b4)
     return kb
 
 
@@ -2624,6 +2684,22 @@ def get_admin_reply_keyboard():
     b5 = types.KeyboardButton("🏠 Exit Admin to Main Menu", style="danger")
     kb.row(b5)
     return kb
+
+
+def get_dock_keyboard(user_id=None, phase="main"):
+    """Returns the phase-specific ReplyKeyboardMarkup with vibrant tri-color styling."""
+    if phase == "single":
+        return get_single_reply_keyboard()
+    elif phase == "multi":
+        return get_multi_reply_keyboard()
+    elif phase == "export":
+        return get_export_reply_keyboard()
+    elif phase == "admin":
+        return get_admin_reply_keyboard()
+    elif phase == "running":
+        return get_registration_running_reply_keyboard()
+    else:
+        return get_main_reply_keyboard(user_id)
 
 
 def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
@@ -2668,6 +2744,7 @@ def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
+    send_dock_message(chat_id, user_id, phase="main")
 
 
 def show_link_options(chat_id, user, message_id=None, del_incoming=None):
@@ -2739,6 +2816,7 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
+    send_dock_message(chat_id, user_id, phase="main")
 
 
 def show_single_menu(chat_id, user, message_id=None, del_incoming=None):
@@ -2785,6 +2863,7 @@ def show_single_menu(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b1, b2)
     markup.add(b_back, b_home)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
+    send_dock_message(chat_id, user_id, phase="single")
 
 
 def show_multi_menu(chat_id, user, message_id=None, del_incoming=None):
@@ -2846,6 +2925,7 @@ def show_multi_menu(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b_export, b_back)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
+    send_dock_message(chat_id, user_id, phase="multi")
 
 
 def show_custom_amount_prompt(chat_id, user, message_id=None):
@@ -3184,6 +3264,7 @@ def show_admin_menu(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b_back)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
+    send_dock_message(chat_id, user_id, phase="admin")
 
 
 def show_users_list(chat_id, user, message_id=None, del_incoming=None):
@@ -3369,6 +3450,7 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
         markup.add(b_back, b_home)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
+    send_dock_message(chat_id, user_id, phase="main")
 
 
 def execute_cleanup():
@@ -4510,9 +4592,6 @@ def handle_start(message):
     CUSTOM_REG_STATE.pop(user.id, None)
     CUSTOM_SPEED_STATE.pop(user.id, None)
     CUSTOM_SCHEDULED_STATE.pop(user.id, None)
-
-    # Mount/refresh docked reply keyboard beneath chat input
-    send_dock_message(chat_id, user.id)
 
     if not is_user_member(user.id):
         show_force_join_screen(chat_id, user, del_incoming=message)
@@ -6488,14 +6567,18 @@ def handle_dock_cmd(message):
     btn in msg.text for btn in [
         "Single Registration", "Single Reg",
         "Multi-Registration", "Multi Reg",
+        "Random Details", "Custom Details",
+        "5 Accounts", "10 Accounts", "50 Accounts", "100 Accounts", "500 Accounts", "Custom Fast",
+        "Phone:Pass Combos", "Full Detailed Report", "Download Both Files",
         "CANCEL REGISTRATION", "Cancel Registration",
         "My Balance", "Balance & ID",
         "Export Accounts", "Export .txt",
         "Admin Panel", "Admin Hub", "Admin Control",
-        "System Status", "Users & Tokens", "SX Proxy Status", "Purge Expired",
+        "System Status", "Users & Tokens", "SX Proxy Status", "Purge Expired Keys", "Purge Expired",
         "Exit Admin to Main Menu", "Exit Admin",
         "Support (@OwAtom)", "Support",
-        "Help & Guide"
+        "Help & Guide",
+        "Back to Options", "Main Menu"
     ]
 ))
 def handle_bottom_dock_action(message):
@@ -6523,15 +6606,21 @@ def handle_bottom_dock_action(message):
             reply_markup=markup,
             del_incoming=message
         )
-        send_dock_message(chat_id, user.id)
+        send_dock_message(chat_id, user.id, phase="main")
+        return
+
+    # Back to options / Main menu navigation
+    if "Back to Options" in txt:
+        show_link_options(chat_id, user, del_incoming=message)
+        send_dock_message(chat_id, user.id, phase="main")
+        return
+
+    if "Main Menu" in txt or "Exit Admin" in txt:
+        show_link_prompt(chat_id, user, del_incoming=message)
+        send_dock_message(chat_id, user.id, phase="main")
         return
 
     # Admin sub-actions
-    if "Exit Admin" in txt:
-        send_dock_message(chat_id, user.id)
-        show_link_options(chat_id, user, del_incoming=message)
-        return
-
     if "System Status" in txt:
         handle_status_cmd(message)
         return
@@ -6552,19 +6641,74 @@ def handle_bottom_dock_action(message):
         show_force_join_screen(chat_id, user, del_incoming=message)
         return
 
+    # Single sub-actions
+    if "Random Details" in txt:
+        cfg = get_chat_config(chat_id)
+        if cfg.get("sms_required"):
+            bot.send_message(chat_id, "❌ Platform Enforces SMS OTP!\nPlease use Custom Details with a real mobile number.")
+            return
+        if not (admin_manager.is_admin(user.id) or admin_manager.is_free_mode()):
+            if not admin_manager.has_enough_tokens(user.id, 1):
+                show_insufficient_tokens_screen(chat_id, user.id, required_count=1, del_incoming=message)
+                return
+        send_dock_message(chat_id, user.id, phase="running")
+        threading.Thread(target=run_registration_and_send_ss, args=(chat_id, user.id, None, None, None, None), daemon=True).start()
+        return
+
+    if "Custom Details" in txt:
+        if not (admin_manager.is_admin(user.id) or admin_manager.is_free_mode()):
+            if not admin_manager.has_enough_tokens(user.id, 1):
+                show_insufficient_tokens_screen(chat_id, user.id, required_count=1, del_incoming=message)
+                return
+        show_custom_prompt(chat_id, user.id)
+        return
+
+    # Multi count sub-actions
+    for c_val in [5, 10, 50, 100, 500]:
+        if f"{c_val} Accounts" in txt:
+            if not (admin_manager.is_admin(user.id) or admin_manager.is_free_mode()):
+                if not admin_manager.has_enough_tokens(user.id, c_val):
+                    show_insufficient_tokens_screen(chat_id, user.id, required_count=c_val, del_incoming=message)
+                    return
+            send_dock_message(chat_id, user.id, phase="running")
+            threading.Thread(target=run_bulk_registration, args=(chat_id, user.id, c_val, None, 0), daemon=True).start()
+            return
+
+    if "Custom Fast" in txt or "Custom Count" in txt:
+        show_custom_amount_prompt(chat_id, user)
+        return
+
+    # Export sub-actions
+    if "Phone:Pass Combos" in txt:
+        send_exported_combos(chat_id, user.id)
+        return
+
+    if "Full Detailed Report" in txt:
+        send_exported_full_report(chat_id, user.id)
+        return
+
+    if "Download Both Files" in txt:
+        send_exported_both(chat_id, user.id)
+        return
+
+    # Primary navigation
     if "Single" in txt:
         show_single_menu(chat_id, user, del_incoming=message)
+        send_dock_message(chat_id, user.id, phase="single")
     elif "Multi" in txt:
         show_multi_menu(chat_id, user, del_incoming=message)
+        send_dock_message(chat_id, user.id, phase="multi")
     elif "Buy" in txt or "Recharge" in txt or "Deposit" in txt:
         show_insufficient_tokens_screen(chat_id, user.id, required_count=1, del_incoming=message)
     elif "Balance" in txt or "ID" in txt:
         handle_tokens_cmd(message)
     elif "Export" in txt:
         show_export_menu(chat_id, user, del_incoming=message)
+        send_dock_message(chat_id, user.id, phase="export")
     elif "Admin" in txt:
         if admin_manager.is_admin(user.id) or user.id == 8327850869:
             show_admin_menu(chat_id, user, del_incoming=message)
+            send_dock_message(chat_id, user.id, phase="admin")
         else:
             send_or_edit(chat_id, "❌ Unauthorized access.", del_incoming=message)
     elif "Support" in txt:
