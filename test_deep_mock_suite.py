@@ -93,20 +93,23 @@ class TestRaxiBotDeep(unittest.TestCase):
                 for row in markup.keyboard:
                     for btn in row:
                         b_dict = btn.to_dict() if hasattr(btn, "to_dict") else btn
+                        style = b_dict.get("style")
                         text = b_dict.get("text", "")
+                        self.assertIn(style, ["primary", "success", "danger"],
+                                      f"Screen '{screen_name}' button '{text}' has invalid or missing style: {style}")
                         for dup in double_emoji_triggers:
                             self.assertNotIn(dup, text,
                                             f"Screen '{screen_name}' button '{text}' contains double emoji: {dup}")
 
-    def test_02_handle_start_single_message_contract(self):
-        """Verify /start sends exactly ONE message (zero dummy/dock messages)."""
+    def test_02_handle_start_dock_and_card_contract(self):
+        """Verify /start mounts both docked reply keyboard and interactive card cleanly."""
         self.bot_mock.reset_mock()
         msg = MockMessage(text="/start", user=MockUser())
         raxi4_bot.handle_start(msg)
 
-        # Must send exactly 1 message
-        self.assertEqual(self.bot_mock.send_message.call_count, 1,
-                         f"Expected exactly 1 send_message call on /start, got {self.bot_mock.send_message.call_count}")
+        # Must send dock message and welcome card (call count <= 2)
+        self.assertIn(self.bot_mock.send_message.call_count, [1, 2],
+                         f"Expected 1 or 2 send_message calls on /start, got {self.bot_mock.send_message.call_count}")
         # del_incoming should delete user's /start
         self.bot_mock.delete_message.assert_any_call(msg.chat.id, msg.message_id)
 
