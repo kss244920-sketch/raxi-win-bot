@@ -1154,7 +1154,19 @@ def detect_and_parse_referral_link(text_or_url):
             "sms_required": False
         }
 
-    # 2. Check Platform Engine (AR-SAAS vs VITE/WEBAPI)
+    # FAST PATH 2: Instant Tasyee / Game platform resolution (pan5, etc.)
+    if any(k in domain_lower for k in ["pan5", "pan5.cc"]):
+        return {
+            "site": base_site,
+            "api": f"{base_site}/api",
+            "api_type": "tasyee",
+            "invite": invite_code,
+            "domain": get_base_domain(parsed.netloc),
+            "raw_url": raw_url,
+            "sms_required": False
+        }
+
+    # 2. Check Platform Engine (AR-SAAS vs TASYEE vs VITE/WEBAPI)
     # Check 2A: AR-SAAS platform (MaanWin, GoaGames, BigDaddy, Tiranga, 13l.world, etc.)
     for c_host in candidate_hosts:
         c_site = f"{scheme}://{c_host}"
@@ -1182,6 +1194,38 @@ def detect_and_parse_referral_link(text_or_url):
                     "raw_url": raw_url,
                     "sms_required": False
                 }
+        except Exception:
+            pass
+
+    # Check 2B: Tasyee / Game platform engine (pan5.cc, etc.)
+    for c_host in candidate_hosts:
+        c_site = f"{scheme}://{c_host}"
+        try:
+            r_tasyee = requests.post(
+                f"{c_site}/api/user/register",
+                json={},
+                headers={
+                    "Origin": c_site,
+                    "Referer": f"{c_site}/",
+                    "Content-Type": "application/json;charset=UTF-8",
+                    "User-Agent": "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/129.0.0.0 Mobile Safari/537.36"
+                },
+                timeout=3.0,
+                allow_redirects=True
+            )
+            if r_tasyee.status_code == 200:
+                tj = r_tasyee.json()
+                if tj.get("code") in (2000, 1002, 1004) or "ACCOUNT_INVALID" in str(tj.get("msg", "")) or "account" in str(tj):
+                    log(f"[bot] Detected Tasyee platform engine for {c_site}")
+                    return {
+                        "site": c_site,
+                        "api": f"{c_site}/api",
+                        "api_type": "tasyee",
+                        "invite": invite_code,
+                        "domain": get_base_domain(c_host),
+                        "raw_url": raw_url,
+                        "sms_required": False
+                    }
         except Exception:
             pass
 
@@ -1220,7 +1264,11 @@ def detect_and_parse_referral_link(text_or_url):
         if resp and resp.status_code == 200:
             html_text = resp.text
 
-            NON_GAME_DOMAINS = ("google", "firebase", "gstatic", "cloudflare", "microsoft", "apple", "facebook", "sentry", "arbpay", "w3.org", "schema.org", "ampproject", "doubleclick")
+            NON_GAME_DOMAINS = (
+                "google", "firebase", "gstatic", "cloudflare", "microsoft", "apple",
+                "facebook", "sentry", "arbpay", "w3.org", "schema.org", "ampproject", "doubleclick",
+                "whatsapp", "wa.me", "telegram", "t.me", "twitter", "x.com", "instagram", "tiktok", "youtube"
+            )
 
             def _is_valid_candidate_api(cand):
                 if not cand or not isinstance(cand, str) or not cand.startswith("http"):
@@ -1304,6 +1352,17 @@ def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
     """
     parsed = urllib.parse.urlparse(current_site)
     domain_lower = parsed.netloc.lower()
+    if api_type == "tasyee" or any(k in domain_lower for k in ["pan5", "tasyee"]):
+        return {
+            "sms_required": False,
+            "site": current_site,
+            "api": f"{current_site}/api" if not str(api_url).endswith("/api") else api_url,
+            "domain": get_base_domain(parsed.netloc),
+            "switched_mirror": False,
+            "mirror_count": 0,
+            "api_type": "tasyee"
+        }
+
     if api_type == "arsaas" or "/Home" in str(api_url) or api_url == f"{current_site}/api" or any(k in domain_lower for k in ["maanwin", "goagame", "bigdaddy", "tiranga", "13l"]):
         return {
             "sms_required": False,
@@ -2012,7 +2071,8 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
     target_invite = invite or INVITE
     domain = get_base_domain(urllib.parse.urlparse(target_site).netloc)
 
-    is_arsaas = (api_type == "arsaas") or ("/Home" in str(target_api)) or (target_api == f"{target_site}/api") or any(k in domain for k in ["maanwin", "goagame", "bigdaddy", "tiranga", "13l"])
+    is_tasyee = (api_type == "tasyee") or any(k in domain for k in ["pan5", "tasyee"]) or ("/user/register" in str(target_api))
+    is_arsaas = not is_tasyee and ((api_type == "arsaas") or ("/Home" in str(target_api)) or (target_api == f"{target_site}/api") or any(k in domain for k in ["maanwin", "goagame", "bigdaddy", "tiranga", "13l"]))
     if is_arsaas and not str(target_api).endswith("/api"):
         target_api = f"{target_site}/api"
 
@@ -2069,127 +2129,130 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
         cid, bg_b64, sl_b64 = None, None, None
         last_cap_status = None
         target_cap_domain = domain or (urllib.parse.urlparse(target_api).netloc if not is_arsaas else urllib.parse.urlparse(target_site).netloc) or "default"
+        track = None
+        container_x = None
 
-        try:
-            if is_arsaas:
-                cap_url = f"{target_site}/api/Home/Captcha"
-                cap_payload = sign_arsaas({})
-            else:
-                cap_url = f"{target_api}/api/webapi/Captcha"
-                cap_payload = signed_body({})
+        if not is_tasyee:
+            try:
+                if is_arsaas:
+                    cap_url = f"{target_site}/api/Home/Captcha"
+                    cap_payload = sign_arsaas({})
+                else:
+                    cap_url = f"{target_api}/api/webapi/Captcha"
+                    cap_payload = signed_body({})
 
-            # Rate-limit guard & small mutex spacing to protect direct host IP from 429
-            with DIRECT_HOST_LOCK:
-                blocked_until = DIRECT_HOST_RATE_LIMITED.get(target_cap_domain, 0)
-                is_direct_blocked = time.time() < blocked_until
+                # Rate-limit guard & small mutex spacing to protect direct host IP from 429
+                with DIRECT_HOST_LOCK:
+                    blocked_until = DIRECT_HOST_RATE_LIMITED.get(target_cap_domain, 0)
+                    is_direct_blocked = time.time() < blocked_until
+                    if not is_direct_blocked:
+                        last_req = DIRECT_HOST_LAST_REQ.get(target_cap_domain, 0)
+                        now_t = time.time()
+                        if now_t - last_req < 0.15:
+                            time.sleep(0.15 - (now_t - last_req))
+                        DIRECT_HOST_LAST_REQ[target_cap_domain] = time.time()
+
+                # Step 1A: Attempt direct fetch first (Zero residential proxy data consumed)
                 if not is_direct_blocked:
-                    last_req = DIRECT_HOST_LAST_REQ.get(target_cap_domain, 0)
-                    now_t = time.time()
-                    if now_t - last_req < 0.15:
-                        time.sleep(0.15 - (now_t - last_req))
-                    DIRECT_HOST_LAST_REQ[target_cap_domain] = time.time()
-
-            # Step 1A: Attempt direct fetch first (Zero residential proxy data consumed)
-            if not is_direct_blocked:
-                direct_session = requests.Session()
-                try:
-                    direct_session.trust_env = False
-                    direct_session.verify = False
-                    direct_session.headers.update(base_headers)
-                    direct_session.headers["Connection"] = "close"
-                    r_cap = direct_session.post(cap_url, json=cap_payload, timeout=(3.0, 5.0))
-                    last_cap_status = r_cap.status_code
-                    if r_cap.status_code == 200:
-                        cdata = r_cap.json().get("data") or {}
-                        cid = cdata.get("captchaId")
-                        bg_b64 = cdata.get("backgroundImage")
-                        sl_b64 = cdata.get("sliderImage")
-                    elif r_cap.status_code == 429:
-                        with DIRECT_HOST_LOCK:
-                            DIRECT_HOST_RATE_LIMITED[target_cap_domain] = time.time() + 25  # 25s short cooldown
-                        log(f"[bot] Host IP rate limited (429) on {target_cap_domain}. Using datacenter proxies for captcha.")
-                except Exception:
-                    pass
-                finally:
+                    direct_session = requests.Session()
                     try:
-                        direct_session.close()
-                    except Exception:
-                        pass
-
-            # Step 1B: Fallback to Datacenter / Static Proxy from working_proxies.txt (STILL ZERO RESIDENTIAL DATA!)
-            if not cid or not bg_b64 or not sl_b64:
-                tried_dc = set()
-                for _ in range(3):
-                    dc_px = proxy_manager.get_static_proxy(exclude=tried_dc)
-                    if not dc_px:
-                        break
-                    tried_dc.add(dc_px)
-                    dc_sess = requests.Session()
-                    try:
-                        dc_sess.trust_env = False
-                        dc_sess.verify = False
-                        dc_sess.headers.update(base_headers)
-                        dc_sess.headers["Connection"] = "close"
-                        if "@" in dc_px:
-                            dc_px_url = f"http://{dc_px}"
-                        elif dc_px.count(":") == 3:
-                            p_parts = dc_px.split(":")
-                            dc_px_url = f"http://{p_parts[2]}:{p_parts[3]}@{p_parts[0]}:{p_parts[1]}"
-                        else:
-                            dc_px_url = f"http://{dc_px}"
-                        dc_sess.proxies = {"http": dc_px_url, "https": dc_px_url}
-                        r_cap = dc_sess.post(cap_url, json=cap_payload, timeout=(4.0, 6.0))
+                        direct_session.trust_env = False
+                        direct_session.verify = False
+                        direct_session.headers.update(base_headers)
+                        direct_session.headers["Connection"] = "close"
+                        r_cap = direct_session.post(cap_url, json=cap_payload, timeout=(3.0, 5.0))
                         last_cap_status = r_cap.status_code
                         if r_cap.status_code == 200:
                             cdata = r_cap.json().get("data") or {}
                             cid = cdata.get("captchaId")
                             bg_b64 = cdata.get("backgroundImage")
                             sl_b64 = cdata.get("sliderImage")
-                            if cid and bg_b64 and sl_b64:
-                                break
-                        elif r_cap.status_code in (401, 403, 407) or r_cap.status_code >= 500:
-                            proxy_manager.mark_proxy_dead(dc_px)
+                        elif r_cap.status_code == 429:
+                            with DIRECT_HOST_LOCK:
+                                DIRECT_HOST_RATE_LIMITED[target_cap_domain] = time.time() + 25  # 25s short cooldown
+                            log(f"[bot] Host IP rate limited (429) on {target_cap_domain}. Using datacenter proxies for captcha.")
                     except Exception:
-                        proxy_manager.mark_proxy_dead(dc_px)
-                        continue
+                        pass
                     finally:
                         try:
-                            dc_sess.close()
+                            direct_session.close()
                         except Exception:
                             pass
-        except Exception as e:
-            log(f"[bot] Captcha fetch error: {e}")
-            last_error = f"Captcha connection error: {str(e)[:80]}"
-            _cleanup_in_flight()
-            time.sleep(0.2)
-            continue
 
-        if not cid or not bg_b64 or not sl_b64:
-            log(f"[bot] Captcha returned empty data (status={last_cap_status}) - aborted attempt without consuming residential proxy")
-            last_error = "Captcha returned empty data"
-            _cleanup_in_flight()
-            time.sleep(0.2)
-            continue
+                # Step 1B: Fallback to Datacenter / Static Proxy from working_proxies.txt (STILL ZERO RESIDENTIAL DATA!)
+                if not cid or not bg_b64 or not sl_b64:
+                    tried_dc = set()
+                    for _ in range(3):
+                        dc_px = proxy_manager.get_static_proxy(exclude=tried_dc)
+                        if not dc_px:
+                            break
+                        tried_dc.add(dc_px)
+                        dc_sess = requests.Session()
+                        try:
+                            dc_sess.trust_env = False
+                            dc_sess.verify = False
+                            dc_sess.headers.update(base_headers)
+                            dc_sess.headers["Connection"] = "close"
+                            if "@" in dc_px:
+                                dc_px_url = f"http://{dc_px}"
+                            elif dc_px.count(":") == 3:
+                                p_parts = dc_px.split(":")
+                                dc_px_url = f"http://{p_parts[2]}:{p_parts[3]}@{p_parts[0]}:{p_parts[1]}"
+                            else:
+                                dc_px_url = f"http://{dc_px}"
+                            dc_sess.proxies = {"http": dc_px_url, "https": dc_px_url}
+                            r_cap = dc_sess.post(cap_url, json=cap_payload, timeout=(4.0, 6.0))
+                            last_cap_status = r_cap.status_code
+                            if r_cap.status_code == 200:
+                                cdata = r_cap.json().get("data") or {}
+                                cid = cdata.get("captchaId")
+                                bg_b64 = cdata.get("backgroundImage")
+                                sl_b64 = cdata.get("sliderImage")
+                                if cid and bg_b64 and sl_b64:
+                                    break
+                            elif r_cap.status_code in (401, 403, 407) or r_cap.status_code >= 500:
+                                proxy_manager.mark_proxy_dead(dc_px)
+                        except Exception:
+                            proxy_manager.mark_proxy_dead(dc_px)
+                            continue
+                        finally:
+                            try:
+                                dc_sess.close()
+                            except Exception:
+                                pass
+            except Exception as e:
+                log(f"[bot] Captcha fetch error: {e}")
+                last_error = f"Captcha connection error: {str(e)[:80]}"
+                _cleanup_in_flight()
+                time.sleep(0.2)
+                continue
 
-        # 2. Solve slider puzzle via native PIL + NumPy contour matching (0 KB network data)
-        container_x = None
-        score = 0
-        try:
-            container_x, score = solve_slider(bg_b64, sl_b64)
-        except Exception as exc:
-            log(f"[bot] Slider solver error: {exc}")
+            if not cid or not bg_b64 or not sl_b64:
+                log(f"[bot] Captcha returned empty data (status={last_cap_status}) - aborted attempt without consuming residential proxy")
+                last_error = "Captcha returned empty data"
+                _cleanup_in_flight()
+                time.sleep(0.2)
+                continue
+
+            # 2. Solve slider puzzle via native PIL + NumPy contour matching (0 KB network data)
             container_x = None
             score = 0
+            try:
+                container_x, score = solve_slider(bg_b64, sl_b64)
+            except Exception as exc:
+                log(f"[bot] Slider solver error: {exc}")
+                container_x = None
+                score = 0
 
-        # STRICT PROXY PROTECTION: If slider cannot be solved with confidence, DO NOT spend residential proxy!
-        if container_x is None or score <= 0:
-            log(f"[bot] Slider puzzle contour matching low confidence (score={score}, x={container_x}). Aborting attempt before touching residential proxy.")
-            last_error = "Slider puzzle contour matching low confidence"
-            _cleanup_in_flight()
-            time.sleep(0.2)
-            continue
+            # STRICT PROXY PROTECTION: If slider cannot be solved with confidence, DO NOT spend residential proxy!
+            if container_x is None or score <= 0:
+                log(f"[bot] Slider puzzle contour matching low confidence (score={score}, x={container_x}). Aborting attempt before touching residential proxy.")
+                last_error = "Slider puzzle contour matching low confidence"
+                _cleanup_in_flight()
+                time.sleep(0.2)
+                continue
 
-        track = make_track(container_x)
+            track = make_track(container_x)
 
         # 3. FAST ISOLATED RESIDENTIAL PROXY ACQUISITION:
         # Strictly acquired only AFTER Captcha is 100% verified & slider solved.
@@ -2211,10 +2274,23 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
         tried_proxies.add(active_proxy)
         proxy_label = verified_ip or active_proxy
 
-        log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'AR-SAAS' if is_arsaas else 'WEBAPI'}): phone={target_phone} dev='{dev_model}' id='{device_id[:8]}' ip={proxy_label} (spent={residential_bytes_spent}B)")
+        log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'TASYEE' if is_tasyee else ('AR-SAAS' if is_arsaas else 'WEBAPI')}): phone={target_phone} dev='{dev_model}' id='{device_id[:8]}' ip={proxy_label} (spent={residential_bytes_spent}B)")
 
         # 4. Submit Register POST (THE ONLY REQUEST THAT USES THE FRESH UNIQUE RESIDENTIAL IP ~3.5 KB)
-        if is_arsaas:
+        if is_tasyee:
+            reg_url = f"{target_site}/api/user/register"
+            reg_payload = {
+                "account": target_phone,
+                "password": target_pwd,
+                "confirmPassword": target_pwd,
+                "inviteCode": target_invite,
+                "shareBonusCode": "",
+                "registerHost": urllib.parse.urlparse(target_site).netloc,
+                "tasyeeWebId": ""
+            }
+            base_headers["Origin"] = target_site
+            base_headers["Referer"] = f"{target_site}/index?invite={target_invite}"
+        elif is_arsaas:
             reg_url = f"{target_site}/api/Home/Register"
             reg_dict = {
                 "loginType": "Mobile",
@@ -2295,10 +2371,10 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
             return {"ok": False, "msg": msg, "fatal": True}
 
         # Success!
-        if code == 0 and j.get("data"):
-            d = j["data"]
+        if (code == 0 and j.get("data")) or (code == 0 and is_tasyee):
+            d = j.get("data") or {}
             token = d.get("token")
-            uid = d.get("userId") or None
+            uid = d.get("userId") or d.get("inviterId") or d.get("account") or None
             resolved_ip = None
             if token and "." in token:
                 try:
@@ -2345,7 +2421,7 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
             }
 
         # If phone is already registered and in auto-mode, pick another number
-        if (msg_code in (111, 5033) or "already registered" in str(msg).lower()) and is_auto:
+        if (msg_code in (111, 5033) or "already registered" in str(msg).lower() or (code == 2000 and "registered" in str(msg).lower())) and is_auto:
             log("[bot] Number already registered, picking another...")
             last_error = "Number already registered"
             _cleanup_in_flight()
@@ -2354,7 +2430,7 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
             time.sleep(0.2)
             continue
 
-        if (msg_code in (111, 5033) or "already registered" in str(msg).lower()) and not is_auto:
+        if (msg_code in (111, 5033) or "already registered" in str(msg).lower() or (code == 2000 and "registered" in str(msg).lower())) and not is_auto:
             _cleanup_in_flight()
             return {"ok": False, "phone": target_phone, "msg": "Phone number is already registered"}
 
@@ -7634,7 +7710,7 @@ if __name__ == "__main__":
     log("[bot] Starting telegram infinity_polling loop...")
     while True:
         try:
-            bot.infinity_polling(timeout=30, long_polling_timeout=20, skip_pending=True)
+            bot.infinity_polling(timeout=30, long_polling_timeout=20, skip_pending=False)
         except KeyboardInterrupt:
             log("Bot stopped by user.")
             break

@@ -139,20 +139,23 @@ def ping_once():
         log(f"Notice: No active Render service URL found yet for '{service_name}'. Service needs to be provisioned first.")
         return False
 
-    # Ping the service health endpoint to keep it alive
+    # Ping the service health endpoint to keep it alive (with retries for transient DNS/network glitches)
     ping_url = service_url.rstrip("/") + "/"
     log(f"📡 Sending Keep-Alive Ping to: {ping_url}")
-    try:
-        r = requests.get(ping_url, timeout=25)
-        if r.status_code == 200:
-            log(f"✅ Service is 100% HEALTHY & ALIVE! (HTTP {r.status_code}) - Inactivity timer reset.")
-            return True
-        else:
-            log(f"⚠️ Health ping returned unexpected status: {r.status_code}")
-    except requests.exceptions.RequestException as e:
-        log(f"❌ Ping failed: {e}")
+    for attempt in range(1, 4):
+        try:
+            r = requests.get(ping_url, timeout=25)
+            if r.status_code == 200:
+                log(f"✅ Service is 100% HEALTHY & ALIVE! (HTTP {r.status_code}) - Inactivity timer reset.")
+                return True
+            else:
+                log(f"⚠️ Health ping attempt {attempt} returned unexpected status: {r.status_code}")
+        except requests.exceptions.RequestException as e:
+            log(f"⚠️ Ping attempt {attempt} failed: {e}")
+        if attempt < 3:
+            time.sleep(3)
 
-    # Self-heal if ping fails
+    # Self-heal if all 3 ping attempts fail
     if service_id:
         log("Attempting automatic service revival via Render API restart...")
         restart_service(api_key, service_id)
