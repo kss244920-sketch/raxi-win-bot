@@ -263,12 +263,7 @@ ALL_DOCK_MSGS = collections.defaultdict(set)
 LAST_DOCK_PHASE = {}
 
 def send_dock_message(chat_id, user_id=None, phase="main", force=False):
-    """Mounts or refreshes the persistent action keyboard cleanly docked beneath chat, adapting to screen phase."""
-    # Never duplicate if the exact dock phase is already active in chat
-    if not force and LAST_DOCK_PHASE.get(chat_id) == phase and chat_id in LAST_DOCK_MSG:
-        return LAST_DOCK_MSG.get(chat_id)
-
-    # Clean up all previous dock messages for this chat to prevent duplicate bubbles
+    """Cleanly deletes any old dock spam messages and completely suppresses the repeated 'Raxi Control Hub Active' bubble."""
     mids_to_clean = list(ALL_DOCK_MSGS[chat_id])
     if chat_id in LAST_DOCK_MSG:
         mids_to_clean.append(LAST_DOCK_MSG[chat_id])
@@ -279,22 +274,7 @@ def send_dock_message(chat_id, user_id=None, phase="main", force=False):
             pass
     ALL_DOCK_MSGS[chat_id].clear()
     LAST_DOCK_MSG.pop(chat_id, None)
-
-    try:
-        kb = get_dock_keyboard(user_id or chat_id, phase=phase)
-        sent = bot.send_message(
-            chat_id,
-            "⚡ <b>Raxi Control Hub Active</b>",
-            reply_markup=kb,
-            parse_mode="HTML",
-            disable_notification=True
-        )
-        LAST_DOCK_MSG[chat_id] = sent.message_id
-        ALL_DOCK_MSGS[chat_id].add(sent.message_id)
-        LAST_DOCK_PHASE[chat_id] = phase
-        return sent.message_id
-    except Exception:
-        return None
+    return None
 
 def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming=None):
     """
