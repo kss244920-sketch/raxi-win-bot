@@ -737,15 +737,15 @@ def load_chat_configs():
             except Exception as e:
                 log(f"[bot] Error reading persistent chat_configs: {e}")
 
-        # Ensure both Owner and Prince have active configs, and auto-migrate expired invite
+        # Ensure active default mock configs for primary users if not set or pointing to legacy dmfirst/dmwin
         for uid in (8327850869, 6217522461):
-            if uid not in CHAT_CONFIGS or CHAT_CONFIGS[uid].get("invite") in ("265762124632", "12345678901"):
+            if uid not in CHAT_CONFIGS or CHAT_CONFIGS[uid].get("invite") in ("265762124632", "417112180491") or "dmfirst" in str(CHAT_CONFIGS[uid].get("site", "")):
                 CHAT_CONFIGS[uid] = {
-                    "site": "https://www.dmfirst17.com",
-                    "api": "https://api.dmfirst9api.com",
+                    "site": SITE,
+                    "api": API,
                     "api_type": "webapi",
-                    "invite": "417112180491",
-                    "domain": "www.dmfirst17.com",
+                    "invite": INVITE,
+                    "domain": urllib.parse.urlparse(SITE).netloc,
                     "sms_required": False,
                     "switched_mirror": False,
                     "mirrors_scanned": 0
@@ -2959,6 +2959,38 @@ def show_single_menu(chat_id, user, message_id=None, del_incoming=None):
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
     if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "single":
         send_dock_message(chat_id, user_id, phase="single")
+
+
+def show_custom_prompt(chat_id, user_id, message_id=None):
+    """Displays Step 1 prompt for Custom Details registration."""
+    if is_chat_busy(chat_id):
+        bot.send_message(chat_id, "⏳ Registration in progress! Please wait a moment.")
+        return
+    cfg = get_chat_config(chat_id)
+    sms_req = cfg.get("sms_required", False)
+    steps_total = 3 if sms_req else 2
+
+    CUSTOM_REG_STATE[user_id] = {
+        "chat_id": chat_id,
+        "step": "phone",
+        "phone": None,
+        "password": None,
+        "mid": message_id,
+        "sms_required": sms_req
+    }
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg", style="danger"))
+
+    text = (
+        f"📱 <b>Custom Registration — Step 1/{steps_total}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🌐 <b>Platform:</b> <code>{cfg['site']}</code>\n\n"
+        f"Kripya account ke liye <b>10-digit Indian Mobile Number</b> bhejein:\n"
+        f"<i>(Example: 9876543210)</i>\n\n"
+        f"💡 <i>Chat me number likh kar send karein ya Cancel dabayein.</i>"
+    )
+    send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id)
 
 
 def show_multi_menu(chat_id, user, message_id=None, del_incoming=None):
@@ -6463,9 +6495,9 @@ def handle_super_search_cmd(message):
             "🔍 <b>Master Search Hub (Super Admin Exclusive)</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "Kripya <b>Registration Link</b>, <b>Invite Code</b>, ya <b>Phone Number</b> bhejiye search karne ke liye:\n\n"
             "<i>Examples:</i>\n"
-            "• <code>https://www.dmfirst0.com/#/register?invitationCode=924742189394</code>\n"
-            "• <code>157872546071</code>\n"
-            "• <code>8217687525</code>\n\n"
+            "• <code>https://www.raxi4.com/#/register?invitationCode=12345678901</code>\n"
+            "• <code>12345678901</code>\n"
+            "• <code>9876543210</code>\n\n"
             "<i>Cancel karne ke liye /cancel send karein.</i>",
             parse_mode="HTML"
         )
@@ -6602,9 +6634,9 @@ def handle_exportdata_cmd(message):
             "🔗 <b>Super Admin Export Data Hub</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "Kripya <b>Registration Link</b> ya <b>Invite Code</b> send karein jiska data export karna hai:\n\n"
             "<i>Examples:</i>\n"
-            "• <code>https://www.dmfirst0.com/#/register?invitationCode=924742189394</code>\n"
-            "• <code>https://www.dmfirst0.com/#/register?invitationCode=924742189394 80</code> <i>(agar sirf 80 accounts export karne hon)</i>\n"
-            "• <code>924742189394</code>\n\n"
+            "• <code>https://www.raxi4.com/#/register?invitationCode=12345678901</code>\n"
+            "• <code>https://www.raxi4.com/#/register?invitationCode=12345678901 80</code> <i>(agar sirf 80 accounts export karne hon)</i>\n"
+            "• <code>12345678901</code>\n\n"
             "<i>(Cancel karne ke liye /cancel bhejein)</i>",
             parse_mode="HTML"
         )
@@ -7086,31 +7118,7 @@ def _handle_callback_clicks_inner(call):
         except Exception:
             pass
 
-        cfg = get_chat_config(chat_id)
-        sms_req = cfg.get("sms_required", False)
-        steps_total = 3 if sms_req else 2
-
-        CUSTOM_REG_STATE[user_id] = {
-            "chat_id": chat_id,
-            "step": "phone",
-            "phone": None,
-            "password": None,
-            "mid": msg_id,
-            "sms_required": sms_req
-        }
-
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("❌ Cancel Registration", callback_data="cancel_custom_reg", style="danger"))
-
-        text = (
-            f"📱 <b>Custom Registration — Step 1/{steps_total}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🌐 <b>Platform:</b> <code>{cfg['site']}</code>\n\n"
-            f"Kripya account ke liye <b>10-digit Indian Mobile Number</b> bhejein:\n"
-            f"<i>(Example: 9876543210)</i>\n\n"
-            f"💡 <i>Chat me number likh kar send karein ya Cancel dabayein.</i>"
-        )
-        send_or_edit(chat_id, text, reply_markup=markup, message_id=msg_id)
+        show_custom_prompt(chat_id, user_id, message_id=msg_id)
 
     elif data == "cancel_custom_reg":
         CUSTOM_REG_STATE.pop(user_id, None)

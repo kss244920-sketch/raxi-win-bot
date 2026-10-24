@@ -22,9 +22,9 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 # ─── config ───
-SITE     = "https://www.dmfirst17.com"
-API      = "https://api.dmfirst9api.com"
-INVITE   = "417112180491"
+SITE     = "https://www.raxi4.com"
+API      = "https://api.raxiqaz.com"
+INVITE   = "12345678901"
 UA_MOB   = ("Mozilla/5.0 (Linux; Android 13; Pixel 7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Mobile Safari/537.36")
