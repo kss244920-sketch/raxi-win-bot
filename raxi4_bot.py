@@ -263,11 +263,11 @@ ALL_DOCK_MSGS = collections.defaultdict(set)
 LAST_DOCK_PHASE = {}
 
 def send_dock_message(chat_id, user_id=None, phase="main", force=False):
-    """Mounts or refreshes the persistent action keyboard cleanly docked beneath chat, adapting to screen phase."""
-    if not force and LAST_DOCK_PHASE.get(chat_id) == phase and chat_id in LAST_DOCK_MSG:
-        return LAST_DOCK_MSG.get(chat_id)
+    """Mounts or refreshes the persistent action keyboard cleanly docked beneath chat, adapting to screen phase without leaving any chat bubble."""
+    if not force and LAST_DOCK_PHASE.get(chat_id) == phase:
+        return None
 
-    # Clean up all previous dock messages for this chat to prevent duplicate bubbles
+    # Clean up any lingering dock messages for this chat
     mids_to_clean = list(ALL_DOCK_MSGS[chat_id])
     if chat_id in LAST_DOCK_MSG:
         mids_to_clean.append(LAST_DOCK_MSG[chat_id])
@@ -283,15 +283,17 @@ def send_dock_message(chat_id, user_id=None, phase="main", force=False):
         kb = get_dock_keyboard(user_id or chat_id, phase=phase)
         sent = bot.send_message(
             chat_id,
-            "⚡ <b>Raxi Control Hub Active</b>",
+            "⚡",
             reply_markup=kb,
-            parse_mode="HTML",
             disable_notification=True
         )
-        LAST_DOCK_MSG[chat_id] = sent.message_id
-        ALL_DOCK_MSGS[chat_id].add(sent.message_id)
         LAST_DOCK_PHASE[chat_id] = phase
-        return sent.message_id
+        time.sleep(0.15)
+        try:
+            bot.delete_message(chat_id, sent.message_id)
+        except Exception:
+            pass
+        return None
     except Exception as e:
         log(f"[bot] send_dock_message error: {e}")
         return None
