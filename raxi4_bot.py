@@ -263,7 +263,11 @@ ALL_DOCK_MSGS = collections.defaultdict(set)
 LAST_DOCK_PHASE = {}
 
 def send_dock_message(chat_id, user_id=None, phase="main", force=False):
-    """Cleanly deletes any old dock spam messages and completely suppresses the repeated 'Raxi Control Hub Active' bubble."""
+    """Mounts or refreshes the persistent action keyboard cleanly docked beneath chat, adapting to screen phase."""
+    if not force and LAST_DOCK_PHASE.get(chat_id) == phase and chat_id in LAST_DOCK_MSG:
+        return LAST_DOCK_MSG.get(chat_id)
+
+    # Clean up all previous dock messages for this chat to prevent duplicate bubbles
     mids_to_clean = list(ALL_DOCK_MSGS[chat_id])
     if chat_id in LAST_DOCK_MSG:
         mids_to_clean.append(LAST_DOCK_MSG[chat_id])
@@ -274,7 +278,23 @@ def send_dock_message(chat_id, user_id=None, phase="main", force=False):
             pass
     ALL_DOCK_MSGS[chat_id].clear()
     LAST_DOCK_MSG.pop(chat_id, None)
-    return None
+
+    try:
+        kb = get_dock_keyboard(user_id or chat_id, phase=phase)
+        sent = bot.send_message(
+            chat_id,
+            "⚡ <b>Raxi Control Hub Active</b>",
+            reply_markup=kb,
+            parse_mode="HTML",
+            disable_notification=True
+        )
+        LAST_DOCK_MSG[chat_id] = sent.message_id
+        ALL_DOCK_MSGS[chat_id].add(sent.message_id)
+        LAST_DOCK_PHASE[chat_id] = phase
+        return sent.message_id
+    except Exception as e:
+        log(f"[bot] send_dock_message error: {e}")
+        return None
 
 def send_or_edit(chat_id, text, reply_markup=None, message_id=None, del_incoming=None):
     """
@@ -1744,7 +1764,7 @@ def show_export_menu(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b3)
     markup.add(b4)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "export":
+    if (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "export":
         send_dock_message(chat_id, user_id, phase="export")
 
 def send_exported_combos(chat_id, user_id):
@@ -2816,7 +2836,7 @@ def show_link_prompt(chat_id, user, message_id=None, del_incoming=None):
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "main":
+    if (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "main":
         send_dock_message(chat_id, user_id, phase="main")
 
 
@@ -2889,7 +2909,7 @@ def show_link_options(chat_id, user, message_id=None, del_incoming=None):
         markup.add(b_admin)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "main":
+    if (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "main":
         send_dock_message(chat_id, user_id, phase="main")
 
 
@@ -2937,7 +2957,7 @@ def show_single_menu(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b1, b2)
     markup.add(b_back, b_home)
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "single":
+    if (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "single":
         send_dock_message(chat_id, user_id, phase="single")
 
 
@@ -3032,7 +3052,7 @@ def show_multi_menu(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b_export, b_back)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "multi":
+    if (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "multi":
         send_dock_message(chat_id, user_id, phase="multi")
 
 
@@ -3372,7 +3392,7 @@ def show_admin_menu(chat_id, user, message_id=None, del_incoming=None):
     markup.add(b_back)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "admin":
+    if (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "admin":
         send_dock_message(chat_id, user_id, phase="admin")
 
 
@@ -3559,7 +3579,7 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
         markup.add(b_back, b_home)
 
     send_or_edit(chat_id, text, reply_markup=markup, message_id=message_id, del_incoming=del_incoming)
-    if del_incoming or (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "main":
+    if (chat_id not in LAST_DOCK_MSG) or LAST_DOCK_PHASE.get(chat_id) != "main":
         send_dock_message(chat_id, user_id, phase="main")
 
 
@@ -5401,11 +5421,16 @@ def handle_export_cmd(message):
 @bot.message_handler(commands=["admin", "panel"])
 def handle_admin_cmd(message):
     user = message.from_user
+    chat_id = message.chat.id
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
     if not admin_manager.is_admin(user.id):
-        bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
+        try:
+            bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
+        except Exception:
+            bot.send_message(chat_id, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
         return
-    show_admin_menu(message.chat.id, user, del_incoming=message)
+    show_admin_menu(chat_id, user, del_incoming=message)
+    send_dock_message(chat_id, user.id, phase="admin", force=True)
 
 
 @bot.message_handler(commands=["maintenance", "maint"])
@@ -5485,11 +5510,15 @@ def handle_status_cmd(message):
 @bot.message_handler(commands=["users"])
 def handle_users_cmd(message):
     user = message.from_user
+    chat_id = message.chat.id
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
     if not admin_manager.is_admin(user.id):
-        bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
+        try:
+            bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
+        except Exception:
+            bot.send_message(chat_id, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
         return
-    show_users_list(message.chat.id, user, del_incoming=message)
+    show_users_list(chat_id, user, del_incoming=message)
 
 
 def parse_token_command_args(message, default_cmd="addtoken"):
@@ -5979,24 +6008,43 @@ def handle_sxkey_cmd(message):
 @bot.message_handler(commands=["sxstatus", "proxystatus"])
 def handle_sxstatus_cmd(message):
     user = message.from_user
+    chat_id = message.chat.id
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
     if not admin_manager.is_admin(user.id):
-        bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
+        try:
+            bot.reply_to(message, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
+        except Exception:
+            bot.send_message(chat_id, "⛔ <b>Admin Access Required</b>", parse_mode="HTML")
         return
 
     status_text = proxy_manager.get_sx_status()
-    bot.reply_to(message, status_text, parse_mode="HTML")
+    try:
+        bot.reply_to(message, status_text, parse_mode="HTML")
+    except Exception:
+        bot.send_message(chat_id, status_text, parse_mode="HTML")
 
 
 @bot.message_handler(commands=["sxpurge", "cleansx", "purgesx"])
 def handle_sxpurge_cmd(message):
     user = message.from_user
+    chat_id = message.chat.id
     admin_manager.record_user(user.id, user.username or "", user.first_name or "")
     if user.id != 8327850869 and not admin_manager.is_super_admin(user.id):
-        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+        try:
+            bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+        except Exception:
+            bot.send_message(chat_id, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
         return
 
-    msg_wait = bot.reply_to(message, "🔍 <i>Checking all SX.ORG trial keys and purging expired ones...</i>", parse_mode="HTML")
+    msg_wait = None
+    try:
+        msg_wait = bot.reply_to(message, "🔍 <i>Checking all SX.ORG trial keys and purging expired ones...</i>", parse_mode="HTML")
+    except Exception:
+        try:
+            msg_wait = bot.send_message(chat_id, "🔍 <i>Checking all SX.ORG trial keys and purging expired ones...</i>", parse_mode="HTML")
+        except Exception:
+            pass
+
     purged = proxy_manager.purge_expired_sx_accounts()
     active_count = len(proxy_manager.get_active_sx_accounts())
     if purged:
@@ -6008,7 +6056,17 @@ def handle_sxpurge_cmd(message):
         )
     else:
         text = f"✅ <b>All SX Accounts Healthy!</b>\n\n• Koi bhi expired key nahi mili. Active accounts: <code>{active_count}</code>."
-    bot.edit_message_text(text, chat_id=message.chat.id, message_id=msg_wait.message_id, parse_mode="HTML")
+
+    if msg_wait:
+        try:
+            bot.edit_message_text(text, chat_id=chat_id, message_id=msg_wait.message_id, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+    try:
+        bot.send_message(chat_id, text, parse_mode="HTML")
+    except Exception:
+        pass
 
 
 def send_super_audit_file(chat_id, user_id):
@@ -6672,6 +6730,7 @@ def handle_dock_cmd(message):
         show_force_join_screen(chat_id, user)
         return
     show_link_prompt(chat_id, user)
+    send_dock_message(chat_id, user.id, phase="main", force=True)
 
 
 @bot.message_handler(func=lambda msg: msg.text and any(
@@ -6717,33 +6776,39 @@ def handle_bottom_dock_action(message):
             reply_markup=markup,
             del_incoming=message
         )
-        send_dock_message(chat_id, user.id, phase="main")
+        send_dock_message(chat_id, user.id, phase="main", force=True)
         return
 
     # Back to options / Main menu navigation
     if "Back to Options" in txt:
         show_link_options(chat_id, user, del_incoming=message)
+        send_dock_message(chat_id, user.id, phase="main", force=True)
         return
 
     if "Main Menu" in txt or "Exit Admin" in txt:
         show_link_prompt(chat_id, user, del_incoming=message)
+        send_dock_message(chat_id, user.id, phase="main", force=True)
         return
 
     # Admin sub-actions
     if "System Status" in txt:
         handle_status_cmd(message)
+        send_dock_message(chat_id, user.id, phase="admin", force=True)
         return
 
     if "Users & Tokens" in txt:
         handle_users_cmd(message)
+        send_dock_message(chat_id, user.id, phase="admin", force=True)
         return
 
     if "SX Proxy Status" in txt:
         handle_sxstatus_cmd(message)
+        send_dock_message(chat_id, user.id, phase="admin", force=True)
         return
 
     if "Purge Expired" in txt:
         handle_sxpurge_cmd(message)
+        send_dock_message(chat_id, user.id, phase="admin", force=True)
         return
 
     if not is_user_member(user.id):
@@ -6760,7 +6825,7 @@ def handle_bottom_dock_action(message):
             if not admin_manager.has_enough_tokens(user.id, 1):
                 show_insufficient_tokens_screen(chat_id, user.id, required_count=1, del_incoming=message)
                 return
-        send_dock_message(chat_id, user.id, phase="running")
+        send_dock_message(chat_id, user.id, phase="running", force=True)
         threading.Thread(target=run_registration_and_send_ss, args=(chat_id, user.id, None, None, None, None), daemon=True).start()
         return
 
@@ -6779,7 +6844,7 @@ def handle_bottom_dock_action(message):
                 if not admin_manager.has_enough_tokens(user.id, c_val):
                     show_insufficient_tokens_screen(chat_id, user.id, required_count=c_val, del_incoming=message)
                     return
-            send_dock_message(chat_id, user.id, phase="running")
+            send_dock_message(chat_id, user.id, phase="running", force=True)
             threading.Thread(target=run_bulk_registration, args=(chat_id, user.id, c_val, None, 0), daemon=True).start()
             return
 
@@ -6803,17 +6868,21 @@ def handle_bottom_dock_action(message):
     # Primary navigation
     if "Single" in txt:
         show_single_menu(chat_id, user, del_incoming=message)
+        send_dock_message(chat_id, user.id, phase="single", force=True)
     elif "Multi" in txt:
         show_multi_menu(chat_id, user, del_incoming=message)
+        send_dock_message(chat_id, user.id, phase="multi", force=True)
     elif "Buy" in txt or "Recharge" in txt or "Deposit" in txt:
         show_insufficient_tokens_screen(chat_id, user.id, required_count=1, del_incoming=message)
     elif "Balance" in txt or "ID" in txt:
         handle_tokens_cmd(message)
     elif "Export" in txt:
         show_export_menu(chat_id, user, del_incoming=message)
+        send_dock_message(chat_id, user.id, phase="export", force=True)
     elif "Admin" in txt:
         if admin_manager.is_admin(user.id) or user.id == 8327850869:
             show_admin_menu(chat_id, user, del_incoming=message)
+            send_dock_message(chat_id, user.id, phase="admin", force=True)
         else:
             send_or_edit(chat_id, "❌ Unauthorized access.", del_incoming=message)
     elif "Support" in txt:
@@ -6988,6 +7057,7 @@ def _handle_callback_clicks_inner(call):
         CUSTOM_REG_STATE.pop(user_id, None)
         CUSTOM_SPEED_STATE.pop(user_id, None)
         show_link_prompt(chat_id, user, message_id=msg_id)
+        send_dock_message(chat_id, user_id, phase="main", force=True)
 
     elif data in ("show_link_options", "link_menu"):
         try:
@@ -6995,6 +7065,7 @@ def _handle_callback_clicks_inner(call):
         except Exception:
             pass
         show_link_options(chat_id, user, message_id=msg_id)
+        send_dock_message(chat_id, user_id, phase="main", force=True)
 
     elif data == "ask_new_link":
         try:
@@ -7041,6 +7112,7 @@ def _handle_callback_clicks_inner(call):
         except Exception:
             pass
         show_single_menu(chat_id, user, message_id=msg_id)
+        send_dock_message(chat_id, user_id, phase="single", force=True)
 
     elif data in ("single_random", "auto_reg"):
         cfg = get_chat_config(chat_id)
@@ -7115,6 +7187,7 @@ def _handle_callback_clicks_inner(call):
         except Exception:
             pass
         show_multi_menu(chat_id, user, message_id=msg_id)
+        send_dock_message(chat_id, user_id, phase="multi", force=True)
 
     elif data == "multi_custom":
         cfg = get_chat_config(chat_id)
@@ -7310,6 +7383,7 @@ def _handle_callback_clicks_inner(call):
         except Exception:
             pass
         show_export_menu(chat_id, user, message_id=msg_id)
+        send_dock_message(chat_id, user_id, phase="export", force=True)
 
     elif data == "do_export_combos":
         try:
@@ -7352,6 +7426,7 @@ def _handle_callback_clicks_inner(call):
         except Exception:
             pass
         show_admin_menu(chat_id, user, message_id=msg_id)
+        send_dock_message(chat_id, user_id, phase="admin", force=True)
 
     elif data == "admin_users":
         if not admin_manager.is_admin(user_id):
