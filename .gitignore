@@ -10,3 +10,4 @@ keep_alive_render.log
 
 .env
 *.env
+raxi4_results.json

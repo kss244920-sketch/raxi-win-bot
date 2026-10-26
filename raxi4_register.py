@@ -25,6 +25,7 @@ from PIL import Image, ImageFilter
 SITE     = "https://www.raxi4.com"
 API      = "https://api.raxiqaz.com"
 INVITE   = "12345678901"
+NEELWIN_SECRET = "9ALalE51IJxxkK0Pg0ejgbwYvM2sUaGf"
 UA_MOB   = ("Mozilla/5.0 (Linux; Android 13; Pixel 7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Mobile Safari/537.36")
@@ -32,6 +33,19 @@ UA_MOB   = ("Mozilla/5.0 (Linux; Android 13; Pixel 7) "
 
 def log(m):
     print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
+
+
+def get_neelwin_sign(data, secret=NEELWIN_SECRET):
+    ts = str(int(time.time()))
+    nonce = str(random.randint(1, 9)) + "".join([str(random.randint(0, 9)) for _ in range(19)])
+    t = dict(data)
+    t["timestamp"] = ts
+    t["nonce"] = nonce
+    o = {k: v for k, v in t.items() if v is not None and v != ""}
+    sorted_keys = sorted([k for k in o if k != "sign"])
+    to_sign = "".join(f"{k}{o[k]}" for k in sorted_keys) + secret
+    sig = hashlib.md5(to_sign.encode("utf-8")).hexdigest().upper()
+    return sig, ts, nonce
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -223,6 +237,56 @@ def register_once(session, phone, password, invite, site="https://www.raxi4.com"
         "captcha_x": None
     }
 
+    if "neelwin" in site.lower() or "neelwin" in str(target_api).lower() or "18822.shop" in str(target_api).lower():
+        log("[+] Running Neelwin platform registration...")
+        base_api = target_api.rstrip("/")
+        if not base_api.endswith("/api"):
+            base_api = f"{base_api}/api"
+        reg_url = f"{base_api}/member/register"
+        reg_dict = {
+            "mobile": phone,
+            "password": password,
+            "confirmPassword": password,
+            "spreaderId": invite,
+            "areaCode": "+91",
+            "registrationMethod": "phone",
+            "regSource": "direct"
+        }
+        sig, ts, nonce = get_neelwin_sign(reg_dict)
+        headers = {
+            "device": "H5",
+            "language": "en",
+            "version": "app_v2",
+            "sign": sig,
+            "timestamp": ts,
+            "nonce": nonce,
+            "Origin": site,
+            "Referer": f"{site}/?code={invite}"
+        }
+        r = session.post(reg_url, json=reg_dict, headers=headers, timeout=20)
+        j = r.json()
+        result["msg"] = j.get("msg")
+        if j.get("code") == 0 and j.get("data"):
+            d = j["data"]
+            result["ok"] = True
+            result["token"] = d.get("token")
+            try:
+                part = result["token"].split(".")[1]
+                part += "=" * (-len(part) % 4)
+                decoded = json.loads(base64.urlsafe_b64decode(part))
+                if "user_info" in decoded:
+                    uinfo = json.loads(decoded["user_info"]) if isinstance(decoded["user_info"], str) else decoded["user_info"]
+                    result["userId"] = uinfo.get("userId") or uinfo.get("uid")
+                else:
+                    result["userId"] = decoded.get("UserId")
+            except Exception:
+                pass
+            log("  ═══════════════ SUCCESS ═══════════════")
+            log(f"  userId : {result['userId']}")
+            log(f"  token  : {result['token'][:70]}...")
+            log("  ═══════════════════════════════════════")
+        return result
+
     log("[+] Checking RegisterState...")
     body = signed_body({})
     r = session.post(f"{target_api}/api/webapi/RegisterState", json=body, timeout=15)
@@ -332,6 +396,8 @@ def main():
     ap.add_argument("--phone", required=True, help="10-digit phone number")
     ap.add_argument("--password", required=True, help="Account password (letters and numbers, 8-30 chars)")
     ap.add_argument("--invite", default=INVITE, help="Invitation code")
+    ap.add_argument("--site", default=SITE, help="Target website URL")
+    ap.add_argument("--api", default=None, help="Target API URL")
     ap.add_argument("--count", type=int, default=1, help="Number of registrations")
     args = ap.parse_args()
 
@@ -343,15 +409,18 @@ def main():
     if not re.match(r"^(?=.*[a-zA-Z])(?=.*\d)[a-zA-Z\d]{8,30}$", args.password):
         log("[!] Warning: Password should contain both letters and digits, 8-30 characters.")
 
+    target_site = args.site or SITE
+    target_api = args.api or (f"{target_site}/api" if "neelwin" in target_site.lower() else API)
+
     log("=" * 60)
-    log(f"raxi4 auto-register · {phone} · invite={args.invite}")
+    log(f"raxi4 auto-register · {phone} · invite={args.invite} · site={target_site}")
     log("=" * 60)
 
     session = build_session()
 
     # Warm-up request to establish cookies
     try:
-        session.get(SITE, timeout=15)
+        session.get(target_site, timeout=15)
     except Exception:
         pass
 
@@ -364,7 +433,7 @@ def main():
             p = phone
 
         try:
-            r = register_once(session, p, args.password, args.invite)
+            r = register_once(session, p, args.password, args.invite, site=target_site, api=target_api)
         except Exception as e:
             log(f"[!] Crash: {e}")
             r = {"ok": False, "phone": p, "error": str(e)}

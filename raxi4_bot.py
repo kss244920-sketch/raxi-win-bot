@@ -1097,6 +1097,24 @@ def sign_arsaas(body):
     t["timestamp"] = int(time.time())
     return t
 
+NEELWIN_SECRET = "9ALalE51IJxxkK0Pg0ejgbwYvM2sUaGf"
+
+def get_neelwin_sign(data, secret=NEELWIN_SECRET):
+    """
+    Signature algorithm for Neelwin platform (MD5 of sorted keys + secret).
+    Matches reverse-engineered frontend vn() function.
+    """
+    ts = str(int(time.time()))
+    nonce = str(random.randint(1, 9)) + "".join([str(random.randint(0, 9)) for _ in range(19)])
+    t = dict(data)
+    t["timestamp"] = ts
+    t["nonce"] = nonce
+    o = {k: v for k, v in t.items() if v is not None and v != ""}
+    sorted_keys = sorted([k for k in o if k != "sign"])
+    to_sign = "".join(f"{k}{o[k]}" for k in sorted_keys) + secret
+    sig = hashlib.md5(to_sign.encode("utf-8")).hexdigest().upper()
+    return sig, ts, nonce
+
 def get_base_domain(host: str) -> str:
     """
     Normalizes host/netloc by stripping dynamic subdomains and www,
@@ -1159,6 +1177,18 @@ def detect_and_parse_referral_link(text_or_url):
         invite_code = INVITE
 
     domain_lower = parsed.netloc.lower()
+
+    # FAST PATH 0: Instant Neelwin platform resolution (neelwin, 18822.shop, etc.)
+    if any(k in domain_lower for k in ["neelwin", "18822.shop", "one1.win"]):
+        return {
+            "site": base_site,
+            "api": f"{base_site}/api",
+            "api_type": "neelwin",
+            "invite": invite_code,
+            "domain": get_base_domain(parsed.netloc),
+            "raw_url": raw_url,
+            "sms_required": False
+        }
 
     # FAST PATH 1: Instant AR-SAAS resolution (MaanWin, GoaGames, BigDaddy, Tiranga, 13l, etc.)
     if any(k in domain_lower for k in ["maanwin", "goagame", "bigdaddy", "tiranga", "13l."]):
@@ -1247,7 +1277,42 @@ def detect_and_parse_referral_link(text_or_url):
         except Exception:
             pass
 
-    # Check 2B: 51game / Raxi / DMFirst / RajaLuck clone (VITE / WEBAPI)
+    # Check 2C: Neelwin platform engine
+    for c_host in candidate_hosts:
+        c_site = f"{scheme}://{c_host}"
+        try:
+            sig, ts, nonce = get_neelwin_sign({})
+            r_nw = requests.get(
+                f"{c_site}/api/member/getRegIsShow",
+                headers={
+                    "device": "H5",
+                    "language": "en",
+                    "version": "app_v2",
+                    "sign": sig,
+                    "timestamp": ts,
+                    "nonce": nonce,
+                    "Content-Type": "application/json;charset=utf-8",
+                    "Origin": c_site,
+                    "Referer": f"{c_site}/"
+                },
+                timeout=3.0,
+                allow_redirects=True
+            )
+            if r_nw.status_code == 200 and r_nw.json().get("code") == 0:
+                log(f"[bot] Detected Neelwin platform engine for {c_site}")
+                return {
+                    "site": c_site,
+                    "api": f"{c_site}/api",
+                    "api_type": "neelwin",
+                    "invite": invite_code,
+                    "domain": get_base_domain(c_host),
+                    "raw_url": raw_url,
+                    "sms_required": False
+                }
+        except Exception:
+            pass
+
+    # Check 2D: 51game / Raxi / DMFirst / RajaLuck clone (VITE / WEBAPI)
     api_url = None
     domain_lower = parsed.netloc.lower()
 
@@ -1370,6 +1435,17 @@ def check_platform_sms_and_mirrors(api_url, current_site, api_type=None):
     """
     parsed = urllib.parse.urlparse(current_site)
     domain_lower = parsed.netloc.lower()
+    if api_type == "neelwin" or any(k in domain_lower for k in ["neelwin", "18822.shop", "one1.win"]):
+        return {
+            "sms_required": False,
+            "site": current_site,
+            "api": f"{current_site}/api" if not str(api_url).endswith("/api") else api_url,
+            "domain": get_base_domain(parsed.netloc),
+            "switched_mirror": False,
+            "mirror_count": 0,
+            "api_type": "neelwin"
+        }
+
     if api_type == "tasyee" or any(k in domain_lower for k in ["pan5", "tasyee"]):
         return {
             "sms_required": False,
@@ -2091,7 +2167,8 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
     domain = get_base_domain(urllib.parse.urlparse(target_site).netloc)
 
     is_tasyee = (api_type == "tasyee") or any(k in domain for k in ["pan5", "tasyee"]) or ("/user/register" in str(target_api))
-    is_arsaas = not is_tasyee and ((api_type == "arsaas") or ("/Home" in str(target_api)) or (target_api == f"{target_site}/api") or any(k in domain for k in ["maanwin", "goagame", "bigdaddy", "tiranga", "13l"]))
+    is_neelwin = (api_type == "neelwin") or any(k in domain for k in ["neelwin", "18822.shop", "one1.win"]) or ("/member/register" in str(target_api))
+    is_arsaas = not is_tasyee and not is_neelwin and ((api_type == "arsaas") or ("/Home" in str(target_api)) or (target_api == f"{target_site}/api") or any(k in domain for k in ["maanwin", "goagame", "bigdaddy", "tiranga", "13l"]))
     if is_arsaas and not str(target_api).endswith("/api"):
         target_api = f"{target_site}/api"
 
@@ -2151,7 +2228,7 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
         track = None
         container_x = None
 
-        if not is_tasyee:
+        if not is_tasyee and not is_neelwin:
             try:
                 if is_arsaas:
                     cap_url = f"{target_site}/api/Home/Captcha"
@@ -2293,7 +2370,8 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
         tried_proxies.add(active_proxy)
         proxy_label = verified_ip or active_proxy
 
-        log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={'TASYEE' if is_tasyee else ('AR-SAAS' if is_arsaas else 'WEBAPI')}): phone={target_phone} dev='{dev_model}' id='{device_id[:8]}' ip={proxy_label} (spent={residential_bytes_spent}B)")
+        engine_name = 'NEELWIN' if is_neelwin else ('TASYEE' if is_tasyee else ('AR-SAAS' if is_arsaas else 'WEBAPI'))
+        log(f"[bot] Register attempt {attempt}/{max_search_attempts} (engine={engine_name}): phone={target_phone} dev='{dev_model}' id='{device_id[:8]}' ip={proxy_label} (spent={residential_bytes_spent}B)")
 
         # 4. Submit Register POST (THE ONLY REQUEST THAT USES THE FRESH UNIQUE RESIDENTIAL IP ~3.5 KB)
         if is_tasyee:
@@ -2309,6 +2387,32 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
             }
             base_headers["Origin"] = target_site
             base_headers["Referer"] = f"{target_site}/index?invite={target_invite}"
+        elif is_neelwin:
+            base_api = target_api.rstrip("/")
+            if not base_api.endswith("/api"):
+                base_api = f"{base_api}/api"
+            reg_url = f"{base_api}/member/register"
+            reg_dict = {
+                "mobile": target_phone,
+                "password": target_pwd,
+                "confirmPassword": target_pwd,
+                "spreaderId": target_invite,
+                "areaCode": "+91",
+                "registrationMethod": "phone",
+                "regSource": "direct"
+            }
+            sig, ts, nonce = get_neelwin_sign(reg_dict)
+            reg_payload = reg_dict
+            base_headers.update({
+                "device": "H5",
+                "language": "en",
+                "version": "app_v2",
+                "sign": sig,
+                "timestamp": ts,
+                "nonce": nonce,
+                "Origin": target_site,
+                "Referer": f"{target_site}/?code={target_invite}"
+            })
         elif is_arsaas:
             reg_url = f"{target_site}/api/Home/Register"
             reg_dict = {
@@ -2390,7 +2494,7 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
             return {"ok": False, "msg": msg, "fatal": True}
 
         # Success!
-        if (code == 0 and j.get("data")) or (code == 0 and is_tasyee):
+        if (code == 0 and j.get("data")) or (code == 0 and is_tasyee) or (code == 0 and is_neelwin):
             d = j.get("data") or {}
             token = d.get("token")
             uid = d.get("userId") or d.get("inviterId") or d.get("account") or None
@@ -2401,6 +2505,12 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
                     part += "=" * (-len(part) % 4)
                     decoded = json.loads(base64.urlsafe_b64decode(part))
                     uid = uid or decoded.get("UserId")
+                    if "user_info" in decoded:
+                        try:
+                            uinfo = json.loads(decoded["user_info"]) if isinstance(decoded["user_info"], str) else decoded["user_info"]
+                            uid = uid or uinfo.get("userId") or uinfo.get("uid")
+                        except Exception:
+                            pass
                     resolved_ip = decoded.get("LoginIPAddress") or decoded.get("LoginIP") or decoded.get("loginIP")
                 except Exception:
                     pass
