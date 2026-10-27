@@ -2297,7 +2297,7 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
                             else:
                                 dc_px_url = f"http://{dc_px}"
                             dc_sess.proxies = {"http": dc_px_url, "https": dc_px_url}
-                            r_cap = dc_sess.post(cap_url, json=cap_payload, timeout=(4.0, 6.0))
+                            r_cap = dc_sess.post(cap_url, json=cap_payload, timeout=(5.0, 8.0))
                             last_cap_status = r_cap.status_code
                             if r_cap.status_code == 200:
                                 cdata = r_cap.json().get("data") or {}
@@ -2458,7 +2458,7 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
             session.proxies = {"http": px_url, "https": px_url}
 
         try:
-            r = session.post(reg_url, json=reg_payload, timeout=(4.0, 9.0))
+            r = session.post(reg_url, json=reg_payload, timeout=(8.0, 12.0))
             if active_proxy:
                 residential_bytes_spent += 3500  # Track Register POST bandwidth
                 proxy_manager.record_traffic_consumption(active_proxy, 3500)
