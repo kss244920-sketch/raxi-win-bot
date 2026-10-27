@@ -2,6 +2,19 @@
   "active": true,
   "accounts": [
     {
+      "provider": "ipcook",
+      "api_key": "ipcook_raxibotGoated",
+      "active": true,
+      "port_id": 32345,
+      "proxy_host": "geo.ipcook.com:32345",
+      "login_template": "raxibotGoated-IN-session-{session_id}",
+      "password": "KAKAJIKYAHAALHAI",
+      "country": "IN",
+      "balance_usd": 0.0,
+      "balance_traffic": 104854100,
+      "updated_at": 1793105748
+    },
+    {
       "api_key": "MJWeHJ1zRswtH9dw5r54iA4REN1VDLUB",
       "active": true,
       "port_id": 241972874,
@@ -9,9 +22,9 @@
       "login_template": "bjeazvexr0-pool-res.mobile.corp-country-IN-mode-rotate-session-{session_id}",
       "password": "z57kf3g6WvxA4mck",
       "country": "IN",
-      "balance_usd": 0.101852311,
-      "balance_traffic": 36454362,
-      "updated_at": 1793005518
+      "balance_usd": 0.063003115,
+      "balance_traffic": 22549693,
+      "updated_at": 1793106465
     }
   ]
 }

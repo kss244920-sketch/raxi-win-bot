@@ -205,6 +205,73 @@ class ProxyManager:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def setup_ipcook_account(self, username: str, password: str, host: str = "geo.ipcook.com:32345", country: str = "IN", traffic_mb: float = 100.0) -> dict:
+        """Links and adds an IPcook rotating residential proxy sub-account to multi-account pool."""
+        username = username.strip()
+        password = password.strip()
+        host = host.strip() or "geo.ipcook.com:32345"
+        traffic_bytes = int(traffic_mb * 1024 * 1024)
+
+        new_acc = {
+            "provider": "ipcook",
+            "api_key": f"ipcook_{username}",
+            "active": True,
+            "port_id": 32345,
+            "proxy_host": host,
+            "login_template": f"{username}-{country}-session-{{session_id}}",
+            "password": password,
+            "country": country,
+            "balance_usd": 0.0,
+            "balance_traffic": traffic_bytes,
+            "updated_at": int(time.time())
+        }
+
+        if not self.sx_config or not isinstance(self.sx_config, dict):
+            self.sx_config = {"active": True, "accounts": []}
+        if "accounts" not in self.sx_config or not isinstance(self.sx_config["accounts"], list):
+            existing = []
+            if self.sx_config.get("api_key"):
+                existing.append(dict(self.sx_config))
+            self.sx_config = {"active": True, "accounts": existing}
+
+        existing_idx = -1
+        for idx, a in enumerate(self.sx_config["accounts"]):
+            if a.get("api_key") == new_acc["api_key"] or a.get("login_template", "").startswith(f"{username}-"):
+                existing_idx = idx
+                break
+
+        if existing_idx >= 0:
+            self.sx_config["accounts"][existing_idx] = new_acc
+        else:
+            self.sx_config["accounts"].append(new_acc)
+
+        self.sx_config["active"] = True
+        self.save_sx_config(self.sx_config)
+        active_accs = self.get_active_sx_accounts()
+        total_traffic = sum(a.get("balance_traffic", 0) for a in active_accs)
+        logger.info(f"IPcook Account {username} added. Active pool: {len(active_accs)}, total traffic: {total_traffic} bytes.")
+        return {
+            "ok": True,
+            "account": new_acc,
+            "total_accounts": len(active_accs),
+            "total_traffic": total_traffic
+        }
+
+    def record_traffic_consumption(self, proxy_str: str, bytes_spent: int = 3500):
+        """Decrements traffic locally for static quota accounts (like IPcook) and saves config."""
+        if not proxy_str or bytes_spent <= 0:
+            return
+        with self.lock:
+            changed = False
+            for acc in self.sx_config.get("accounts", []):
+                host = acc.get("proxy_host", "")
+                if host and host in proxy_str and acc.get("provider") == "ipcook":
+                    current = acc.get("balance_traffic", 0)
+                    acc["balance_traffic"] = max(0, current - bytes_spent)
+                    changed = True
+            if changed:
+                self.save_sx_config(self.sx_config)
+
     def purge_expired_sx_accounts(self) -> list:
         """
         Scans all configured SX.ORG accounts and purges/deletes accounts whose
@@ -225,6 +292,12 @@ class ProxyManager:
             key = acc.get("api_key", "")
             if not key:
                 continue
+
+            # Preserve IPcook rotating residential proxy accounts
+            if acc.get("provider") == "ipcook" or "geo.ipcook.com" in acc.get("proxy_host", ""):
+                remaining.append(acc)
+                continue
+
             bal = acc.get("balance_traffic", 0)
             usd_bal = acc.get("balance_usd", 0.0)
             is_definitely_dead = False

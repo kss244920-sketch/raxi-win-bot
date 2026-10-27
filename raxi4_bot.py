@@ -2458,9 +2458,10 @@ def _auto_register_account_impl(phone=None, password=None, invite=None, site=Non
             session.proxies = {"http": px_url, "https": px_url}
 
         try:
-            r = session.post(reg_url, json=reg_payload, timeout=(3.5, 6.0))
+            r = session.post(reg_url, json=reg_payload, timeout=(4.0, 9.0))
             if active_proxy:
                 residential_bytes_spent += 3500  # Track Register POST bandwidth
+                proxy_manager.record_traffic_consumption(active_proxy, 3500)
             if r.status_code in (404, 502, 403):
                 log(f"[bot] Fatal HTTP {r.status_code} on {reg_url}")
                 _cleanup_in_flight()
@@ -3474,7 +3475,8 @@ def show_admin_menu(chat_id, user, message_id=None, del_incoming=None):
         f"• <code>/stats</code> or <code>/statics</code> — Super Admin Users, Tokens &amp; History Audit\n"
         f"• <code>/sessions</code> — Live active registration sessions monitor\n"
         f"• <code>/stopall</code> — Emergency stop all registrations across all chats\n"
-        f"• <code>/sxstatus</code> — Live SX multi-proxy pool &amp; balance\n"
+        f"• <code>/sxstatus</code> — Live SX/IPcook multi-proxy pool &amp; balance\n"
+        f"• <code>/ipcook &lt;user&gt; &lt;pass&gt;</code> — Add IPcook Indian residential proxy\n"
         f"• <code>/sxkey &lt;key&gt;</code> — Add/stack new SX.ORG 1 GB trial key\n"
         f"• <code>/sxpurge</code> — Purge expired 0 MB trial keys\n"
         f"• <code>/users</code> — View registered users &amp; tokens\n"
@@ -3650,6 +3652,7 @@ def show_help_menu(chat_id, user, message_id=None, del_incoming=None):
             "• <code>/silentaddtoken &lt;id&gt; &lt;amt&gt;</code> — Add tokens secretly (no user notification)\n"
             "• <code>/silentdeducttoken &lt;id&gt; &lt;amt&gt;</code> — Deduct tokens secretly (no user notification)\n"
             "• <code>/sxkey &lt;key&gt;</code> — Add &amp; stack new SX.ORG Indian residential proxy key\n"
+            "• <code>/ipcook &lt;user&gt; &lt;pass&gt;</code> — Add IPcook Indian residential proxy\n"
             "• <code>/sxstatus</code> — Live SX multi-proxy pool &amp; combined balance\n"
             "• <code>/sxpurge</code> — Auto-clean &amp; remove exhausted trial keys\n"
             "• <code>/maintenance</code> — Toggle System Maintenance Guard on/off\n"
@@ -6108,6 +6111,71 @@ def handle_sxkey_cmd(message):
         f"• 🔄 <b>Rotation Mode:</b> <i>Round-Robin across all accounts with Indian IP stickiness!</i>\n"
         f"━━━━━━━━━━━━━━━━━━━\n\n"
         f"🎉 <i>All bulk orders will automatically balance and rotate across all {tot_accs} accounts!</i>"
+    )
+    bot.edit_message_text(
+        success_msg,
+        chat_id=message.chat.id,
+        message_id=msg_wait.message_id,
+        parse_mode="HTML"
+    )
+
+
+@bot.message_handler(commands=["ipcook", "setipcook"])
+def handle_ipcook_cmd(message):
+    user = message.from_user
+    admin_manager.record_user(user.id, user.username or "", user.first_name or "")
+    if user.id != 8327850869 and not admin_manager.is_super_admin(user.id):
+        bot.reply_to(message, "⛔ <b>Super Admin Access Required</b>", parse_mode="HTML")
+        return
+
+    text = (message.text or "").strip()
+    parts = text.split()
+    if len(parts) < 3:
+        bot.reply_to(
+            message,
+            "ℹ️ <b>IPcook Proxy Setup Guide</b>\n\n"
+            "Format:\n"
+            "<code>/ipcook &lt;username&gt; &lt;password&gt; [traffic_mb]</code>\n\n"
+            "<i>Example:</i>\n"
+            "<code>/ipcook raxibotGoated KAKAJIKYAHAALHAI 100</code>\n\n"
+            "💡 <i>Tip: Sub-account username aur password daalte hi bot direct IPcook Indian Residential Rotating Proxy link kar lega!</i>",
+            parse_mode="HTML"
+        )
+        return
+
+    sub_user = parts[1].strip()
+    sub_pwd = parts[2].strip()
+    traffic_mb = float(parts[3].strip()) if len(parts) > 3 and parts[3].strip().isdigit() else 100.0
+
+    msg_wait = bot.reply_to(message, "🔄 <i>Testing and linking IPcook rotating proxy...</i>", parse_mode="HTML")
+
+    res = proxy_manager.setup_ipcook_account(username=sub_user, password=sub_pwd, traffic_mb=traffic_mb)
+    if not res.get("ok"):
+        bot.edit_message_text(
+            f"❌ <b>IPcook Setup Failed:</b>\n\n<code>{res.get('error')}</code>",
+            chat_id=message.chat.id,
+            message_id=msg_wait.message_id,
+            parse_mode="HTML"
+        )
+        return
+
+    tot_traffic = res.get("total_traffic", int(traffic_mb * 1024 * 1024))
+    tot_mb = round(tot_traffic / (1024 * 1024), 2)
+    tot_accs = res.get("total_accounts", 1)
+    approx_accs = int(tot_traffic / (25 * 1024))
+
+    success_msg = (
+        f"✅ <b>IPcook Proxy Account Linked!</b> 🚀\n\n"
+        f"• 👤 <b>Username:</b> <code>{sub_user}</code>\n"
+        f"• 📊 <b>Added Quota:</b> <code>{traffic_mb} MB</code>\n"
+        f"• 🖥 <b>Gateway:</b> <code>geo.ipcook.com:32345 (India Residential)</code>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📈 <b>TOTAL COMBINED POOL:</b>\n"
+        f"• 👥 <b>Active Accounts Linked:</b> <code>{tot_accs}</code>\n"
+        f"• 🌐 <b>Total Combined Data:</b> <code>{tot_mb} MB</code>\n"
+        f"• ⚡ <b>Estimated Total Capacity:</b> <code>~{approx_accs:,} accounts</code>\n"
+        f"• 🔄 <b>Rotation Mode:</b> <i>Dynamic session rotation with Indian IP stickiness!</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━"
     )
     bot.edit_message_text(
         success_msg,
