@@ -7941,6 +7941,14 @@ if __name__ == "__main__":
     # SX.ORG Rotating Indian Residential Proxy Engine
     log("[ProxyEngine] SX.ORG Rotating Indian Residential Proxy Engine active! ✅")
 
+    # 14-Minute Auto Cloud Backup & Pin Daemon (Disaster Recovery & Channel Storage)
+    try:
+        from audit_backup_daemon import start_audit_backup_daemon
+        start_audit_backup_daemon(bot, interval_seconds=14 * 60)
+        log("[BackupDaemon] 14-Minute Auto Cloud Backup & Pin Daemon active! ✅")
+    except Exception as e:
+        log(f"[BackupDaemon] Warning starting backup daemon: {e} ⚠️")
+
     log("=" * 60)
 
     try:
