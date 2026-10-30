@@ -62,8 +62,8 @@ def get_target_audit_channel() -> str:
     except Exception:
         pass
 
-    # 3. Fallback default: Audit / Logs channel (Gemini-Logs)
-    return "-1003946923981"
+    # 3. Fallback default: Audit / Logs channel (AUDIT supergroup)
+    return "-1003899151943"
 
 
 def create_backup_archive():

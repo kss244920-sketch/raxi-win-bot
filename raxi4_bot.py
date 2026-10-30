@@ -7892,6 +7892,21 @@ def start_health_server(port=None):
     from http.server import HTTPServer, BaseHTTPRequestHandler
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
+            if "/backup_and_pin" in self.path:
+                try:
+                    from audit_backup_daemon import dispatch_and_pin_backup
+                    res = dispatch_and_pin_backup(bot)
+                    self.send_response(200)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(b'{"status":"ok","success":true,"action":"backup_and_pin"}')
+                    return
+                except Exception as e:
+                    self.send_response(500)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(f'{{"status":"error","error":"{e}"}}'.encode())
+                    return
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
